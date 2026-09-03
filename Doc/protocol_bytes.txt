@@ -1,0 +1,321 @@
+TCM — Tabla global de bytes del protocolo
+==========================================
+Fuente: Book1.csv + machine_bytes.csv (actualizado)
+Formato: Byte | Dec | Acción | Actuador | Módulo | Dirección | Función | Descripción
+
+Leyenda dirección:
+  Recibe  = maestro (HMI/TCM) → esclavo
+  Manda   = esclavo → maestro
+  Recibe y manda = bidireccional (estatus)
+
+────────────────────────────────────────────────────────────────────────────────
+MOTION — ASDA (0x01–0x08)
+────────────────────────────────────────────────────────────────────────────────
+0x01 |   1 | Search home        | ASDA   | Motion | Recibe       | HomeASDA()        | Busca el home
+0x02 |   2 | Stop               | ASDA   | Motion | Recibe       | StopASDA()        | Detiene ASDA
+0x03 |   3 | Servo off          | ASDA   | Motion | Recibe       | OffASDA()         | Servo apagado
+0x04 |   4 | Servo on           | ASDA   | Motion | Recibe       | OnASDA()          | Servo energizado
+0x05 |   5 | Move to position   | ASDA   | Motion | Recibe       | ABSPositionASDA() | Mover a posición definida
+0x06 |   6 | Position reached   | ASDA   | Motion | Manda        | ReachedASDA()     | Llegó a la posición
+0x07 |   7 | Move to 0          | ASDA   | Motion | Recibe       | HpASDA()          | Setear posición a 0 e ir
+0x08 |   8 | Estatus            | ASDA   | Motion | Recibe       | GetStatus()       | ¿Cuál es tu estatus?
+
+────────────────────────────────────────────────────────────────────────────────
+MOTION — Estatus general (0x09–0x0E)
+────────────────────────────────────────────────────────────────────────────────
+0x09 |   9 | Init               | Motion | Motion | Recibe y manda | InitState()     | Estoy iniciando
+0x0A |  10 | Idle               | Motion | Motion | Recibe y manda | IdleState()     | Estoy esperando
+0x0B |  11 | Busy               | Motion | Motion | Recibe y manda | BusyState()     | Estoy trabajando
+0x0C |  12 | Error              | Motion | Motion | Recibe y manda | ErrorState()    | Tengo un problema
+0x0D |  13 | Stop               | Motion | Motion | Recibe y manda | StoprState()    | Me detuvieron
+0x0E |  14 | ReturnStop         | Motion | Motion | Recibe y manda | ReturnState()   | Completar mov. tras stop
+
+────────────────────────────────────────────────────────────────────────────────
+MOTION — Encoder (0x0F–0x11, 0x17–0x18)
+────────────────────────────────────────────────────────────────────────────────
+0x0F |  15 | Measure (R)        | Encoder | Motion | Recibe y manda | GetMeasured()  | Lee y manda posición lado R
+0x10 |  16 | Set0 (R)           | Encoder | Motion | Recibe         | Set0()         | Resetea cuentas lado R
+0x11 |  17 | Error              | Encoder | Motion | Manda          | Error()        | No detectó cambio en lectura
+0x17 |  23 | Measure (L)        | Encoder | Motion | Recibe y manda | GetMeasured()  | Lee y manda posición lado L
+0x18 |  24 | Set0 (L)           | Encoder | Motion | Recibe         | Set0()         | Resetea cuentas lado L
+
+────────────────────────────────────────────────────────────────────────────────
+MOTION — Feeder (0x12–0x15, 0x4A–0x4B)
+────────────────────────────────────────────────────────────────────────────────
+0x12 |  18 | Feed (R)           | Feeder | Motion | Recibe         | StartFeedR()   | Inicia alimentación lado R
+0x13 |  19 | Feed (L)           | Feeder | Motion | Recibe         | StartFeedL()   | Inicia alimentación lado L
+0x14 |  20 | LenghtOK (L)       | Feeder | Motion | Manda          | LenghtOK_L()   | Longitud OK en tolerancia — lado L
+0x15 |  21 | LenghtNG (L)       | Feeder | Motion | Manda          | LenghtNG_L()   | Longitud fuera de tolerancia — lado L
+0x4A |  74 | LenghtOK (R)       | Feeder | Motion | Manda          | LenghtOK_R()   | Longitud OK en tolerancia — lado R
+0x4B |  75 | LenghtNG (R)       | Feeder | Motion | Manda          | LenghtNG_R()   | Longitud fuera de tolerancia — lado R
+
+────────────────────────────────────────────────────────────────────────────────
+MOTION — Otros (0x16)
+────────────────────────────────────────────────────────────────────────────────
+0x16 |  22 | Reset              | Motion | Motion | Recibe         | Reset()        | Reset de errores Motion
+
+────────────────────────────────────────────────────────────────────────────────
+PLC — Comandos y válvulas (0x19–0x23)
+────────────────────────────────────────────────────────────────────────────────
+0x19 |  25 | Cutter (R)         | Out    | PLC    | Recibe         | CutterR()      | Activa válvula cutter R
+0x1A |  26 | Cutter (L)         | Out    | PLC    | Recibe         | CutterL()      | Activa válvula cutter L
+0x1B |  27 | Gripper            | Out    | PLC    | Recibe         | Gripper()      | Activa válvula pinzas
+0x1C |  28 | Holder             | Out    | PLC    | Recibe         | Holder()       | Activa válvula holder
+0x1D |  29 | Encoder            | Out    | PLC    | Recibe         | Encoder()      | Activa válvula encoder
+0x1E |  30 | Reset              | Out    | PLC    | Recibe         | ResetPLC()     | Resetea error PLC
+0x23 |  35 | Blower             | Out    | PLC    | Recibe         | BlowerE()      | Activa válvula blower
+
+────────────────────────────────────────────────────────────────────────────────
+PLC — Errores de detalle (0x1F–0x22)
+────────────────────────────────────────────────────────────────────────────────
+0x1F |  31 | Cutter Error       | IN     | PLC    | Manda          | CutterE()      | Error cutter recibido de PLC
+0x20 |  32 | Gripper Error      | IN     | PLC    | Manda          | GripperE()     | Error gripper recibido de PLC
+0x21 |  33 | Holder Error       | IN     | PLC    | Manda          | HolderE()      | Error holder recibido de PLC
+0x22 |  34 | Encoder Error      | IN     | PLC    | Manda          | EncoderE()     | Error encoder recibido de PLC
+
+────────────────────────────────────────────────────────────────────────────────
+PLC — Estatus (0x24–0x29)
+────────────────────────────────────────────────────────────────────────────────
+0x24 |  36 | Init               | Estatus | PLC   | Recibe y manda | InitState()    | Estoy iniciando
+0x25 |  37 | Idle               | Estatus | PLC   | Recibe y manda | IdleState()    | Estoy esperando
+0x26 |  38 | Busy               | Estatus | PLC   | Recibe y manda | BusyState()    | Estoy trabajando
+0x27 |  39 | Error              | Estatus | PLC   | Recibe y manda | ErrorState()   | Tengo un problema
+0x28 |  40 | Stop               | Estatus | PLC   | Recibe y manda | StoprState()   | Me detuvieron
+0x29 |  41 | ReturnStop         | Estatus | PLC   | Recibe y manda | ReturnState()  | Completar tras stop
+
+────────────────────────────────────────────────────────────────────────────────
+PREFEEDER — Comandos (0x2A–0x2C, 0x3F, 0x4C)
+────────────────────────────────────────────────────────────────────────────────
+0x2A |  42 | Start              | In     | PreFeeder | Recibe      | Start()        | Inicia proceso
+0x2B |  43 | Stop               | In     | PreFeeder | Recibe      | Stop()         | Detiene todo proceso
+0x2C |  44 | Reset              | In     | PreFeeder | Recibe      | ResetPF()      | Resetea errores / estado general
+0x3F |  63 | Materialist        | Estatus | PreFeeder | Recibe     | Materialist()  | Modo materialista PreFeeder
+0x4C |  76 | Trigger Tfeed       | In     | PreFeeder | Recibe      | Trigger()      | Disparo Tfeed L+R — PENDIENTE
+
+────────────────────────────────────────────────────────────────────────────────
+PREFEEDER — Errores lado R (0x2D–0x32)
+────────────────────────────────────────────────────────────────────────────────
+0x2D |  45 | Buffer Full (R)    | Out    | PreFeeder | Manda       | BufferFR()     | Muestra error
+0x2E |  46 | Buffer Max (R)     | Out    | PreFeeder | Manda       | BufferMR()     | Muestra error
+0x2F |  47 | Tensioner (R)      | Out    | PreFeeder | Manda       | TensionerR()   | Muestra error
+0x30 |  48 | Cilindro (R)       | Out    | PreFeeder | Manda       | CilindroR()    | Muestra error
+0x31 |  49 | Manguera ausente (R)| Out   | PreFeeder | Manda       | MangueraR()    | Muestra error
+0x32 |  50 | Holgura (R)        | Out    | PreFeeder | Manda       | HolguraR()     | Muestra error
+
+────────────────────────────────────────────────────────────────────────────────
+PREFEEDER — Errores lado L (0x33–0x38)
+────────────────────────────────────────────────────────────────────────────────
+0x33 |  51 | Buffer Full (L)    | Out    | PreFeeder | Manda       | BufferFL()     | Muestra error
+0x34 |  52 | Buffer Max (L)     | Out    | PreFeeder | Manda       | BufferML()     | Muestra error
+0x35 |  53 | Tensioner (L)      | Out    | PreFeeder | Manda       | TensionerL()   | Muestra error
+0x36 |  54 | Cilindro (L)       | Out    | PreFeeder | Manda       | CilindroL()    | Muestra error
+0x37 |  55 | Manguera ausente (L)| Out   | PreFeeder | Manda       | MangueraL()    | Muestra error
+0x38 |  56 | Holgura (L)        | Out    | PreFeeder | Manda       | HolguraL()     | Muestra error
+
+────────────────────────────────────────────────────────────────────────────────
+PREFEEDER — Estatus (0x39–0x3E)
+────────────────────────────────────────────────────────────────────────────────
+0x39 |  57 | Init               | Estatus | PreFeeder | Recibe y manda | InitState()  | Estoy iniciando
+0x3A |  58 | Idle               | Estatus | PreFeeder | Recibe y manda | IdleState()  | Estoy esperando (bloqueo acciones)
+0x3B |  59 | Busy               | Estatus | PreFeeder | Recibe y manda | BusyState()  | En producción
+0x3C |  60 | Error              | Estatus | PreFeeder | Recibe y manda | ErrorState() | Tengo un problema
+0x3D |  61 | Stop               | Estatus | PreFeeder | Recibe y manda | StoprState() | Me detuvieron
+0x3E |  62 | ReturnStop         | Estatus | PreFeeder | Recibe y manda | ReturnState()| Completar tras stop
+
+────────────────────────────────────────────────────────────────────────────────
+MACHINE / CICLO TCM (0x40–0x49)
+────────────────────────────────────────────────────────────────────────────────
+0x40 |  64 | Start              | In     | Machine | Recibe         | StartCycle()   | Arranca lote / ciclo TCM
+0x41 |  65 | Stop               | In     | Machine | Recibe         | StopCycle()    | Detiene ciclo / abort
+0x42 |  66 | Reset              | In     | Machine | Recibe         | ResetMachine() | Limpia Error/Stop → Idle
+0x43 |  67 | Init               | Estatus | Machine | Recibe y manda | InitState()  | Estoy iniciando
+0x44 |  68 | Idle               | Estatus | Machine | Recibe y manda | IdleState()  | Estoy esperando
+0x45 |  69 | Busy               | Estatus | Machine | Recibe y manda | BusyState()  | Ciclo / lote activo
+0x46 |  70 | Error              | Estatus | Machine | Recibe y manda | ErrorState() | Tengo un problema
+0x47 |  71 | Stop               | Estatus | Machine | Recibe y manda | StoprState() | Me detuvieron
+0x48 |  72 | ReturnStop         | Estatus | Machine | Recibe y manda | ReturnState()| Completando tras stop
+0x49 |  73 | Materialist        | Estatus | Machine | Recibe y manda | Materialist()| Modo materialista máquina
+
+────────────────────────────────────────────────────────────────────────────────
+PENDIENTE — Errores de ciclo (0x4D+)
+────────────────────────────────────────────────────────────────────────────────
+0x4D |  77 | (libre)            | —      | Machine | —              | —              | Siguiente byte libre en tabla global
+       |     |                    |        |         |                |                | Propuesto: E010 lineal, E011 feed, E020 safety, E030 PF…
+
+────────────────────────────────────────────────────────────────────────────────
+RESUMEN SECUENCIA GLOBAL (bytes nuevos / recientes)
+────────────────────────────────────────────────────────────────────────────────
+0x14 → LenghtOK L
+0x15 → LenghtNG L   (subsecuente 0x16 = Reset Motion, ocupado)
+…
+0x49 → Materialist Machine
+0x4A → LenghtOK R   (implementado en Motion + HMI)
+0x4B → LenghtNG R   (implementado en Motion + HMI)
+0x4C → Trigger Tfeed L+R (pendiente — paso ciclo pf_trigger)
+0x4D → LIBRE (siguiente asignación)
+
+────────────────────────────────────────────────────────────────────────────────
+PASOS DEL CICLO (27) — referencia rápida
+────────────────────────────────────────────────────────────────────────────────
+#  | Key              | Bytes TX principales              | Bytes RX principales
+---|------------------|----------------------------------|----------------------------------
+1  | holder_on        | PLC 0x1C ON                      | —
+2  | wait_holder_on   | —                                | delay
+3  | feed             | Motion 0x13 L, 0x12 R            | 0x14/0x15 L, 0x4A/0x4B R
+4  | offset           | —                                | PENDIENTE
+5  | grippers_on      | PLC 0x1B ON                      | —
+6  | wait_grippers_on | —                                | delay
+7  | enc_set0         | Motion 0x10, 0x18                | —
+8  | holder_off       | PLC 0x1C OFF                     | —
+9  | wait_holder_open | —                                | delay
+10 | lineal_fwd       | Motion 0x05                      | 0x06 / 0x0A
+11 | wait_linear_done | —                                | delay
+12 | holder_precut    | PLC 0x1C ON                      | —
+13 | wait_holder_precut | —                              | delay
+14 | cutter_on        | PLC 0x19+0x1A ON                 | PF 0x3C Error (aborta)
+15 | wait_cutter_pulse| —                                | delay
+16 | cutter_off       | PLC 0x19+0x1A OFF                | —
+17 | wait_cutter_post | —                                | delay
+18 | prefetch_start   | Motion 0x13, 0x12                | (join paso 25)
+19 | deposit          | Motion 0x05                      | 0x06 / 0x0A
+20 | wait_deposit_dwell | —                              | delay
+21 | grippers_off     | PLC 0x1B OFF                     | —
+22 | pf_trigger       | 0x4C (L+R)                       | PENDIENTE (fire-and-forget)
+23 | wait_gripper_release | —                            | delay
+24 | home             | Motion 0x07                      | 0x06 / 0x0A
+25 | handoff          | —                                | 0x14/0x4A feed OK
+26 | wait_asentar     | —                                | delay
+27 | post_piece       | —                                | PENDIENTE
+
+Pre-lote: PLC safe (0x19–0x1C), Motion HOME (0x07), PF Start (0x2A)
+Fin lote: PLC safe, PF Stop (0x2B), Machine Idle (0x44) / Error (0x46) / Stop (0x47)
+
+================================================================================
+TABLA GLOBAL CORRIDA COMPLETA (0x01 → 0x4D)
+================================================================================
+Lista única en orden ascendente de byte. Un renglón por valor hexadecimal.
+
+Byte | Dec | Acción                  | Actuador | Módulo      | Dir            | Función           | Descripción
+-----|-----|-------------------------|----------|-------------|----------------|-------------------|----------------------------------
+0x01 |   1 | Search home             | ASDA     | Motion      | Recibe         | HomeASDA()        | Busca el home
+0x02 |   2 | Stop                    | ASDA     | Motion      | Recibe         | StopASDA()        | Detiene ASDA
+0x03 |   3 | Servo off               | ASDA     | Motion      | Recibe         | OffASDA()         | Servo apagado
+0x04 |   4 | Servo on                | ASDA     | Motion      | Recibe         | OnASDA()          | Servo energizado
+0x05 |   5 | Move to position        | ASDA     | Motion      | Recibe         | ABSPositionASDA() | Mover a posición definida
+0x06 |   6 | Position reached        | ASDA     | Motion      | Manda          | ReachedASDA()    | Llegó a la posición
+0x07 |   7 | Move to 0               | ASDA     | Motion      | Recibe         | HpASDA()          | Setear posición a 0 e ir
+0x08 |   8 | Estatus                 | ASDA     | Motion      | Recibe         | GetStatus()       | ¿Cuál es tu estatus?
+0x09 |   9 | Init                    | Motion   | Motion      | Recibe y manda | InitState()       | Estoy iniciando
+0x0A |  10 | Idle                    | Motion   | Motion      | Recibe y manda | IdleState()       | Estoy esperando
+0x0B |  11 | Busy                    | Motion   | Motion      | Recibe y manda | BusyState()       | Estoy trabajando
+0x0C |  12 | Error                   | Motion   | Motion      | Recibe y manda | ErrorState()      | Tengo un problema
+0x0D |  13 | Stop                    | Motion   | Motion      | Recibe y manda | StoprState()      | Me detuvieron
+0x0E |  14 | ReturnStop              | Motion   | Motion      | Recibe y manda | ReturnState()     | Completar mov. tras stop
+0x0F |  15 | Measure (R)             | Encoder  | Motion      | Recibe y manda | GetMeasured()     | Lee y manda posición lado R
+0x10 |  16 | Set0 (R)                | Encoder  | Motion      | Recibe         | Set0()            | Resetea cuentas lado R
+0x11 |  17 | Error                   | Encoder  | Motion      | Manda          | Error()           | No detectó cambio en lectura
+0x12 |  18 | Feed (R)                | Feeder   | Motion      | Recibe         | StartFeedR()      | Inicia alimentación lado R
+0x13 |  19 | Feed (L)                | Feeder   | Motion      | Recibe         | StartFeedL()      | Inicia alimentación lado L
+0x14 |  20 | LenghtOK (L)            | Feeder   | Motion      | Manda          | LenghtOK_L()      | Longitud OK en tolerancia — lado L
+0x15 |  21 | LenghtNG (L)            | Feeder   | Motion      | Manda          | LenghtNG_L()      | Longitud fuera de tolerancia — lado L
+0x16 |  22 | Reset                   | Motion   | Motion      | Recibe         | Reset()           | Reset de errores Motion
+0x17 |  23 | Measure (L)             | Encoder  | Motion      | Recibe y manda | GetMeasured()     | Lee y manda posición lado L
+0x18 |  24 | Set0 (L)                | Encoder  | Motion      | Recibe         | Set0()            | Resetea cuentas lado L
+0x19 |  25 | Cutter (R)              | Out      | PLC         | Recibe         | CutterR()         | Activa válvula cutter R
+0x1A |  26 | Cutter (L)              | Out      | PLC         | Recibe         | CutterL()         | Activa válvula cutter L
+0x1B |  27 | Gripper                 | Out      | PLC         | Recibe         | Gripper()         | Activa válvula pinzas
+0x1C |  28 | Holder                  | Out      | PLC         | Recibe         | Holder()          | Activa válvula holder
+0x1D |  29 | Encoder                 | Out      | PLC         | Recibe         | Encoder()         | Activa válvula encoder
+0x1E |  30 | Reset                   | Out      | PLC         | Recibe         | ResetPLC()        | Resetea error PLC
+0x1F |  31 | Cutter Error            | IN       | PLC         | Manda          | CutterE()         | Error cutter recibido de PLC
+0x20 |  32 | Gripper Error           | IN       | PLC         | Manda          | GripperE()        | Error gripper recibido de PLC
+0x21 |  33 | Holder Error            | IN       | PLC         | Manda          | HolderE()         | Error holder recibido de PLC
+0x22 |  34 | Encoder Error           | IN       | PLC         | Manda          | EncoderE()        | Error encoder recibido de PLC
+0x23 |  35 | Blower                  | Out      | PLC         | Recibe         | BlowerE()         | Activa válvula blower
+0x24 |  36 | Init                    | Estatus  | PLC         | Recibe y manda | InitState()       | Estoy iniciando
+0x25 |  37 | Idle                    | Estatus  | PLC         | Recibe y manda | IdleState()       | Estoy esperando
+0x26 |  38 | Busy                    | Estatus  | PLC         | Recibe y manda | BusyState()       | Estoy trabajando
+0x27 |  39 | Error                   | Estatus  | PLC         | Recibe y manda | ErrorState()      | Tengo un problema
+0x28 |  40 | Stop                    | Estatus  | PLC         | Recibe y manda | StoprState()      | Me detuvieron
+0x29 |  41 | ReturnStop              | Estatus  | PLC         | Recibe y manda | ReturnState()     | Completar tras stop
+0x2A |  42 | Start                   | In       | PreFeeder   | Recibe         | Start()           | Inicia proceso
+0x2B |  43 | Stop                    | In       | PreFeeder   | Recibe         | Stop()            | Detiene todo proceso
+0x2C |  44 | Reset                   | In       | PreFeeder   | Recibe         | ResetPF()         | Resetea errores / estado general
+0x2D |  45 | Buffer Full (R)         | Out      | PreFeeder   | Manda          | BufferFR()        | Muestra error
+0x2E |  46 | Buffer Max (R)          | Out      | PreFeeder   | Manda          | BufferMR()        | Muestra error
+0x2F |  47 | Tensioner (R)           | Out      | PreFeeder   | Manda          | TensionerR()      | Muestra error
+0x30 |  48 | Cilindro (R)            | Out      | PreFeeder   | Manda          | CilindroR()       | Muestra error
+0x31 |  49 | Manguera ausente (R)    | Out      | PreFeeder   | Manda          | MangueraR()       | Muestra error
+0x32 |  50 | Holgura (R)             | Out      | PreFeeder   | Manda          | HolguraR()        | Muestra error
+0x33 |  51 | Buffer Full (L)         | Out      | PreFeeder   | Manda          | BufferFL()        | Muestra error
+0x34 |  52 | Buffer Max (L)          | Out      | PreFeeder   | Manda          | BufferML()        | Muestra error
+0x35 |  53 | Tensioner (L)           | Out      | PreFeeder   | Manda          | TensionerL()      | Muestra error
+0x36 |  54 | Cilindro (L)            | Out      | PreFeeder   | Manda          | CilindroL()       | Muestra error
+0x37 |  55 | Manguera ausente (L)    | Out      | PreFeeder   | Manda          | MangueraL()       | Muestra error
+0x38 |  56 | Holgura (L)             | Out      | PreFeeder   | Manda          | HolguraL()        | Muestra error
+0x39 |  57 | Init                    | Estatus  | PreFeeder   | Recibe y manda | InitState()       | Estoy iniciando
+0x3A |  58 | Idle                    | Estatus  | PreFeeder   | Recibe y manda | IdleState()       | Estoy esperando (bloqueo acciones)
+0x3B |  59 | Busy                    | Estatus  | PreFeeder   | Recibe y manda | BusyState()       | En producción
+0x3C |  60 | Error                   | Estatus  | PreFeeder   | Recibe y manda | ErrorState()      | Tengo un problema
+0x3D |  61 | Stop                    | Estatus  | PreFeeder   | Recibe y manda | StoprState()      | Me detuvieron
+0x3E |  62 | ReturnStop              | Estatus  | PreFeeder   | Recibe y manda | ReturnState()     | Completar tras stop
+0x3F |  63 | Materialist             | Estatus  | PreFeeder   | Recibe         | Materialist()     | Modo materialista PreFeeder
+0x40 |  64 | Start                   | In       | Machine     | Recibe         | StartCycle()      | Arranca lote / ciclo TCM
+0x41 |  65 | Stop                    | In       | Machine     | Recibe         | StopCycle()       | Detiene ciclo / abort
+0x42 |  66 | Reset                   | In       | Machine     | Recibe         | ResetMachine()    | Limpia Error/Stop → Idle
+0x43 |  67 | Init                    | Estatus  | Machine     | Recibe y manda | InitState()       | Estoy iniciando
+0x44 |  68 | Idle                    | Estatus  | Machine     | Recibe y manda | IdleState()       | Estoy esperando
+0x45 |  69 | Busy                    | Estatus  | Machine     | Recibe y manda | BusyState()       | Ciclo / lote activo
+0x46 |  70 | Error                   | Estatus  | Machine     | Recibe y manda | ErrorState()      | Tengo un problema
+0x47 |  71 | Stop                    | Estatus  | Machine     | Recibe y manda | StoprState()      | Me detuvieron
+0x48 |  72 | ReturnStop              | Estatus  | Machine     | Recibe y manda | ReturnState()     | Completando tras stop
+0x49 |  73 | Materialist             | Estatus  | Machine     | Recibe y manda | Materialist()     | Modo materialista máquina
+0x4A |  74 | LenghtOK (R)            | Feeder   | Motion      | Manda          | LenghtOK_R()      | Longitud OK en tolerancia — lado R
+0x4B |  75 | LenghtNG (R)            | Feeder   | Motion      | Manda          | LenghtNG_R()      | Longitud fuera de tolerancia — lado R
+0x4C |  76 | Trigger Tfeed           | In       | PreFeeder   | Recibe         | Trigger()         | Disparo Tfeed L+R — PENDIENTE
+0x4D |  77 | (libre)                 | —        | Machine     | —              | —                 | Siguiente asignación (errores ciclo E010…)
+
+================================================================================
+CICLO COMPLETO CORRIDO (secuencia de ejecución por pieza)
+================================================================================
+Incluye pre-lote, 27 pasos por pieza y cierre de lote. TX = bytes que manda HMI/ciclo.
+
+── PRE-LOTE (una vez al arrancar) ──────────────────────────────────────────────
+  [prep]  PLC safe          TX: 0x19 OFF, 0x1A OFF, 0x1B OFF, 0x1C ON
+  [prep]  Motion HOME       TX: 0x07  →  RX: 0x06 o 0x0A
+  [prep]  PreFeeder Start   TX: 0x2A  →  RX: 0x3B Busy (o no 0x3C Error)
+  [API]   Machine Start     estado local → 0x45 Busy
+
+── POR CADA PIEZA (rep 1…qty) ─────────────────────────────────────────────────
+  1  holder_on            TX: 0x1C ON
+  2  wait_holder_on       (delay)
+  3  feed                 TX: 0x13 Feed L, 0x12 Feed R  →  RX: 0x14/0x15 L, 0x4A/0x4B R
+  4  offset               PENDIENTE
+  5  grippers_on          TX: 0x1B ON
+  6  wait_grippers_on     (delay)
+  7  enc_set0             TX: 0x10 Set0 R, 0x18 Set0 L
+  8  holder_off           TX: 0x1C OFF
+  9  wait_holder_open     (delay)
+ 10  lineal_fwd            TX: 0x05 Move  →  RX: 0x06 o 0x0A
+ 11  wait_linear_done     (delay)
+ 12  holder_precut        TX: 0x1C ON
+ 13  wait_holder_precut   (delay)
+ 14  cutter_on            TX: 0x19+0x1A ON  →  RX: aborta si PF 0x3C Error
+ 15  wait_cutter_pulse    (delay)
+ 16  cutter_off           TX: 0x19+0x1A OFF
+ 17  wait_cutter_post     (delay)
+ 18  prefetch_start       TX: 0x13+0x12 Feed (background, si rep < qty)
+ 19  deposit              TX: 0x05 Move  →  RX: 0x06 o 0x0A
+ 20  wait_deposit_dwell   (delay)
+ 21  grippers_off         TX: 0x1B OFF
+ 22  pf_trigger           TX: 0x4C Trigger L+R  PENDIENTE (fire-and-forget)
+ 23  wait_gripper_release (delay)
+ 24  home                 TX: 0x07 HOME  →  RX: 0x06 o 0x0A
+ 25  handoff              RX: 0x14/0x4A feed OK (si prefetch activo)
+ 26  wait_asentar         (delay; omitido si handoff listo)
+ 27  post_piece           PENDIENTE
+
+── FIN DE LOTE ─────────────────────────────────────────────────────────────────
+  [fin]   PLC safe          TX: 0x19–0x1C seguro
+  [fin]   PreFeeder Stop    TX: 0x2B
+  [fin]   Machine estado    OK → 0x44 Idle | Error → 0x46 | Stop → 0x47

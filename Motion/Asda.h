@@ -1,0 +1,94 @@
+#pragma once
+
+#include <Arduino.h>
+
+// ====================== Modbus RS-485 (Delta ASDA-B3) ======================
+static const uint8_t  MODBUS_ID   = 0x01;
+static const uint32_t MODBUS_BAUD = 9600;
+
+static const int RS485_RX_PIN = 16;
+static const int RS485_TX_PIN = 17;
+static const int RS485_DE_RE_PIN = -1;
+
+static const uint32_t MODBUS_PRE_TX_GAP_MS = 10;
+static const uint32_t MODBUS_FRAME_GAP_US  = 5000;
+static const uint32_t RESPONSE_TIMEOUT_MS  = 300;
+
+static const bool MODBUS_DEBUG = false;
+
+// ====================== Movimiento / homing ======================
+static const char*    DEFAULT_HOME_DIRECTION  = "F";
+static const uint16_t DEFAULT_HOME_TORQUE_PCT = 10;
+static const uint16_t DEFAULT_HOME_TIME_MS    = 150;
+static const float    DEFAULT_HOME_SPEED_RPM  = 10.0f;
+static const float    DEFAULT_MOVE_SPEED_RPM  = 1200.0f;
+static const uint16_t MOVE_RPM_MIN            = 400;
+static const uint16_t MOVE_RPM_MAX            = 3000;
+
+static const uint32_t TIMEOUT_MARGIN_MS       = 1000;
+static const uint32_t TIMEOUT_MIN_MS          = 2000;
+static const uint32_t TIMEOUT_MAX_MS          = 600000;
+static const float    LINEAR_MM_PER_MOTOR_REV = 5.0f;
+static const float    HOME_MAX_TRAVEL_MM      = 120.0f;
+
+static const uint32_t MOTION_POLL_MIN_MS = 40;
+static const uint32_t STATUS_LIVE_MIN_MS = 200;
+
+// ====================== Calibración lineal ======================
+static const uint32_t LINEAR_EGEAR_N          = 1;
+static const uint32_t FACTORY_REF_STEPS       = 770;
+static const float    FACTORY_LINEAR_ACTUATOR_MM = 45.0f;
+static const float    FACTORY_STEPS_PER_MM    =
+    ((float)FACTORY_REF_STEPS / FACTORY_LINEAR_ACTUATOR_MM);
+static const float    STEPS_PER_MM_MIN        = 1.0f;
+static const float    STEPS_PER_MM_MAX        = 200.0f;
+static const float    OFFSET_STEPS_MIN        = -5000.0f;
+static const float    OFFSET_STEPS_MAX        = 5000.0f;
+
+static const char*    ASDA_PREFS_NS           = "asda";
+
+// ====================== Registros ASDA-B3 ======================
+static const uint16_t REG_P1_087 = 0x01AE;
+static const uint16_t REG_P1_088 = 0x01B0;
+static const uint16_t REG_P2_030 = 0x023C;
+static const uint16_t REG_P3_000 = 0x0300;
+static const uint16_t REG_P3_001 = 0x0302;
+static const uint16_t REG_P3_002 = 0x0304;
+static const uint16_t REG_P3_007 = 0x030E;
+static const uint16_t REG_P5_004 = 0x0508;
+static const uint16_t REG_P5_005 = 0x050A;
+static const uint16_t REG_P5_006 = 0x050C;
+static const uint16_t REG_P5_007 = 0x050E;
+static const uint16_t REG_P5_016 = 0x0520;
+static const uint16_t REG_P5_060 = 0x0578;
+static const uint16_t REG_P6_000 = 0x0600;
+static const uint16_t REG_P6_001 = 0x0602;
+static const uint16_t REG_P6_002 = 0x0604;
+static const uint16_t REG_P6_003 = 0x0606;
+
+static const uint32_t PR1_ABSOLUTE_DEF = 0x00000002UL;
+
+// ====================== Protocolo TCP maestro (HMI) ======================
+// Bytes compartidos con HMI/motion.py — comandos (maestro→esclavo) y estados/eventos (esclavo→maestro).
+enum AsdaTcpCmd : uint8_t {
+  ASDA_CMD_HOME      = 0x01,
+  ASDA_CMD_STOP      = 0x02,
+  ASDA_CMD_OFF       = 0x03,
+  ASDA_CMD_ON        = 0x04,
+  ASDA_CMD_MOVE_ABS  = 0x05,
+  ASDA_TX_REACHED    = 0x06,
+  ASDA_CMD_MOVE_ZERO = 0x07,
+  ASDA_CMD_STATUS    = 0x08,
+  // 0x09–0x0E — estatus general del módulo Motion (ASDA + encoder + feeder)
+  // PLC_TX_ERROR / ASDA_TX_ERROR = alarma general; los bytes TX de cada
+  // sub-sistema (p. ej. 0x11 encoder, 0x15 feed, PLC 0x1F–0x22) detallan la causa.
+  ASDA_TX_INIT       = 0x09,
+  ASDA_TX_IDLE       = 0x0A,
+  ASDA_TX_BUSY       = 0x0B,
+  ASDA_TX_ERROR      = 0x0C,
+  ASDA_TX_STOP       = 0x0D,
+  ASDA_TX_RETURN     = 0x0E,
+  ASDA_CMD_RESUME    = 0x0E,  // maestro → esclavo: reanudar tras stop
+  // 0x0F reservado — encoder Measure R (ver Encoder.h)
+  ASDA_CMD_RESET_ERR = 0x16,  // alias histórico: usar MOT_CMD_RESET_ERR en Config.h
+};

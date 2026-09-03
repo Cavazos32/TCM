@@ -1,0 +1,10 @@
+{
+  "models": [
+    {
+      "name": "Modelo A — corte corto",
+      "mm": -45.0,
+      "rpm": 1200,
+      "qty": 1
+    }
+  ]
+}

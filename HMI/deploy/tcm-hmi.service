@@ -1,0 +1,17 @@
+[Unit]
+Description=TCM HMI (Flask)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/TCM/HMI
+Environment=HMI_HOST=0.0.0.0
+Environment=HMI_PORT=5050
+ExecStart=/home/pi/TCM/HMI/.venv/bin/python app.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

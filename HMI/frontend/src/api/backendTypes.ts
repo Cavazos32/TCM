@@ -1,0 +1,129 @@
+/** Tipos del snapshot JSON del backend Flask (state.py). */
+
+export interface BackendBanner {
+  text: string;
+  kind: 'info' | 'warn' | 'error' | 'ok';
+}
+
+export interface BackendModel {
+  name: string;
+  mm: number;
+  rpm: number;
+  qty?: number;
+  cantidad?: number;
+}
+
+export interface BackendCycleConfig {
+  holderOnMs: number;
+  holderOpenMs: number;
+  grippersOnMs: number;
+  gripperReleaseMs: number;
+  cutterPulseMs: number;
+  cutterPostMs: number;
+  linearDoneMs: number;
+  asentarMs: number;
+  dwellAtDestMs: number;
+  depositBatchSize: number;
+  depositExtraMm: number;
+  cutOffsetMm?: number;
+  motionWaitTimeoutS: number;
+  feedWaitTimeoutS: number;
+  pfReadyTimeoutS: number;
+}
+
+export interface BackendFlowStep {
+  id: number;
+  key: string;
+  label: string;
+  kind: 'action' | 'wait' | 'parallel';
+  delayKey?: string;
+  parallelRole?: 'start' | 'join';
+}
+
+export interface BackendCycleSnapshot {
+  byte: number;
+  name: string;
+  active: boolean;
+  paused: boolean;
+  materialist: boolean;
+  stepByStep: boolean;
+  trialMode?: boolean;
+  step: number;
+  stepName: string;
+  stepLabel: string;
+  parallelGroup?: string;
+  rep: number;
+  piecesDone?: number;
+  totalReps: number;
+  progress: number;
+  elapsedSec?: number;
+  completed?: boolean;
+  lastOk: boolean;
+  fault: string;
+  config: BackendCycleConfig;
+  flow: BackendFlowStep[];
+}
+
+export interface BackendLink {
+  connected: boolean;
+  host: string;
+  port: number;
+}
+
+export interface BackendMotion {
+  connected: boolean;
+  status: BackendBanner;
+  asdaPositionMm: number | null;
+  enc_r: string;
+  enc_l: string;
+  feedOffsetMmL: number;
+  feedOffsetMmR: number;
+}
+
+export interface BackendValve {
+  label: string;
+  on: boolean | null;
+  error: boolean | null;
+}
+
+export interface BackendPlc {
+  connected: boolean;
+  status: BackendBanner;
+  last_state_byte: number | null;
+  valves: Record<string, BackendValve>;
+}
+
+export interface BackendPfError {
+  label: string;
+  active: boolean | null;
+}
+
+export interface BackendPreFeeder {
+  connected: boolean;
+  status: BackendBanner;
+  last_state_byte: number | null;
+  errors: Record<string, BackendPfError>;
+}
+
+export interface BackendSnapshot {
+  models: BackendModel[];
+  selectedModel: number;
+  mm: number;
+  rpm: number;
+  banner: BackendBanner;
+  progress: number;
+  resumeEnabled: boolean;
+  cycle: BackendCycleSnapshot;
+  motionLink: BackendLink;
+  plcLink: BackendLink;
+  pfLink: BackendLink;
+  motion: BackendMotion;
+  plc: BackendPlc;
+  prefeeder: BackendPreFeeder;
+  logs: {
+    main: string[];
+    motion: string[];
+    plc: string[];
+    prefeeder: string[];
+  };
+}
