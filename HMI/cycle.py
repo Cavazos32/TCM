@@ -10,34 +10,26 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any, Protocol
 from prefeeder import TX_PF_BUSY, TX_PF_ERROR
+from machine_states import (
+    CMD_RESET,
+    CMD_START,
+    CMD_STOP,
+    MACHINE_STATE_BYTES,
+    STATE_LABELS,
+    TX_BUSY,
+    TX_ERROR,
+    TX_FINISH,
+    TX_IDLE,
+    TX_INIT,
+    TX_MATERIALIST,
+    TX_RETURN,
+    TX_STOP,
+)
+
 HMI_ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = HMI_ROOT / "config" / "cycle_config.json"
 
-# --- Protocolo máquina / ciclo (bytes 0x40+, tras PreFeeder 0x3F) ---
-CMD_START = 0x40
-CMD_STOP = 0x41
-CMD_RESET = 0x42
-TX_INIT = 0x43
-TX_IDLE = 0x44
-TX_BUSY = 0x45
-TX_ERROR = 0x46
-TX_STOP = 0x47
-TX_RETURN = 0x48
-TX_MATERIALIST = 0x49
-# Errores de ciclo (detalle) — TBD / no implementar aún
-# 0x4A+ — E010 lineal, E011 feed, E020 safety, E030 PF, …
-# Feed Length: 0x14/0x15 L OK/NG · 0x4A/0x4B R OK/NG (tabla global)
-# pf_trigger (pendiente): 0x4C Trigger Tfeed L+R → subsecuente global 0x4D
-STATE_LABELS = {
-    TX_INIT: "Máquina — Init (0x043)",
-    TX_IDLE: "Máquina — Idle (0x044)",
-    TX_BUSY: "Máquina — Busy (0x045)",
-    TX_ERROR: "Máquina — Error (0x046)",
-    TX_STOP: "Máquina — Stop (0x047)",
-    TX_RETURN: "Máquina — ReturnStop (0x048)",
-    TX_MATERIALIST: "Máquina — Materialist (0x049)",
-}
-MACHINE_STATE_BYTES = frozenset(STATE_LABELS.keys())
+# Protocolo máquina: machine_states.py (0x40–0x49). Andon solo refleja esos bytes.
 # Pasos atómicos (acción / delay independientes).
 # kind=parallel SOLO en: arranque prefetch (background) y join/handoff.
 # El resto es secuencia principal (action|wait) — no implica “todo a la vez”.
@@ -211,6 +203,8 @@ class CycleHost(Protocol):
     def cmd_plc_all_safe(self) -> bool: ...
     def cmd_pf_start(self) -> bool: ...
     def cmd_pf_stop(self) -> bool: ...
+    def cmd_pf_trigger_r(self) -> bool: ...
+    def cmd_pf_trigger_l(self) -> bool: ...
 
 class CycleRunner:
     """Ejecuta el flujo de CycleFlowCopy en un hilo (orquestación)."""
@@ -349,7 +343,7 @@ class CycleRunner:
         self._host.cmd_motion_stop()
         self._host.cmd_pf_stop()
         self._host.cmd_plc_all_safe()
-        self._set_state(TX_STOP, "Stop (0x041)")
+        self._set_state(TX_STOP, "Stop (0x042)")
         self._host.cycle_log("Cycle Stop (0x041)")
         return {"ok": True}
     def request_pause(self) -> dict[str, Any]:
@@ -746,7 +740,16 @@ class CycleRunner:
                     break
                 if self._enter(rep, qty, "pf_trigger"):
                     break
-                self._host.cycle_log("trigger PreFeeder (Tfeed) — fire-and-forget")
+                ok_r = self._host.cmd_pf_trigger_r()
+                ok_l = self._host.cmd_pf_trigger_l()
+                if not ok_r and not ok_l:
+                    self._fault = "pf_trigger"
+                    self._host.cycle_log("trigger PreFeeder falló (R+L)")
+                    break
+                self._host.cycle_log(
+                    f"trigger PreFeeder Tfeed — R(0x4C)={'ok' if ok_r else 'fail'} "
+                    f"L(0x51)={'ok' if ok_l else 'fail'}"
+                )
                 if self._after_step("pf_trigger"):
                     break
                 if self._do_wait(rep, qty, "wait_gripper_release", "gripper_release_ms"):

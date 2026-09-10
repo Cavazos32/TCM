@@ -66,14 +66,14 @@ button.primary{background:var(--accent);border-color:var(--accent);color:#0d1117
 <p class="sub">Master orquesta L/R · errores agregados · control manual global · triggers/settings por lado (API)</p>
 <div class="shortcuts">
 <a class="shortcut" id="link-ui-l" href="/ui/l" target="_blank" rel="noopener">UI L · 10.10.32.101</a>
-<a class="shortcut" id="link-ui-r" href="/ui/r" target="_blank" rel="noopener">UI R · 10.10.32.40</a>
+<a class="shortcut" id="link-ui-r" href="/ui/r" target="_blank" rel="noopener">UI R · 10.10.32.102</a>
 </div>
 <div id="paused-banner" class="paused" hidden>PAUSE (Nivel 2) — Reset o Detener para continuar</div>
 <section class="status-card">
 <h2>Comunicación</h2>
 <div class="status-bar"><span class="status-dot ok" id="dot-wifi"></span><span id="txt-wifi">WiFi Master: …</span></div>
 <div class="status-bar"><span class="status-dot" id="dot-ml"></span><span id="txt-ml">Master ↔ L (.30): …</span></div>
-<div class="status-bar"><span class="status-dot" id="dot-mr"></span><span id="txt-mr">Master ↔ R (.40): …</span></div>
+<div class="status-bar"><span class="status-dot" id="dot-mr"></span><span id="txt-mr">Master ↔ R (.102): …</span></div>
 </section>
 <section class="status-card">
 <h2>Control &amp; Estado</h2>
@@ -152,7 +152,7 @@ document.getElementById('txt-wifi').textContent='WiFi Master: '+(d.wifiOk?('OK '
 setDotEl('dot-ml',linkDot(ml));
 setDotEl('dot-mr',linkDot(mr));
 document.getElementById('txt-ml').textContent='Master ↔ '+linkTxt('L (.30)',ml);
-document.getElementById('txt-mr').textContent='Master ↔ '+linkTxt('R (.40)',mr);
+document.getElementById('txt-mr').textContent='Master ↔ '+linkTxt('R (.102)',mr);
 applyErrorGlobal(me,d.paused);
 document.getElementById('paused-banner').hidden=!d.paused;
 applySide('l',d.l);
@@ -165,7 +165,7 @@ var proc=document.getElementById('tog-proc');if(proc&&!proc._user)proc.checked=!
 setDotEl('dot-wifi','err');
 document.getElementById('txt-wifi').textContent='Poll: '+(e&&e.message?e.message:'sin respuesta')+' — prueba /ping y /api/health';
 setDotEl('dot-ml','err');document.getElementById('txt-ml').textContent='Master ↔ L (.30): poll pendiente';
-setDotEl('dot-mr','err');document.getElementById('txt-mr').textContent='Master ↔ R (.40): poll pendiente';
+setDotEl('dot-mr','err');document.getElementById('txt-mr').textContent='Master ↔ R (.102): poll pendiente';
 });}
 function autoFetch(q){return fetch('/api/auto?'+q,{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){if(!d.ok)throw new Error(d.error||'fail');poll();}).catch(function(e){alert(e&&e.message?e.message:'Error de conexión');});}
 function autoCmd(action){

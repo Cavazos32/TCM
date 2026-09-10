@@ -3,7 +3,7 @@
 #include <Arduino.h>
 
 // ====================== LADO L / R ======================
-// Comentada = L (.30) | descomentada = R (.40)
+// Comentada = L | descomentada = R
 //#define PREFEEDER_SIDE_RIGHT
 
 #ifndef PREFEEDER_SIDE_RIGHT
@@ -16,7 +16,8 @@ constexpr uint8_t  FAULT_CODE_BASE     = 20;  // wire: base+PfErrorId → ver St
 #else
 #define PREFEEDER_SIDE_TAG  "R"
 #define PREFEEDER_SIDE_ROLE "prefeeder_R"
-static const IPAddress STA_IP(10, 10, 32, 40);
+// .40 intermitente (posible conflicto DHCP/ARP). R usa .102.
+static const IPAddress STA_IP(10, 10, 32, 102);
 constexpr uint16_t SERVO_PWM_ACTIVE_US = 2000;
 constexpr uint8_t  FAULT_CODE_BASE     = 30;  // wire: base+PfErrorId → ver Status_Mode.h
 #endif
@@ -56,7 +57,7 @@ constexpr uint8_t  SERVO_LEDC_BITS        = 14;
 constexpr uint32_t DEREELER_START_DELAY_MS = 100;
 
 // ====================== RED / WiFi ======================
-// L: http://10.10.32.101 | R: http://10.10.32.40 | Master: http://10.10.32.100
+// L: http://10.10.32.101 | R: http://10.10.32.102 | Master: http://10.10.32.100
 // Master TCP → L/R :8765 (esclavos independientes; ver PreFeeder_Master/master_cmds.h)
 //   Globales (Master→L+R): start/stop/reset, Materialista, In process, refill manual, …
 //   Volátiles (Master→L o R): trigger, settings, pieceLength, feedSpeed, …
@@ -71,7 +72,7 @@ constexpr uint32_t PEER_STATUS_FAST_MS = 350;
 constexpr unsigned long WIFI_CONNECT_TIMEOUT_MS = 30000;
 
 // ====================== MOTORES ======================
-constexpr uint16_t MOTOR_MICROSTEP    = 32;
+constexpr uint16_t MOTOR_MICROSTEP    = 16;  // DM556 @ 3200 pulsos/rev (200×16)
 constexpr float    MOTOR_ACCEL        = 1000.0f;
 constexpr float    MOTOR_DECEL        = 1000.0f;
 constexpr float    MOTOR_RPM_MIN      = 1.0f;
@@ -94,8 +95,17 @@ constexpr float TENSION_BOOST_RPM_OFFSET = 30.0f;
 
 // ====================== BUFFER / HOLGURA ======================
 constexpr float BUFFER_REFILL_FAULT_SEC = 10.0f;
-constexpr float M2_HOLGURA_FAULT_SEC    = 2.5f;
-constexpr uint32_t M2_HOLGURA_FILTER_MS = 80;
+constexpr float M2_HOLGURA_FAULT_SEC      = 1.5f;   // ausente ≥ esto → PF_ERR_HOLGURA (UI/NVS)
+constexpr float M2_HOLGURA_FAULT_SEC_MIN  = 0.3f;
+constexpr float M2_HOLGURA_FAULT_SEC_MAX  = 30.0f;
+constexpr uint32_t M2_HOLGURA_FILTER_MS   = 80;
+constexpr uint32_t M2_HOLGURA_HELPER_ABSENT_MS     = 100;  // ausente ≥ esto → helper feed
+constexpr uint32_t M2_HOLGURA_HELPER_ABSENT_MS_MIN = 20;
+constexpr uint32_t M2_HOLGURA_HELPER_ABSENT_MS_MAX = 5000;
+constexpr float M2_HOLGURA_HELPER_RPM_DEFAULT = MOTOR_RPM_DEFAULT;
+constexpr float M2_HOLGURA_HELPER_SEC_DEFAULT = 1.0f;
+constexpr float M2_HOLGURA_HELPER_SEC_MIN     = 0.05f;
+constexpr float M2_HOLGURA_HELPER_SEC_MAX     = 60.0f;
 constexpr uint32_t BUFFER_FULL_ON_FILTER_MS  = 80;
 constexpr uint32_t BUFFER_FULL_OFF_FILTER_MS = 200;
 constexpr uint32_t BUFFER_FULL_GLITCH_MS     = 40;

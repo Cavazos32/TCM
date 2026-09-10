@@ -347,6 +347,14 @@ export function useHmiState() {
     api.prefeederAction('materialist').catch(() => {});
   }, []);
 
+  const pfTriggerR = useCallback(() => {
+    api.prefeederAction('trigger_r').catch(() => {});
+  }, []);
+
+  const pfTriggerL = useCallback(() => {
+    api.prefeederAction('trigger_l').catch(() => {});
+  }, []);
+
   const clearLogs = useCallback((target: 'main' | 'motion' | 'plc' | 'prefeeder' | 'all') => {
     setView((prev) => ({ ...prev, logs: [] }));
     api.clearLog(target).catch(() => {});
@@ -400,6 +408,8 @@ export function useHmiState() {
     pfStop,
     pfReset,
     pfMaterialist,
+    pfTriggerR,
+    pfTriggerL,
     clearLogs,
     filterLogs,
     parseLogs,

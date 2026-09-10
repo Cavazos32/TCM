@@ -174,6 +174,8 @@ function AppMain() {
             onStop={hmi.pfStop}
             onReset={hmi.pfReset}
             onMaterialist={hmi.pfMaterialist}
+            onTriggerR={hmi.pfTriggerR}
+            onTriggerL={hmi.pfTriggerL}
             showLogs={showLogs}
             logs={showLogs ? hmi.filterLogs('PREFEEDER') : []}
             onClearLogs={() => hmi.clearLogs('prefeeder')}

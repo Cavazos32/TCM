@@ -84,6 +84,9 @@ static bool motionTcpNotifyFeedOkL = false;
 static bool motionTcpNotifyFeedNgL = false;
 static bool motionTcpNotifyFeedOkR = false;
 static bool motionTcpNotifyFeedNgR = false;
+static bool motionTcpNotifyLaserR = false;
+static bool motionTcpNotifyLaserL = false;
+static bool motionTcpNotifySafety = false;
 
 // =============================================================================
 // ENCODER — estado runtime (dos unidades físicas L / R)
@@ -760,7 +763,7 @@ bool communicationTest(String& detail) {
 }
 
 // =============================================================================
-// ASDA — API interna (HTTP + TCP maestro) — protocolo en Asda.h (AsdaTcpCmd)
+// ASDA — API interna (HTTP + TCP maestro) — opcodes en MotionStates.h
 // =============================================================================
 
 static bool asdaStartHome(bool forward, String& err) {
@@ -2588,6 +2591,81 @@ static void motionTcpPollFeedEvents() {
   }
 }
 
+// Láseres / safety exhaust — stubs + poll opcional (MOT_IO_SENSOR_EVENTS)
+static void LaserR() {
+  // TODO: TX MOT_ERR_LASER_R (0x4D)
+}
+static void LaserL() {
+  // TODO: TX MOT_ERR_LASER_L (0x4E)
+}
+static void Exhaust() {
+  // TODO: TX MOT_ERR_EXHAUST (0x4F) — Error desfoga el aire
+}
+
+static bool motionSensorActiveLaser(uint8_t pin) {
+  return digitalRead(pin) == LOW;  // INPUT_PULLUP: activo en LOW
+}
+
+static bool motionSensorActiveSafety() {
+#if PIN_ESTOP_ACTIVE_HIGH
+  return digitalRead(PIN_SAFETY_EXHAUST) == HIGH;
+#else
+  return digitalRead(PIN_SAFETY_EXHAUST) == LOW;
+#endif
+}
+
+static void motionPollIoSensors() {
+#if !MOT_IO_SENSOR_EVENTS
+  return;
+#else
+  static bool lastLaserR = false, lastLaserL = false, lastSafety = false;
+  static bool rawLaserR = false, rawLaserL = false, rawSafety = false;
+  static uint32_t tLaserR = 0, tLaserL = 0, tSafety = 0;
+  const uint32_t now = millis();
+
+  const bool rLaserR = motionSensorActiveLaser(LRX_LaserR);
+  if (rLaserR != rawLaserR) { rawLaserR = rLaserR; tLaserR = now; }
+  else if ((now - tLaserR) >= MOT_SENSOR_DEBOUNCE_MS && rLaserR != lastLaserR) {
+    lastLaserR = rLaserR;
+    if (rLaserR) { motionTcpNotifyLaserR = true; LaserR(); }
+  }
+
+  const bool rLaserL = motionSensorActiveLaser(LRX_LaserL);
+  if (rLaserL != rawLaserL) { rawLaserL = rLaserL; tLaserL = now; }
+  else if ((now - tLaserL) >= MOT_SENSOR_DEBOUNCE_MS && rLaserL != lastLaserL) {
+    lastLaserL = rLaserL;
+    if (rLaserL) { motionTcpNotifyLaserL = true; LaserL(); }
+  }
+
+  const bool rSafety = motionSensorActiveSafety();
+  if (rSafety != rawSafety) { rawSafety = rSafety; tSafety = now; }
+  else if ((now - tSafety) >= MOT_SENSOR_DEBOUNCE_MS && rSafety != lastSafety) {
+    lastSafety = rSafety;
+    if (rSafety) { motionTcpNotifySafety = true; Exhaust(); }
+  }
+#endif
+}
+
+static void motionTcpPollIoSensorEvents() {
+#if !MOT_IO_SENSOR_EVENTS
+  return;
+#else
+  if (!asdaTcpLinkOk()) return;
+  if (motionTcpNotifyLaserR) {
+    motionTcpNotifyLaserR = false;
+    motionTcpTxEvent("laser", MOT_ERR_LASER_R, "LaserR");
+  }
+  if (motionTcpNotifyLaserL) {
+    motionTcpNotifyLaserL = false;
+    motionTcpTxEvent("laser", MOT_ERR_LASER_L, "LaserL");
+  }
+  if (motionTcpNotifySafety) {
+    motionTcpNotifySafety = false;
+    motionTcpTxEvent("safety", MOT_ERR_EXHAUST, "Exhaust");
+  }
+#endif
+}
+
 static void asdaTcpPollEvents() {
   if (!asdaTcpLinkOk()) return;
 
@@ -2611,6 +2689,7 @@ static void asdaTcpPollEvents() {
   asdaTcpPushStateIfChanged();
   motionTcpPollMeasureEvents();
   motionTcpPollFeedEvents();
+  motionTcpPollIoSensorEvents();
 }
 
 static void serviceAsdaTcp() {
@@ -2767,6 +2846,7 @@ void loop() {
     }
   }
   server.handleClient();
+  motionPollIoSensors();
   serviceAsdaTcp();
   if (motionJobActive)
     pollMotionOnce();

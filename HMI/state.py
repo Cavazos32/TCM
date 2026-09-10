@@ -505,6 +505,12 @@ class HmiState:
     def cmd_pf_stop(self) -> bool:
         return self._pf_client.cmd_stop()
 
+    def cmd_pf_trigger_r(self) -> bool:
+        return self._manual_pf(self._pf_client.cmd_trigger_r)
+
+    def cmd_pf_trigger_l(self) -> bool:
+        return self._manual_pf(self._pf_client.cmd_trigger_l)
+
     def get_cycle_config(self) -> dict:
         return self._cycle.get_config().to_dict()
 
@@ -689,6 +695,8 @@ class HmiState:
             "stop": self._pf_client.cmd_stop,
             "reset": self._pf_client.cmd_reset,
             "materialist": self._pf_client.cmd_materialist,
+            "trigger_r": self._pf_client.cmd_trigger_r,
+            "trigger_l": self._pf_client.cmd_trigger_l,
         }
         fn = handlers.get(action)
         if not fn:

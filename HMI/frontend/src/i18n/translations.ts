@@ -180,6 +180,9 @@ export const translations = {
     status_feeding: 'FEEDING',
     status_idle: 'IDLE',
     btn_materialist: 'Materialist',
+    btn_trigger_r: 'Trigger R',
+    btn_trigger_l: 'Trigger L',
+    btn_trigger_both: 'Trigger L+R',
     btn_jog: 'Jog',
     btn_reset: 'Reset',
     channel_left: 'Canal Izquierdo',
@@ -191,6 +194,7 @@ export const translations = {
     sensor_active: 'ACTIVO',
     sensor_inactive: 'INACTIVO',
     link_label: 'Enlace',
+    trigger_sim_hint: 'Simula el Tfeed del ciclo (opcode)',
 
     // Log Terminal
     logs_title: 'LOG / ERRORES',
@@ -417,6 +421,9 @@ export const translations = {
     status_feeding: 'FEEDING',
     status_idle: 'IDLE',
     btn_materialist: 'Materialist',
+    btn_trigger_r: 'Trigger R',
+    btn_trigger_l: 'Trigger L',
+    btn_trigger_both: 'Trigger L+R',
     btn_jog: 'Jog',
     btn_reset: 'Reset',
     channel_left: 'Left Channel',
@@ -428,6 +435,7 @@ export const translations = {
     sensor_active: 'ACTIVE',
     sensor_inactive: 'INACTIVE',
     link_label: 'Link',
+    trigger_sim_hint: 'Simulate cycle Tfeed (opcode)',
 
     // Log Terminal
     logs_title: 'LOGS / ERRORS',

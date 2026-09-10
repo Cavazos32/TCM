@@ -68,27 +68,5 @@ static const uint16_t REG_P6_003 = 0x0606;
 
 static const uint32_t PR1_ABSOLUTE_DEF = 0x00000002UL;
 
-// ====================== Protocolo TCP maestro (HMI) ======================
-// Bytes compartidos con HMI/motion.py — comandos (maestro→esclavo) y estados/eventos (esclavo→maestro).
-enum AsdaTcpCmd : uint8_t {
-  ASDA_CMD_HOME      = 0x01,
-  ASDA_CMD_STOP      = 0x02,
-  ASDA_CMD_OFF       = 0x03,
-  ASDA_CMD_ON        = 0x04,
-  ASDA_CMD_MOVE_ABS  = 0x05,
-  ASDA_TX_REACHED    = 0x06,
-  ASDA_CMD_MOVE_ZERO = 0x07,
-  ASDA_CMD_STATUS    = 0x08,
-  // 0x09–0x0E — estatus general del módulo Motion (ASDA + encoder + feeder)
-  // PLC_TX_ERROR / ASDA_TX_ERROR = alarma general; los bytes TX de cada
-  // sub-sistema (p. ej. 0x11 encoder, 0x15 feed, PLC 0x1F–0x22) detallan la causa.
-  ASDA_TX_INIT       = 0x09,
-  ASDA_TX_IDLE       = 0x0A,
-  ASDA_TX_BUSY       = 0x0B,
-  ASDA_TX_ERROR      = 0x0C,
-  ASDA_TX_STOP       = 0x0D,
-  ASDA_TX_RETURN     = 0x0E,
-  ASDA_CMD_RESUME    = 0x0E,  // maestro → esclavo: reanudar tras stop
-  // 0x0F reservado — encoder Measure R (ver Encoder.h)
-  ASDA_CMD_RESET_ERR = 0x16,  // alias histórico: usar MOT_CMD_RESET_ERR en Config.h
-};
+// ====================== Protocolo TCP: MotionStates.h ======================
+#include "MotionStates.h"

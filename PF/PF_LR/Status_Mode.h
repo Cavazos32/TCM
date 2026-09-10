@@ -160,11 +160,12 @@ static inline PfMachineState pfMachineStateResolve(bool materialist, bool inProc
     return PF_MS_ERROR;
   if (materialist)
     return PF_MS_MATERIALIST;
-  if (autoEnabled)
-    return PF_MS_START;
+  // In process manda sobre el quieto (antes autoEnabled → start tapaba in_process).
   if (inProcess)
     return PF_MS_IN_PROCESS;
-  return PF_MS_PRODUCTION;
+  // Quieto: sensores bloqueados hasta Iniciar / In process.
+  (void)autoEnabled;
+  return PF_MS_IDLE;
 }
 
 static inline const char* pfMachineStateName(PfMachineState state)

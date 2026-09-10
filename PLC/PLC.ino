@@ -17,7 +17,7 @@
 
 #include <WiFi.h>
 #include "Config.h"
-#include "Plc.h"
+#include "PlcStates.h"
 
 WiFiServer tcpServer(PLCA_TCP_PORT);
 WiFiClient tcpClient;
@@ -137,7 +137,8 @@ static void valveWritePin(uint8_t pin, bool on)
 static void applyPlcOutputs()
 {
   stCutters = stCutterR || stCutterL;
-  valveWritePin(PIN_OUT_CUTTERS,  stCutters);
+  valveWritePin(PIN_OUT_CUTTER_R, stCutterR);
+  valveWritePin(PIN_OUT_CUTTER_L, stCutterL);
   valveWritePin(PIN_OUT_GRIPPERS, stGrippers);
   valveWritePin(PIN_OUT_HOLDER,   stHolder);
   valveWritePin(PIN_OUT_ENCODER,  stEncoder);
@@ -845,13 +846,15 @@ void setup()
   pinMode(PIN_HOLDER, INPUT_PULLUP);
   pinMode(PIN_ENCODER, INPUT_PULLUP);
 
-  pinMode(PIN_OUT_CUTTERS, OUTPUT);
+  pinMode(PIN_OUT_CUTTER_R, OUTPUT);
+  pinMode(PIN_OUT_CUTTER_L, OUTPUT);
   pinMode(PIN_OUT_GRIPPERS, OUTPUT);
   pinMode(PIN_OUT_HOLDER, OUTPUT);
   pinMode(PIN_OUT_ENCODER, OUTPUT);
   pinMode(PIN_OUT_BLOWER, OUTPUT);
   pinMode(PIN_OUT_RESET, OUTPUT);
-  digitalWrite(PIN_OUT_CUTTERS, VALVE_ACTIVE_HIGH ? LOW : HIGH);
+  digitalWrite(PIN_OUT_CUTTER_R, VALVE_ACTIVE_HIGH ? LOW : HIGH);
+  digitalWrite(PIN_OUT_CUTTER_L, VALVE_ACTIVE_HIGH ? LOW : HIGH);
   digitalWrite(PIN_OUT_GRIPPERS, VALVE_ACTIVE_HIGH ? LOW : HIGH);
   digitalWrite(PIN_OUT_HOLDER, VALVE_ACTIVE_HIGH ? LOW : HIGH);
   digitalWrite(PIN_OUT_ENCODER, VALVE_ACTIVE_HIGH ? LOW : HIGH);

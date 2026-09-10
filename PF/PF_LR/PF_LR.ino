@@ -77,13 +77,21 @@ static uint32_t lastPeerTrigMsLeft = UINT32_MAX;
 float commandedRpm  = 0.0f;
 float commandedRpm2 = 0.0f;
 
-volatile float motor2RpmSetting       = MOTOR_RPM_DEFAULT;  // RPM durante alimentación
+volatile float motor2RpmSetting       = MOTOR_RPM_DEFAULT;  // RPM durante alimentación (trigger TCP)
 volatile float motor2TriggerFeedSec   = M2_TRIGGER_FEED_DEFAULT;  // Tfeed calculado
 volatile float motor2FeedSpeedMmS     = M2_FEED_SPEED_MM_S_DEFAULT;
 volatile float motor2PieceLengthMm    = 0.0f;  // desde modelo TCM (solo visual + cálculo)
 volatile Motor2Phase motor2Phase      = M2_PHASE_IDLE;
+volatile Motor2FeedSource motor2FeedSource = M2_FEED_NONE;
+volatile float motor2ActiveFeedRpm = 0.0f;   // RPM del timed feed en curso
 volatile uint32_t motor2TriggerFeedEndMs = 0;
 volatile bool motor2BufferActiveHigh  = true;   // Holgura: activo en HIGH (LED sensor OFF / pull-up)
+// Helper holgura (alivio rápido; prioridad > trigger TCP) — params UI propios
+volatile float    holguraHelperRpm       = M2_HOLGURA_HELPER_RPM_DEFAULT;
+volatile float    holguraHelperSec       = M2_HOLGURA_HELPER_SEC_DEFAULT;
+volatile uint32_t holguraHelperAbsentMs  = M2_HOLGURA_HELPER_ABSENT_MS;
+volatile float    holguraFaultSec        = M2_HOLGURA_FAULT_SEC;
+static volatile bool holguraHelperFiredThisAbsence = false;
 TaskHandle_t   motor2TaskHandle       = nullptr;
 
 static void recalculateTriggerFeedSec()
@@ -105,7 +113,9 @@ static void recalculateTriggerFeedSec()
 
 static volatile bool holguraStablePresent   = false;
 static volatile bool holguraFilterPending   = false;
-static uint32_t      holguraFilterChangeMs  = 0;
+static volatile uint32_t holguraFilterChangeMs = 0;
+// Reloj propio del helper (tarea m2) — no comparte con el monitor de falla del loop.
+static volatile uint32_t holguraHelperAbsentStartMs = 0;
 
 static volatile bool bufferFullStable       = false;
 static uint32_t      bufferFullHighAccumMs  = 0;
@@ -126,7 +136,7 @@ uint32_t  tensionReverseHighSinceMs = 0;  // debounce para inversión AUTO
 static bool tensionReverseStable = false;
 uint32_t  bufferEmptySinceMs = 0;
 uint32_t  bufferFullRecoverSinceMs = 0;  // Buffer Full estable antes de cancelar timeout
-uint32_t  holguraAbsentSinceMs = 0;
+volatile uint32_t holguraAbsentSinceMs = 0;
 SystemFault systemFault = FAULT_NONE;
 volatile bool motor2AbortRequested = false;
 
@@ -156,6 +166,10 @@ static void saveSettings()
   prefs.putFloat("m2_len_mm", (float)motor2PieceLengthMm);
   prefs.putFloat("m2_trig_s", (float)motor2TriggerFeedSec);  // cache del Tfeed calculado
   prefs.putBool("m2_buf_hi", motor2BufferActiveHigh);
+  prefs.putFloat("h_help_rpm", (float)holguraHelperRpm);
+  prefs.putFloat("h_help_s", (float)holguraHelperSec);
+  prefs.putUInt("h_help_ms", (uint32_t)holguraHelperAbsentMs);
+  prefs.putFloat("h_fault_s", (float)holguraFaultSec);
   prefs.putFloat("tens_cd", tensionCooldownSec);
   prefs.putUInt("servo_pwm", (uint32_t)servoActivePwmUs);
   prefs.putUInt("refill_ms", refillPulseMs);
@@ -175,6 +189,10 @@ static void loadSettings()
   motor2TriggerFeedSec = prefs.getFloat("m2_trig_s", M2_TRIGGER_FEED_DEFAULT);
   const bool bufMigrated = prefs.getBool("m2_buf_v2", false);
   motor2BufferActiveHigh = prefs.getBool("m2_buf_hi", true);
+  holguraHelperRpm = prefs.getFloat("h_help_rpm", M2_HOLGURA_HELPER_RPM_DEFAULT);
+  holguraHelperSec = prefs.getFloat("h_help_s", M2_HOLGURA_HELPER_SEC_DEFAULT);
+  holguraHelperAbsentMs = prefs.getUInt("h_help_ms", M2_HOLGURA_HELPER_ABSENT_MS);
+  holguraFaultSec = prefs.getFloat("h_fault_s", M2_HOLGURA_FAULT_SEC);
   tensionCooldownSec = prefs.getFloat("tens_cd", TENSION_COOLDOWN_DEFAULT);
   servoActivePwmUs = (uint16_t)prefs.getUInt("servo_pwm", (uint32_t)SERVO_PWM_ACTIVE_US);
   refillPulseMs = prefs.getUInt("refill_ms", REFILL_PULSE_MS_DEFAULT);
@@ -199,6 +217,13 @@ static void loadSettings()
   if (motor2PieceLengthMm < 0.0f) motor2PieceLengthMm = 0.0f;
   if (motor2PieceLengthMm > 60000.0f) motor2PieceLengthMm = 60000.0f;
   recalculateTriggerFeedSec();
+  holguraHelperRpm = constrain(holguraHelperRpm, MOTOR_RPM_MIN, MOTOR_RPM_MAX);
+  holguraHelperSec = constrain(holguraHelperSec, M2_HOLGURA_HELPER_SEC_MIN, M2_HOLGURA_HELPER_SEC_MAX);
+  if (holguraHelperAbsentMs < M2_HOLGURA_HELPER_ABSENT_MS_MIN)
+    holguraHelperAbsentMs = M2_HOLGURA_HELPER_ABSENT_MS_MIN;
+  if (holguraHelperAbsentMs > M2_HOLGURA_HELPER_ABSENT_MS_MAX)
+    holguraHelperAbsentMs = M2_HOLGURA_HELPER_ABSENT_MS_MAX;
+  holguraFaultSec = constrain(holguraFaultSec, M2_HOLGURA_FAULT_SEC_MIN, M2_HOLGURA_FAULT_SEC_MAX);
   tensionCooldownSec = constrain(tensionCooldownSec, TENSION_COOLDOWN_MIN, TENSION_COOLDOWN_MAX);
   servoActivePwmUs = constrain(servoActivePwmUs, SERVO_PWM_MIN_US, SERVO_PWM_MAX_US);
 }
@@ -235,6 +260,8 @@ static void servoWriteUsIfChanged(uint16_t us)
 
 static void servoStop()
 {
+  if (!servoRunning && servoLastOutputUs == SERVO_PWM_NEUTRAL_US)
+    return;
   servoWriteUsForced(SERVO_PWM_NEUTRAL_US);
   servoRunning = false;
 }
@@ -375,14 +402,18 @@ static void updateBufferFullFilter()
   }
 }
 
-// Corta DeReeler+servo. Solo llama Stop()/PWM si aún hay movimiento o salida activa
-// (Stop() repetido cada loop/5 ms con RMT idle → vibración / glitches).
+// Corta DeReeler+servo. Un Stop() por consigna; si el RMT ignora, reintenta cada 250 ms.
+// Stop() cada loop con currentRPM()>1 → vibración / “trabado”.
 static void forceStopDereelerAndServo()
 {
-  const bool motorBusy = motor
-      && (fabsf(commandedRpm) > 0.01f || fabsf(motor->currentRPM()) > 1.0f);
-  if (motorBusy)
+  static uint32_t lastStopMs = 0;
+  const bool commanded = motor && fabsf(commandedRpm) > 0.01f;
+  const bool stillSpinning = motor && fabsf(motor->currentRPM()) > 1.0f;
+  if (commanded || (stillSpinning && (uint32_t)(millis() - lastStopMs) >= 250u))
+  {
     motor->Stop();
+    lastStopMs = millis();
+  }
   commandedRpm = 0.0f;
   tensionBoostUntilMs = 0;
 
@@ -418,10 +449,10 @@ static bool refillOverrideActive()
   return refillDereelerOn || refillServoOn || refillFeederOn;
 }
 
-// Materialista + pulso manual: Buffer Full / Max no deben matar RC/DeReeler manual.
-static bool refillIgnoresBufferFull()
+// Materialista + pulso manual: Buffer Full / Max / falta sensor no cortan el movimiento.
+static bool refillManualActive()
 {
-  return idleMode && systemFault == FAULT_NONE && refillOverrideActive();
+  return idleMode && refillOverrideActive();
 }
 
 static void refillClearFlags()
@@ -819,7 +850,7 @@ static void applyRefillOutputs()
     servoWriteUsIfChanged(servoMotionPwmUs());
     servoRunning = true;
   }
-  else
+  else if (servoRunning || servoLastOutputUs != SERVO_PWM_NEUTRAL_US)
     servoStop();
 
   // Feeder se aplica en motor2HolguraTask vía refillFeederOn.
@@ -845,7 +876,7 @@ static bool refillStartChannel(volatile bool& onFlag, volatile uint32_t& pulseUn
 
 static void serviceRefillPulses()
 {
-  if (!idleMode || systemFault != FAULT_NONE)
+  if (!idleMode)
   {
     if (refillOverrideActive())
     {
@@ -869,14 +900,16 @@ static void serviceRefillPulses()
 // on=false → apaga de inmediato.
 static bool applyRefillCommand(const String& which, bool on)
 {
-  if (systemFault != FAULT_NONE)
+  if (!idleMode)
   {
-    refillClearFlags();
-    return false;
+    if (systemFault != FAULT_NONE)
+    {
+      refillClearFlags();
+      return false;
+    }
+    if (on)
+      return false;
   }
-
-  if (on && !idleMode)
-    return false;
 
   if (which == "material")
   {
@@ -975,8 +1008,15 @@ static void autoEnable(bool openFillWindow = true)
 
   refillClearFlags();
   autoEnabled = true;
+  if (idleMode)
+  {
+    motorRun(0.0f);
+    autoState = AUTO_HOME_HOLD;
+    syncServoToAutoState();
+    return;
+  }
   // GPIO 27 se ignora en Materialista (refill operador ↔ prefeeder).
-  if (!idleMode && hoseBeltAbsentActive())
+  if (hoseBeltAbsentActive())
   {
     enterSystemFault(FAULT_HOSE_ABSENT);
     return;
@@ -992,15 +1032,7 @@ static void autoEnable(bool openFillWindow = true)
     return;
   }
 
-  if (idleMode)
-  {
-    motorRun(0.0f);
-    autoState = AUTO_HOME_HOLD;
-    syncServoToAutoState();
-    return;
-  }
-
-  // Production: one-shot Iniciar o In process del TCM.
+  // Idle (quieto): one-shot Iniciar o In process del TCM.
   if (tcmInProcess)
     resumeAutoFromSensors();
   else if (openFillWindow)
@@ -1022,11 +1054,11 @@ static void applyIdleMode(bool on)
   idleMode = on;
   if (on)
   {
-    if (systemFault == FAULT_HOSE_ABSENT)
+    // Manual: sensores (Max/Full/holgura/…) no deben dejar el refill trabado.
+    if (systemFault != FAULT_NONE && systemFault != FAULT_OPERATOR_STOP)
     {
       systemFault = FAULT_NONE;
-      if (autoState == AUTO_HOSE_FAULT)
-        autoState = autoEnabled ? AUTO_HOME_HOLD : AUTO_OFF;
+      autoState = autoEnabled ? AUTO_HOME_HOLD : AUTO_OFF;
     }
     if (!refillOverrideActive())
     {
@@ -1049,7 +1081,7 @@ static void applyIdleMode(bool on)
       servoStop();
       motor2AbortRequested = true;
     }
-    Serial.println("MODE: Production");
+    Serial.println("MODE: Idle");
     if (hoseBeltAbsentActive())
       enterSystemFault(FAULT_HOSE_ABSENT);
     else if (tcmInProcess && autoEnabled && systemFault == FAULT_NONE)
@@ -1150,9 +1182,16 @@ static void autoReset()
 // Logica que corre siempre en loop() cuando autoEnabled
 static void serviceAuto()
 {
-  if (refillOverrideActive() && idleMode && systemFault == FAULT_NONE)
+  if (idleMode)
   {
-    applyRefillOutputs();
+    if (refillOverrideActive())
+      applyRefillOutputs();
+    else
+    {
+      if (fabsf(commandedRpm) > 0.01f)
+        motorRun(0.0f);
+      syncServoToAutoState();
+    }
     return;
   }
 
@@ -1381,12 +1420,22 @@ static void appendMotorObject(String& json, uint8_t idx, const char* key)
   json += "}";
 }
 
+static const char* motor2FeedSourceName(Motor2FeedSource src)
+{
+  switch (src)
+  {
+    case M2_FEED_TCP:     return "tcp";
+    case M2_FEED_HOLGURA: return "holgura_helper";
+    default:              return "none";
+  }
+}
+
 static const char* motor2PhaseName(Motor2Phase phase)
 {
   switch (phase)
   {
-    case M2_PHASE_TRIGGER_FEED: return "trigger_feed";
-    default:                    return "idle";
+    case M2_PHASE_TIMED_FEED: return "timed_feed";
+    default:                  return "idle";
   }
 }
 
@@ -1395,13 +1444,13 @@ static void appendTrigger2Object(String& json)
   const bool bufferRaw  = digitalRead(PIN_SENSOR_HOLGURA) == HIGH;
   const bool holguraInstant = holguraActive();
   const bool holguraPresent = holguraStableActive();
-  const bool triggerActive = (motor2Phase == M2_PHASE_TRIGGER_FEED);
+  const bool triggerActive = (motor2Phase == M2_PHASE_TIMED_FEED);
   json += "\"trigger2\":{\"buffer_gpio_raw\":";
   json += bufferRaw ? "true" : "false";
   json += ",\"trigger_active\":";
   json += triggerActive ? "true" : "false";
   json += ",\"trigger_via\":\"";
-  json += "tcp";
+  json += motor2FeedSourceName(motor2FeedSource);
   json += "\"";
   json += ",\"buffer_tension_instant\":";
   json += holguraInstant ? "true" : "false";
@@ -1419,13 +1468,21 @@ static void appendTrigger2Object(String& json)
   json += motor2BufferActiveHigh ? "true" : "false";
   json += ",\"phase\":\"";
   json += motor2PhaseName(motor2Phase);
+  json += "\",\"feed_source\":\"";
+  json += motor2FeedSourceName(motor2FeedSource);
   json += "\",\"boost_active\":";
-  json += (motor2Phase == M2_PHASE_TRIGGER_FEED) ? "true" : "false";
+  json += triggerActive ? "true" : "false";
   json += ",\"rpm_boost\":";
   jsonAppendFloat(json, motor2RpmSetting, 1);
   json += ",\"holgura_fault_s\":";
-  jsonAppendFloat(json, (float)M2_HOLGURA_FAULT_SEC, 1);
-  json += ",\"holgura_extra_feed_s\":0.0";  // slot peer/UI; feeder ya no alimenta por holgura
+  jsonAppendFloat(json, (float)holguraFaultSec, 1);
+  json += ",\"holgura_helper_rpm\":";
+  jsonAppendFloat(json, (float)holguraHelperRpm, 1);
+  json += ",\"holgura_helper_s\":";
+  jsonAppendFloat(json, (float)holguraHelperSec, 2);
+  json += ",\"holgura_helper_absent_ms\":";
+  jsonAppendUInt(json, (uint32_t)holguraHelperAbsentMs);
+  json += ",\"holgura_extra_feed_s\":0.0";  // legacy slot
   json += ",\"piece_length_mm\":";
   jsonAppendFloat(json, (float)motor2PieceLengthMm, 1);
   json += ",\"feed_speed_mm_s\":";
@@ -1478,6 +1535,8 @@ static void motor2HardStopTask()
   else
     commandedRpm2 = 0.0f;
   motor2Phase = M2_PHASE_IDLE;
+  motor2FeedSource = M2_FEED_NONE;
+  motor2ActiveFeedRpm = 0.0f;
   motor2TriggerFeedEndMs = 0;
 }
 
@@ -1515,7 +1574,7 @@ static void enterSystemFault(SystemFault fault, bool pushPeer)
   if (fault == FAULT_BUFFER_TIMEOUT)
     Serial.printf("Buffer Full no rellenó en %.1fs\n", BUFFER_REFILL_FAULT_SEC);
   else if (fault == FAULT_HOLGURA_TIMEOUT)
-    Serial.printf("Sin holgura > %.1fs\n", (float)M2_HOLGURA_FAULT_SEC);
+    Serial.printf("Sin holgura > %.1fs\n", (float)holguraFaultSec);
   else if (fault == FAULT_TENSION_TIMEOUT)
     Serial.printf("Tension > %.1fs\n", TENSION_FAULT_SEC);
   else if (fault == FAULT_HOSE_ABSENT)
@@ -1620,13 +1679,11 @@ static void updateBufferRefillFaultMonitor()
   }
 }
 
-// Sin holgura estable ≥ X s (ventana armada, Auto ON): falla. No alimenta por holgura.
-// Durante trigger Tfeed / refill se pausa el timer (se está reponiendo material).
+// Sin holgura estable ≥ fault_s (ventana armada): falla PF_ERR_HOLGURA.
 static void updateHolguraFaultMonitor()
 {
-  if (systemFault != FAULT_NONE || idleMode || !autoEnabled || refillOverrideActive()
-      || !sensorsMotionArmed()
-      || motor2Phase == M2_PHASE_TRIGGER_FEED)
+  if (systemFault != FAULT_NONE || idleMode || refillOverrideActive()
+      || !sensorsMotionArmed())
   {
     holguraAbsentSinceMs = 0;
     return;
@@ -1641,10 +1698,11 @@ static void updateHolguraFaultMonitor()
   if (holguraAbsentSinceMs == 0)
   {
     holguraAbsentSinceMs = millis();
-    DBG_PRINTF("M2: sin holgura — timeout falla %.1fs\n", (float)M2_HOLGURA_FAULT_SEC);
+    Serial.printf("M2: sin holgura (estable) — falla en %.1fs si no recupera\n",
+                  (float)holguraFaultSec);
   }
   else if ((uint32_t)(millis() - holguraAbsentSinceMs)
-           >= (uint32_t)(M2_HOLGURA_FAULT_SEC * 1000.0f))
+           >= (uint32_t)(holguraFaultSec * 1000.0f))
   {
     enterSystemFault(FAULT_HOLGURA_TIMEOUT);
   }
@@ -1654,12 +1712,14 @@ static void motor2SoftStopToIdle()
 {
   motor2BrakeAtRest();
   motor2Phase = M2_PHASE_IDLE;
+  motor2FeedSource = M2_FEED_NONE;
+  motor2ActiveFeedRpm = 0.0f;
   motor2TriggerFeedEndMs = 0;
 }
 
-static bool motor2EnsureFeeding()
+static bool motor2EnsureFeedingAt(float rpm)
 {
-  const float want = motor2ClampRpm(motor2RpmSetting);
+  const float want = motor2ClampRpm(rpm);
   if (fabsf(commandedRpm2 - want) <= 0.5f && commandedRpm2 > 0.01f)
     return true;
 
@@ -1669,13 +1729,23 @@ static bool motor2EnsureFeeding()
   return motor2StartSignedTask(want);
 }
 
+static bool motor2EnsureFeeding()
+{
+  if (motor2Phase == M2_PHASE_TIMED_FEED && motor2ActiveFeedRpm > 0.01f)
+    return motor2EnsureFeedingAt(motor2ActiveFeedRpm);
+  return motor2EnsureFeedingAt((float)motor2RpmSetting);
+}
+
 static bool motor2StartSignedTask(float uiSignedRpm)
 {
   const float target = motor2ClampRpm(uiSignedRpm);
   const float driveRpm = uiSignedToDriveRpm(target);
 
-  motor2StopMotionOnly();
-  vTaskDelay(pdMS_TO_TICKS(MOTOR_DIR_SETUP_MS));
+  if (fabsf(commandedRpm2) > 0.01f || fabsf(motor2->currentRPM()) > 1.0f)
+  {
+    motor2StopMotionOnly();
+    vTaskDelay(pdMS_TO_TICKS(MOTOR_DIR_SETUP_MS));
+  }
 
   if (!motor2->setSpeed(driveRpm, MOTOR2_ACCEL))
   {
@@ -1707,26 +1777,36 @@ static bool motor2ApplySpeedTask(float signedRpm)
   return motor2StartSignedTask(target);
 }
 
+// Misma rutina de feeder temporizado. Diferenciador = source (TCM vs sensor).
+static void motor2StartTimedFeed(uint32_t now, Motor2FeedSource src, float rpm, float sec)
+{
+  if (sec < 0.05f) sec = 0.05f;
+  if (sec > M2_TRIGGER_FEED_MAX) sec = M2_TRIGGER_FEED_MAX;
+  if (rpm < MOTOR_RPM_MIN) rpm = MOTOR_RPM_MIN;
+  if (rpm > MOTOR_RPM_MAX) rpm = MOTOR_RPM_MAX;
+
+  motor2FeedSource = src;
+  motor2TriggerActiveSec = sec;
+  motor2ActiveFeedRpm = rpm;
+  motor2Phase = M2_PHASE_TIMED_FEED;
+  motor2TriggerFeedEndMs = now + (uint32_t)(sec * 1000.0f);
+  motor2EnsureFeedingAt(rpm);
+  Serial.printf("M2: timed_feed src=%s %.0f RPM × %.2fs\n",
+                motor2FeedSourceName(src), rpm, sec);
+}
+
 static void motor2StartTriggerFeed(uint32_t now)
 {
   float sec = (motor2TcpTriggerSecRequest > 0.05f)
                 ? (float)motor2TcpTriggerSecRequest
                 : (float)motor2TriggerFeedSec;
-  if (sec < 0.05f) sec = 0.05f;
-  if (sec > M2_TRIGGER_FEED_MAX) sec = M2_TRIGGER_FEED_MAX;
   motor2TcpTriggerSecRequest = 0.0f;
-  motor2TriggerActiveSec = sec;
-
-  motor2Phase = M2_PHASE_TRIGGER_FEED;
-  motor2TriggerFeedEndMs = now + (uint32_t)(sec * 1000.0f);
-  motor2EnsureFeeding();
-  DBG_PRINTF("M2: trigger -> alimentando %.2fs (DeReeler/servo siguen hasta Full, t=%lu ms)\n",
-                sec, (unsigned long)motor2TriggerFeedEndMs);
+  motor2StartTimedFeed(now, M2_FEED_TCP, (float)motor2RpmSetting, sec);
 }
 
-static void serviceTriggerFeed()
+static void serviceTimedFeeder()
 {
-  if (motor2Phase != M2_PHASE_TRIGGER_FEED)
+  if (motor2Phase != M2_PHASE_TIMED_FEED)
     return;
 
   const uint32_t now = millis();
@@ -1734,19 +1814,77 @@ static void serviceTriggerFeed()
       && (int32_t)(now - motor2TriggerFeedEndMs) >= 0)
   {
     const float doneSec = motor2TriggerActiveSec;
+    const Motor2FeedSource doneSrc = motor2FeedSource;
     motor2SoftStopToIdle();
     motor2TriggerActiveSec = 0.0f;
-    DBG_PRINTF("M2: fin alimentación por trigger %.2fs -> detenido\n", doneSec);
+    Serial.printf("M2: fin timed_feed src=%s %.2fs\n",
+                  motor2FeedSourceName(doneSrc), doneSec);
     return;
   }
 
   motor2EnsureFeeding();
 }
 
+// Helper: SIN HOLGURA (pin ausente) ≥ holguraHelperAbsentMs → feeder (una vez por ausencia).
+// Usa lectura cruda en la tarea m2 (sin pelear el filtro del loop). Prioridad > trigger TCP.
+static void updateHolguraHelper()
+{
+  // HOLGURA presente (slack OK) → reset one-shot.
+  if (holguraActive())
+  {
+    holguraHelperAbsentStartMs = 0;
+    holguraHelperFiredThisAbsence = false;
+    return;
+  }
+
+  // A partir de aquí: SIN HOLGURA (crudo).
+  if (systemFault != FAULT_NONE || idleMode || refillOverrideActive()
+      || !sensorsMotionArmed() || bufferMaxActive())
+  {
+    static uint32_t lastBlockLogMs = 0;
+    const uint32_t now = millis();
+    if ((uint32_t)(now - lastBlockLogMs) >= 2000)
+    {
+      lastBlockLogMs = now;
+      Serial.printf(
+        "M2: helper bloq sin-holgura armed=%d idle=%d fault=%u bufMax=%d refill=%d\n",
+        (int)sensorsMotionArmed(), (int)idleMode, (unsigned)systemFault,
+        (int)bufferMaxActive(), (int)refillOverrideActive());
+    }
+    holguraHelperAbsentStartMs = 0;
+    return;
+  }
+
+  if (holguraHelperAbsentStartMs == 0)
+  {
+    holguraHelperAbsentStartMs = millis();
+    Serial.printf("M2: SIN HOLGURA — helper en %u ms @ %.0f RPM / %.2fs\n",
+                  (unsigned)holguraHelperAbsentMs,
+                  (float)holguraHelperRpm, (float)holguraHelperSec);
+  }
+
+  if (holguraHelperFiredThisAbsence)
+    return;
+
+  if ((uint32_t)(millis() - holguraHelperAbsentStartMs) < (uint32_t)holguraHelperAbsentMs)
+    return;
+
+  // Ya en timed feed de holgura: no reiniciar.
+  if (motor2Phase == M2_PHASE_TIMED_FEED && motor2FeedSource == M2_FEED_HOLGURA)
+    return;
+
+  // Prioridad holgura > TCM: si hay trigger TCP en curso, lo reemplaza.
+  holguraHelperFiredThisAbsence = true;
+  float sec = (float)holguraHelperSec;
+  if (sec < M2_HOLGURA_HELPER_SEC_MIN) sec = M2_HOLGURA_HELPER_SEC_MIN;
+  if (sec > M2_HOLGURA_HELPER_SEC_MAX) sec = M2_HOLGURA_HELPER_SEC_MAX;
+  motor2StartTimedFeed(millis(), M2_FEED_HOLGURA, (float)holguraHelperRpm, sec);
+}
+
 static void serviceHolguraFeeder()
 {
-  // Ya no alimenta por holgura: solo trigger/refill mueven el feeder.
-  if (motor2Phase == M2_PHASE_TRIGGER_FEED)
+  // Feeder solo por timed feed (TCP/holgura) o refill.
+  if (motor2Phase == M2_PHASE_TIMED_FEED)
     return;
   if (motor2Phase != M2_PHASE_IDLE)
     motor2SoftStopToIdle();
@@ -1770,15 +1908,18 @@ static void motor2HolguraTask(void* /*param*/)
       motor2AbortRequested = false;
     }
 
-    // Feeder manual / cualquier refill Materialista: no matar RC por Buffer Full.
+    // Helper pronto: loguea bloqueos (falla/sin armado) aunque luego se haga continue.
+    updateHolguraHelper();
+    if (motor2Phase == M2_PHASE_TIMED_FEED && motor2FeedSource == M2_FEED_HOLGURA)
+      serviceTimedFeeder();
+
+    // Feeder manual Materialista: no cortar por Buffer Max (eso era arranca/para cada 5 ms).
     // DeReeler/servo los mueve solo loop() — RMT no es thread-safe (dos cores = vibra).
-    if (refillIgnoresBufferFull())
+    if (refillManualActive())
     {
       motor2TcpTriggerRequest = false;
       if (refillFeederOn)
         motor2EnsureFeeding();
-      if (bufferMaxActive())
-        motor2DisarmFeedCycle();
       vTaskDelay(pdMS_TO_TICKS(5));
       continue;
     }
@@ -1804,14 +1945,22 @@ static void motor2HolguraTask(void* /*param*/)
       continue;
     }
 
-    // Trigger: requiere ventana de relleno + Auto ON.
+    // Trigger TCP: requiere ventana armada + Auto ON.
     if (!sensorsMotionArmed() || !autoEnabled)
     {
       motor2TcpTriggerRequest = false;
-      // No Brake/Stop cada 5 ms si ya idle (vibración RMT del feeder).
-      if (motor2Phase != M2_PHASE_IDLE || fabsf(commandedRpm2) > 0.01f
-          || (motor2 && fabsf(motor2->currentRPM()) > 1.0f))
-        motor2DisarmFeedCycle();
+      // Armado sin Auto: seguir sirviendo timed feed holgura; sin armado → idle.
+      if (!sensorsMotionArmed())
+      {
+        if (motor2Phase != M2_PHASE_IDLE || fabsf(commandedRpm2) > 0.01f
+            || (motor2 && fabsf(motor2->currentRPM()) > 1.0f))
+          motor2DisarmFeedCycle();
+      }
+      else
+      {
+        serviceTimedFeeder();
+        serviceHolguraFeeder();
+      }
       vTaskDelay(pdMS_TO_TICKS(5));
       continue;
     }
@@ -1820,20 +1969,25 @@ static void motor2HolguraTask(void* /*param*/)
     {
       if (!peerLinkOk || bufferMaxActive())
         motor2TcpTriggerRequest = false;
-      else if (motor2Phase == M2_PHASE_TRIGGER_FEED)
+      else if (motor2Phase == M2_PHASE_TIMED_FEED && motor2FeedSource == M2_FEED_HOLGURA)
       {
-        // Ya en Tfeed: no reiniciar fin (reintentos TCP del TCM).
+        // Prioridad helper holgura: descartar trigger TCP mientras alivia.
+        motor2TcpTriggerRequest = false;
+        Serial.println("M2: trigger TCP ignorado — helper holgura activo");
+      }
+      else if (motor2Phase == M2_PHASE_TIMED_FEED && motor2FeedSource == M2_FEED_TCP)
+      {
+        // Ya en Tfeed TCM: no reiniciar fin (reintentos TCP).
         motor2TcpTriggerRequest = false;
       }
       else
       {
         motor2TcpTriggerRequest = false;
-        holguraAbsentSinceMs = 0;  // al disparar, pausa implícita del timer de falla
         motor2StartTriggerFeed(millis());
       }
     }
 
-    serviceTriggerFeed();
+    serviceTimedFeeder();
     serviceHolguraFeeder();
 
     vTaskDelay(pdMS_TO_TICKS(5));
@@ -2079,13 +2233,40 @@ void handleMotor2()
   }
   if (server.hasArg("buffer_active_high"))
     motor2BufferActiveHigh = server.arg("buffer_active_high").toInt() != 0;
-  // holgura_fault_s / safety_factor / holgura_extra_feed_s: fijos o ignorados
   if (server.hasArg("feed_speed_mm_s"))
   {
     float v = server.arg("feed_speed_mm_s").toFloat();
     if (v < M2_FEED_SPEED_MM_S_MIN) v = M2_FEED_SPEED_MM_S_MIN;
     if (v > M2_FEED_SPEED_MM_S_MAX) v = M2_FEED_SPEED_MM_S_MAX;
     motor2FeedSpeedMmS = v;
+  }
+  if (server.hasArg("holgura_helper_rpm"))
+  {
+    float v = server.arg("holgura_helper_rpm").toFloat();
+    if (v < MOTOR_RPM_MIN) v = MOTOR_RPM_MIN;
+    if (v > MOTOR_RPM_MAX) v = MOTOR_RPM_MAX;
+    holguraHelperRpm = v;
+  }
+  if (server.hasArg("holgura_helper_s"))
+  {
+    float v = server.arg("holgura_helper_s").toFloat();
+    if (v < M2_HOLGURA_HELPER_SEC_MIN) v = M2_HOLGURA_HELPER_SEC_MIN;
+    if (v > M2_HOLGURA_HELPER_SEC_MAX) v = M2_HOLGURA_HELPER_SEC_MAX;
+    holguraHelperSec = v;
+  }
+  if (server.hasArg("holgura_helper_absent_ms"))
+  {
+    uint32_t v = (uint32_t)server.arg("holgura_helper_absent_ms").toInt();
+    if (v < M2_HOLGURA_HELPER_ABSENT_MS_MIN) v = M2_HOLGURA_HELPER_ABSENT_MS_MIN;
+    if (v > M2_HOLGURA_HELPER_ABSENT_MS_MAX) v = M2_HOLGURA_HELPER_ABSENT_MS_MAX;
+    holguraHelperAbsentMs = v;
+  }
+  if (server.hasArg("holgura_fault_s"))
+  {
+    float v = server.arg("holgura_fault_s").toFloat();
+    if (v < M2_HOLGURA_FAULT_SEC_MIN) v = M2_HOLGURA_FAULT_SEC_MIN;
+    if (v > M2_HOLGURA_FAULT_SEC_MAX) v = M2_HOLGURA_FAULT_SEC_MAX;
+    holguraFaultSec = v;
   }
   // trigger_feed_s ya no es editable: se recalcula siempre.
   recalculateTriggerFeedSec();
@@ -2349,7 +2530,7 @@ static String peerJStr(const char* j, const char* k)
 
 static uint32_t peerTriggerMsLeft()
 {
-  if (motor2Phase != M2_PHASE_TRIGGER_FEED || motor2TriggerFeedEndMs == 0)
+  if (motor2Phase != M2_PHASE_TIMED_FEED || motor2TriggerFeedEndMs == 0)
     return 0;
   int32_t left = (int32_t)(motor2TriggerFeedEndMs - millis());
   return left > 0 ? (uint32_t)left : 0;
@@ -2412,14 +2593,22 @@ static String peerStatusJson(const char* type)
   j += "\",\"holgura\":";
   j += holguraStableActive() ? "true" : "false";
   j += ",\"triggerActive\":";
-  j += (motor2Phase == M2_PHASE_TRIGGER_FEED) ? "true" : "false";
+  j += (motor2Phase == M2_PHASE_TIMED_FEED) ? "true" : "false";
   j += ",\"triggerPhase\":\"";
   j += motor2PhaseName(motor2Phase);
+  j += "\",\"feedSource\":\"";
+  j += motor2FeedSourceName(motor2FeedSource);
   j += "\",\"triggerMsLeft\":";
   j += peerTriggerMsLeft();
   j += ",\"holguraExtraFeedS\":0.0";
   j += ",\"holguraFaultS\":";
-  jsonAppendFloat(j, (float)M2_HOLGURA_FAULT_SEC, 1);
+  jsonAppendFloat(j, (float)holguraFaultSec, 1);
+  j += ",\"holguraHelperRpm\":";
+  jsonAppendFloat(j, (float)holguraHelperRpm, 1);
+  j += ",\"holguraHelperS\":";
+  jsonAppendFloat(j, (float)holguraHelperSec, 2);
+  j += ",\"holguraHelperAbsentMs\":";
+  j += (uint32_t)holguraHelperAbsentMs;
   j += ",\"pieceLengthMm\":";
   jsonAppendFloat(j, (float)motor2PieceLengthMm, 1);
   j += ",\"feedSpeedMmS\":";
@@ -2471,7 +2660,7 @@ static void peerTxEvents()
   const bool hose = hoseBeltAbsentActive();
   const bool err = (systemFault != FAULT_NONE);
   const bool holgura = holguraStableActive();
-  const bool trig = (motor2Phase == M2_PHASE_TRIGGER_FEED);
+  const bool trig = (motor2Phase == M2_PHASE_TIMED_FEED);
   const uint32_t msLeft = peerTriggerMsLeft();
 
   if (home != lastPeerHome)
@@ -2616,7 +2805,7 @@ static bool peerDoCmd(const String& cmd, const String& val, int id)
           && !bufferMaxActive())
       {
         // Ya en Tfeed: no reiniciar timer; marcar id como hecho.
-        if (motor2Phase == M2_PHASE_TRIGGER_FEED)
+        if (motor2Phase == M2_PHASE_TIMED_FEED && motor2FeedSource == M2_FEED_TCP)
         {
           ok = true;
           triggerIdRemember(trigId);
@@ -2727,12 +2916,90 @@ static bool peerDoCmd(const String& cmd, const String& val, int id)
   }
   else if (cmd == "setHolguraExtra" || cmd == "setHolguraFault" || cmd == "setHolguraFaultS"
            || cmd == "setSafetyFactor" || cmd == "setDereelerLead" || cmd == "setDereelerLeadMs"
-           || cmd == "setTriggerFeed" || cmd == "setTriggerCfg")
+           || cmd == "setTriggerFeed" || cmd == "setTriggerCfg"
+           || cmd == "setHolguraHelper" || cmd == "setHolguraHelperRpm"
+           || cmd == "setHolguraHelperS" || cmd == "setHolguraHelperAbsentMs")
   {
-    // Slots peer antiguos: ACK sin efecto (timeouts/Tfeed fijos o recalculados).
     if (cmd == "setSafetyFactor" || cmd == "setTriggerFeed" || cmd == "setTriggerCfg")
       recalculateTriggerFeedSec();
-    saveSettingsNow = (cmd == "setTriggerFeed" || cmd == "setTriggerCfg");
+    if (cmd == "setHolguraFault" || cmd == "setHolguraFaultS")
+    {
+      float v = val.toFloat();
+      if (v < M2_HOLGURA_FAULT_SEC_MIN) v = M2_HOLGURA_FAULT_SEC_MIN;
+      if (v > M2_HOLGURA_FAULT_SEC_MAX) v = M2_HOLGURA_FAULT_SEC_MAX;
+      holguraFaultSec = v;
+      saveSettingsNow = true;
+    }
+    else if (cmd == "setHolguraHelperRpm")
+    {
+      float v = val.toFloat();
+      if (v < MOTOR_RPM_MIN) v = MOTOR_RPM_MIN;
+      if (v > MOTOR_RPM_MAX) v = MOTOR_RPM_MAX;
+      holguraHelperRpm = v;
+      saveSettingsNow = true;
+    }
+    else if (cmd == "setHolguraHelperS")
+    {
+      float v = val.toFloat();
+      if (v < M2_HOLGURA_HELPER_SEC_MIN) v = M2_HOLGURA_HELPER_SEC_MIN;
+      if (v > M2_HOLGURA_HELPER_SEC_MAX) v = M2_HOLGURA_HELPER_SEC_MAX;
+      holguraHelperSec = v;
+      saveSettingsNow = true;
+    }
+    else if (cmd == "setHolguraHelperAbsentMs")
+    {
+      uint32_t v = (uint32_t)val.toInt();
+      if (v < M2_HOLGURA_HELPER_ABSENT_MS_MIN) v = M2_HOLGURA_HELPER_ABSENT_MS_MIN;
+      if (v > M2_HOLGURA_HELPER_ABSENT_MS_MAX) v = M2_HOLGURA_HELPER_ABSENT_MS_MAX;
+      holguraHelperAbsentMs = v;
+      saveSettingsNow = true;
+    }
+    else if (cmd == "setHolguraHelper")
+    {
+      // CSV: rpm,sec,absentMs[,faultS]
+      float parts[4] = {0};
+      int n = 0;
+      int start = 0;
+      for (int i = 0; i <= (int)val.length() && n < 4; i++)
+      {
+        if (i == (int)val.length() || val.charAt(i) == ',')
+        {
+          parts[n++] = val.substring(start, i).toFloat();
+          start = i + 1;
+        }
+      }
+      if (n >= 1)
+      {
+        float v = parts[0];
+        if (v < MOTOR_RPM_MIN) v = MOTOR_RPM_MIN;
+        if (v > MOTOR_RPM_MAX) v = MOTOR_RPM_MAX;
+        holguraHelperRpm = v;
+      }
+      if (n >= 2)
+      {
+        float v = parts[1];
+        if (v < M2_HOLGURA_HELPER_SEC_MIN) v = M2_HOLGURA_HELPER_SEC_MIN;
+        if (v > M2_HOLGURA_HELPER_SEC_MAX) v = M2_HOLGURA_HELPER_SEC_MAX;
+        holguraHelperSec = v;
+      }
+      if (n >= 3)
+      {
+        uint32_t v = (uint32_t)parts[2];
+        if (v < M2_HOLGURA_HELPER_ABSENT_MS_MIN) v = M2_HOLGURA_HELPER_ABSENT_MS_MIN;
+        if (v > M2_HOLGURA_HELPER_ABSENT_MS_MAX) v = M2_HOLGURA_HELPER_ABSENT_MS_MAX;
+        holguraHelperAbsentMs = v;
+      }
+      if (n >= 4)
+      {
+        float v = parts[3];
+        if (v < M2_HOLGURA_FAULT_SEC_MIN) v = M2_HOLGURA_FAULT_SEC_MIN;
+        if (v > M2_HOLGURA_FAULT_SEC_MAX) v = M2_HOLGURA_FAULT_SEC_MAX;
+        holguraFaultSec = v;
+      }
+      saveSettingsNow = true;
+    }
+    else
+      saveSettingsNow = (cmd == "setTriggerFeed" || cmd == "setTriggerCfg");
     ok = true;
   }
   else if (cmd == "setPieceLength" || cmd == "setPieceLengthMm")
@@ -2927,7 +3194,7 @@ static void peerOnClientAccepted()
   lastPeerHose = hoseBeltAbsentActive();
   lastPeerErr = (systemFault != FAULT_NONE);
   lastPeerHolgura = holguraStableActive();
-  lastPeerTrig = (motor2Phase == M2_PHASE_TRIGGER_FEED);
+  lastPeerTrig = (motor2Phase == M2_PHASE_TIMED_FEED);
   lastPeerAutoEn = autoEnabled;
   lastPeerRefillDer = refillDereelerOn;
   lastPeerRefillSrv = refillServoOn;
@@ -3001,7 +3268,7 @@ static void peerService()
   peerWasConnected = true;
   peerLinkOk = true;
   peerRx();
-  const bool fast = (motor2Phase == M2_PHASE_TRIGGER_FEED);
+  const bool fast = (motor2Phase == M2_PHASE_TIMED_FEED);
   const uint32_t iv = fast ? PEER_STATUS_FAST_MS : PEER_STATUS_MS;
   if (millis() - peerLastStatusMs >= iv)
   {
@@ -3071,7 +3338,7 @@ void setup()
   Serial.println("========================================");
   Serial.printf("PreFeeder lado %s  IP fija %s  TCP :%u\n",
                 PREFEEDER_SIDE_TAG, STA_IP.toString().c_str(), PEER_PORT);
-  Serial.printf("Rol %s — L=.30 R=.40 (IPs distintas o el router falla)\n",
+  Serial.printf("Rol %s — L=.101 R=.102 (IPs distintas o el router falla)\n",
                 PREFEEDER_SIDE_ROLE);
   Serial.println("========================================");
 
@@ -3138,7 +3405,10 @@ void setup()
     Serial.println("Boot: falla enclavada — Reset + Iniciar");
   else
     Serial.printf("Boot: Auto ON (%s) · sensores congelados hasta Iniciar/In process\n",
-                  idleMode ? "Materialista" : "Production");
+                  idleMode ? "Materialista" : "Idle");
+  Serial.printf("Helper holgura: ausente≥%u ms → %.0f RPM × %.2fs · falla≥%.1fs\n",
+                (unsigned)holguraHelperAbsentMs, (float)holguraHelperRpm,
+                (float)holguraHelperSec, (float)holguraFaultSec);
 }
 
 void loop()
@@ -3146,22 +3416,25 @@ void loop()
   serviceHttp(12);
 
   // Seguridad primero: GPIO19/21 antes de TCP/HTTP.
-  // Refill Materialista ignora Buffer Full (no matar RC/DeReeler manual).
+  // Materialista: no enclavar Max ni cortar Full (refill manual).
   updateBufferFullFilter();
-  updateHolguraFilter();
+  // Holgura filter: solo en motor2HolguraTask (evita carrera dual-core con el helper).
   updateTensionReverseFilter();
-  if (bufferMaxActive() && !refillIgnoresBufferFull())
+  if (!idleMode)
   {
-    forceStopDereelerAndServo();
-    if (systemFault != FAULT_ENDSTOP)
-      enterSystemFault(FAULT_ENDSTOP, false);
-  }
-  else if (bufferFullStopNow() && !refillIgnoresBufferFull())
-  {
-    forceStopDereelerAndServo();
-    if (autoEnabled && systemFault == FAULT_NONE
-        && (autoState == AUTO_SERVO_LEAD || autoState == AUTO_CW))
-      autoState = AUTO_HOME_HOLD;
+    if (bufferMaxActive())
+    {
+      forceStopDereelerAndServo();
+      if (systemFault != FAULT_ENDSTOP)
+        enterSystemFault(FAULT_ENDSTOP, false);
+    }
+    else if (bufferFullStopNow())
+    {
+      forceStopDereelerAndServo();
+      if (autoEnabled && systemFault == FAULT_NONE
+          && (autoState == AUTO_SERVO_LEAD || autoState == AUTO_CW))
+        autoState = AUTO_HOME_HOLD;
+    }
   }
 
   peerLogWifi();

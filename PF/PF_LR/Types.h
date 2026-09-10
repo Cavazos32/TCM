@@ -6,7 +6,14 @@
 
 enum Motor2Phase : uint8_t {
   M2_PHASE_IDLE = 0,
-  M2_PHASE_TRIGGER_FEED   // disparo TCP → alimenta Tfeed s
+  M2_PHASE_TIMED_FEED     // feeder por tiempo (TCM trigger o helper holgura)
+};
+
+// Diferenciador: quién disparó el feed temporizado (mismos pasos de motor).
+enum Motor2FeedSource : uint8_t {
+  M2_FEED_NONE = 0,
+  M2_FEED_TCP,       // mensaje TCM/Master (opcode 0x4C / 0x51)
+  M2_FEED_HOLGURA    // leímos cambio de estado GPIO22 (SIN HOLGURA)
 };
 
 enum SystemFault : uint8_t {

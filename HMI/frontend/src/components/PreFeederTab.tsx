@@ -5,6 +5,7 @@ import {
   RotateCcw,
   Package,
   Layers,
+  Zap,
 } from 'lucide-react';
 import { PreFeederState, LogEntry, PreFeederSensor } from '../types';
 import { LogTerminal } from './LogTerminal';
@@ -16,6 +17,8 @@ interface PreFeederTabProps {
   onStop: () => void;
   onReset: () => void;
   onMaterialist: () => void;
+  onTriggerR: () => void;
+  onTriggerL: () => void;
   showLogs?: boolean;
   logs: LogEntry[];
   onClearLogs: () => void;
@@ -27,6 +30,8 @@ export const PreFeederTab: React.FC<PreFeederTabProps> = ({
   onStop,
   onReset,
   onMaterialist,
+  onTriggerR,
+  onTriggerL,
   showLogs = true,
   logs,
   onClearLogs,
@@ -76,6 +81,8 @@ export const PreFeederTab: React.FC<PreFeederTabProps> = ({
     );
   };
 
+  const connected = preFeederState.connection.connected;
+
   return (
     <div className="space-y-4">
       {/* Unified Compact Status & Link Bar */}
@@ -84,7 +91,7 @@ export const PreFeederTab: React.FC<PreFeederTabProps> = ({
           <div className="flex items-center gap-2">
             <span
               className={`h-2.5 w-2.5 rounded-full ${
-                !preFeederState.connection.connected
+                !connected
                   ? 'bg-red-500'
                   : preFeederState.isRunning
                     ? 'bg-emerald-500 animate-pulse'
@@ -100,8 +107,8 @@ export const PreFeederTab: React.FC<PreFeederTabProps> = ({
 
           <div className="flex items-center gap-1.5 font-mono text-xs text-slate-600 dark:text-slate-400">
             <span className="text-slate-400 dark:text-slate-500">{t('link_label')}:</span>
-            <span className={`font-semibold ${preFeederState.connection.connected ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
-              {preFeederState.connection.connected ? t('node_connected') : t('node_disconnected')}
+            <span className={`font-semibold ${connected ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
+              {connected ? t('node_connected') : t('node_disconnected')}
             </span>
             <span className="text-slate-400 dark:text-slate-500 text-[11px]">
               ({preFeederState.connection.ip}:{preFeederState.connection.port})
@@ -125,9 +132,8 @@ export const PreFeederTab: React.FC<PreFeederTabProps> = ({
         </div>
       </div>
 
-      {/* Action Buttons: Start (0x02A), Stop (0x02B), Reset (0x02C), Materialist (0x03F) - Compact & Shortened */}
+      {/* Action Buttons */}
       <div className="flex flex-wrap items-center gap-2">
-        {/* Start (0x02A) */}
         <button
           id="btn-start-prefeeder"
           onClick={onStart}
@@ -145,7 +151,6 @@ export const PreFeederTab: React.FC<PreFeederTabProps> = ({
           </span>
         </button>
 
-        {/* Stop (0x02B) */}
         <button
           id="btn-stop-prefeeder"
           onClick={onStop}
@@ -158,7 +163,6 @@ export const PreFeederTab: React.FC<PreFeederTabProps> = ({
           </span>
         </button>
 
-        {/* Reset (0x02C) */}
         <button
           id="btn-reset-prefeeder"
           onClick={onReset}
@@ -171,7 +175,6 @@ export const PreFeederTab: React.FC<PreFeederTabProps> = ({
           </span>
         </button>
 
-        {/* Materialist (0x03F) */}
         <button
           id="btn-materialist-prefeeder"
           onClick={onMaterialist}
@@ -185,9 +188,69 @@ export const PreFeederTab: React.FC<PreFeederTabProps> = ({
         </button>
       </div>
 
+      {/* Simular trigger del ciclo */}
+      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-3 shadow-2xs">
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <p className="text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-400">
+            {t('trigger_sim_hint')}
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            id="btn-trigger-l-prefeeder"
+            onClick={onTriggerL}
+            disabled={!connected}
+            className={`group flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-bold transition active:scale-95 shadow-2xs border ${
+              connected
+                ? 'border-sky-200 dark:border-sky-900/60 bg-sky-50 dark:bg-sky-950/40 hover:bg-sky-100 dark:hover:bg-sky-950/70 text-sky-800 dark:text-sky-300'
+                : 'bg-slate-100 dark:bg-slate-800 text-slate-400 border-slate-200 dark:border-slate-700 cursor-not-allowed'
+            }`}
+          >
+            <Zap className="h-3.5 w-3.5" />
+            <span>{t('btn_trigger_l')}</span>
+            <span className="rounded bg-sky-100 dark:bg-sky-900/60 px-1 font-mono text-[10px] text-sky-800 dark:text-sky-200 border border-sky-200 dark:border-sky-800">
+              0x51
+            </span>
+          </button>
+
+          <button
+            id="btn-trigger-r-prefeeder"
+            onClick={onTriggerR}
+            disabled={!connected}
+            className={`group flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-bold transition active:scale-95 shadow-2xs border ${
+              connected
+                ? 'border-violet-200 dark:border-violet-900/60 bg-violet-50 dark:bg-violet-950/40 hover:bg-violet-100 dark:hover:bg-violet-950/70 text-violet-800 dark:text-violet-300'
+                : 'bg-slate-100 dark:bg-slate-800 text-slate-400 border-slate-200 dark:border-slate-700 cursor-not-allowed'
+            }`}
+          >
+            <Zap className="h-3.5 w-3.5" />
+            <span>{t('btn_trigger_r')}</span>
+            <span className="rounded bg-violet-100 dark:bg-violet-900/60 px-1 font-mono text-[10px] text-violet-800 dark:text-violet-200 border border-violet-200 dark:border-violet-800">
+              0x4C
+            </span>
+          </button>
+
+          <button
+            id="btn-trigger-both-prefeeder"
+            onClick={() => {
+              onTriggerL();
+              onTriggerR();
+            }}
+            disabled={!connected}
+            className={`group flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-bold transition active:scale-95 shadow-2xs border ${
+              connected
+                ? 'border-emerald-200 dark:border-emerald-900/60 bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-950/70 text-emerald-800 dark:text-emerald-300'
+                : 'bg-slate-100 dark:bg-slate-800 text-slate-400 border-slate-200 dark:border-slate-700 cursor-not-allowed'
+            }`}
+          >
+            <Zap className="h-3.5 w-3.5 fill-current" />
+            <span>{t('btn_trigger_both')}</span>
+          </button>
+        </div>
+      </div>
+
       {/* Dual Column Cards: Lado L & Lado R */}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        {/* Lado L Card */}
         <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 shadow-2xs transition-colors">
           <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2.5">
             <div className="flex items-center gap-2">
@@ -206,7 +269,6 @@ export const PreFeederTab: React.FC<PreFeederTabProps> = ({
           </div>
         </div>
 
-        {/* Lado R Card */}
         <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 shadow-2xs transition-colors">
           <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2.5">
             <div className="flex items-center gap-2">
@@ -226,7 +288,6 @@ export const PreFeederTab: React.FC<PreFeederTabProps> = ({
         </div>
       </div>
 
-      {/* Log PreFeeder */}
       {showLogs && (
         <LogTerminal
           title={t('logs_title')}
@@ -238,4 +299,3 @@ export const PreFeederTab: React.FC<PreFeederTabProps> = ({
     </div>
   );
 };
-

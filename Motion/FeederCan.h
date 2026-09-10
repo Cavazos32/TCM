@@ -181,15 +181,8 @@ struct FeedEncPlan {
   int32_t targetCounts = 0;
 };
 
-// ====================== Protocolo TCP maestro (HMI) ======================
-enum FeedTcpCmd : uint8_t {
-  FEED_CMD_FEED_R      = 0x12,  // maestro → esclavo: alimentar lado R (Test R)
-  FEED_CMD_FEED_L      = 0x13,  // maestro → esclavo: alimentar lado L (Test L)
-  FEED_TX_LENGTH_OK_L  = 0x14,  // esclavo → maestro: longitud OK lado L
-  FEED_TX_LENGTH_NG_L  = 0x15,  // esclavo → maestro: longitud NG lado L
-  FEED_TX_LENGTH_OK_R  = 0x4A,  // esclavo → maestro: longitud OK lado R
-  FEED_TX_LENGTH_NG_R  = 0x4B,  // esclavo → maestro: longitud NG lado R
-};
+// Protocolo TCP feeder: MotionStates.h
+#include "MotionStates.h"
 
 struct FeedTestReq {
   bool pending = false;

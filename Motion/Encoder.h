@@ -60,13 +60,5 @@ enum EncSideIx : uint8_t { ENC_IX_L = 0, ENC_IX_R = 1 };
 static inline bool encSideIsR(uint8_t ix) { return ix == ENC_IX_R; }
 static inline uint8_t encIxFromSideR(bool sideR) { return sideR ? ENC_IX_R : ENC_IX_L; }
 
-// ====================== Protocolo TCP maestro (HMI) ======================
-enum EncTcpCmd : uint8_t {
-  ENC_CMD_MEASURE_R = 0x0F,
-  ENC_CMD_SET0_R    = 0x10,
-  ENC_TX_ERROR      = 0x11,
-  ENC_CMD_MEASURE_L = 0x17,
-  ENC_CMD_SET0_L    = 0x18,
-};
-
-#define ENC_CMD_SET0 ENC_CMD_SET0_R
+// Protocolo TCP encoder: MotionStates.h
+#include "MotionStates.h"

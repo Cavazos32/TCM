@@ -66,14 +66,14 @@ button.primary{background:var(--accent);border-color:var(--accent);color:#0d1117
 <p class="sub">Master orquesta L/R · errores agregados · control manual global · triggers/settings por lado (API)</p>
 <div class="shortcuts">
 <a class="shortcut" id="link-ui-l" href="/ui/l" target="_blank" rel="noopener">UI L · 10.10.32.101</a>
-<a class="shortcut" id="link-ui-r" href="/ui/r" target="_blank" rel="noopener">UI R · 10.10.32.40</a>
+<a class="shortcut" id="link-ui-r" href="/ui/r" target="_blank" rel="noopener">UI R · 10.10.32.102</a>
 </div>
 <div id="paused-banner" class="paused" hidden>PAUSE (Nivel 2) — Reset o Detener para continuar</div>
 <section class="status-card">
 <h2>Comunicación</h2>
 <div class="status-bar"><span class="status-dot ok" id="dot-wifi"></span><span id="txt-wifi">WiFi Master: …</span></div>
 <div class="status-bar"><span class="status-dot" id="dot-ml"></span><span id="txt-ml">Master ↔ L (.30): …</span></div>
-<div class="status-bar"><span class="status-dot" id="dot-mr"></span><span id="txt-mr">Master ↔ R (.40): …</span></div>
+<div class="status-bar"><span class="status-dot" id="dot-mr"></span><span id="txt-mr">Master ↔ R (.102): …</span></div>
 </section>
 <section class="status-card">
 <h2>Control &amp; Estado</h2>
@@ -95,7 +95,8 @@ button.primary{background:var(--accent);border-color:var(--accent);color:#0d1117
 </div>
 <section class="ctrl">
 <h2>Control manual (global L + R)</h2>
-<p>Misma API que PF_LR (<code>/api/auto</code>): Iniciar/Detener/Reset, Materialista e In process se reenvían por TCP a L+R (<code>peerDoCmd</code>).</p>
+<p>Misma API que PF_LR (<code>/api/auto</code>): Iniciar/Detener/Reset, Materialista e In process se reenvían por TCP a L+R.</p>
+<p class="state" id="mode-global">Modo: Idle · Sensores: bloqueados</p>
 <div class="btns">
 <button class="primary" onclick="autoCmd('start')">Iniciar</button>
 <button class="danger" onclick="autoCmd('stop')">Detener</button>
@@ -128,7 +129,15 @@ return info.warn?'warn':'err';
 function applySide(prefix,d){
 var stEl=document.getElementById('state-'+prefix);
 var errLine=d.error?' · FALTA ENCLAVADA':'';
-stEl.textContent='Auto: '+(d.autoEnabled?'ON':'OFF')+' · '+d.autoState+errLine;
+var mode='Idle';
+if(d.idleMode)mode='Materialista';
+else if(d.inProcess)mode='In process';
+else if(d.machineState==='in_process')mode='In process';
+else if(d.machineState==='materialist')mode='Materialista';
+else if(d.machineState==='error')mode='Error';
+else if(d.machineState==='stop')mode='Stop';
+var armed=d.sensorsArmed!==undefined?!!d.sensorsArmed:(!d.idleMode&&!!d.inProcess);
+stEl.textContent=mode+' · Auto: '+(d.autoEnabled?'ON':'OFF')+' · '+(armed?'sensores armados':'sensores bloqueados')+' · '+d.autoState+errLine;
 SENS.forEach(function(s){var k=s[0];setDot('sens-'+prefix+'-'+k,!!d[k],false);});
 }
 function applyErrorGlobal(me,paused){
@@ -152,20 +161,28 @@ document.getElementById('txt-wifi').textContent='WiFi Master: '+(d.wifiOk?('OK '
 setDotEl('dot-ml',linkDot(ml));
 setDotEl('dot-mr',linkDot(mr));
 document.getElementById('txt-ml').textContent='Master ↔ '+linkTxt('L (.30)',ml);
-document.getElementById('txt-mr').textContent='Master ↔ '+linkTxt('R (.40)',mr);
+document.getElementById('txt-mr').textContent='Master ↔ '+linkTxt('R (.102)',mr);
 applyErrorGlobal(me,d.paused);
 document.getElementById('paused-banner').hidden=!d.paused;
 applySide('l',d.l);
 applySide('r',d.r);
+var idleOn=!!(d.l.idleMode||d.r.idleMode);
+var inProc=!!(d.l.inProcess||d.r.inProcess);
+var modeG=document.getElementById('mode-global');
+if(modeG){
+  var gTxt=idleOn?'Materialista':(inProc?'In process':'Idle');
+  var gArm=(!idleOn&&inProc)?'armados':'bloqueados';
+  modeG.textContent='Modo: '+gTxt+' · Sensores: '+gArm;
+}
 if(d.uiL){var a=document.getElementById('link-ui-l');if(a)a.href=d.uiL;var pl=document.getElementById('panel-link-l');if(pl)pl.href=d.uiL;}
 if(d.uiR){var b=document.getElementById('link-ui-r');if(b)b.href=d.uiR;var pr=document.getElementById('panel-link-r');if(pr)pr.href=d.uiR;}
-var idle=document.getElementById('tog-idle');if(idle&&!idle._user)idle.checked=!!(d.l.idleMode||d.r.idleMode);
-var proc=document.getElementById('tog-proc');if(proc&&!proc._user)proc.checked=!!(d.l.inProcess||d.r.inProcess);
+var idle=document.getElementById('tog-idle');if(idle&&!idle._user)idle.checked=idleOn;
+var proc=document.getElementById('tog-proc');if(proc&&!proc._user)proc.checked=inProc;
 }).catch(function(e){
 setDotEl('dot-wifi','err');
 document.getElementById('txt-wifi').textContent='Poll: '+(e&&e.message?e.message:'sin respuesta')+' — prueba /ping y /api/health';
 setDotEl('dot-ml','err');document.getElementById('txt-ml').textContent='Master ↔ L (.30): poll pendiente';
-setDotEl('dot-mr','err');document.getElementById('txt-mr').textContent='Master ↔ R (.40): poll pendiente';
+setDotEl('dot-mr','err');document.getElementById('txt-mr').textContent='Master ↔ R (.102): poll pendiente';
 });}
 function autoFetch(q){return fetch('/api/auto?'+q,{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){if(!d.ok)throw new Error(d.error||'fail');poll();}).catch(function(e){alert(e&&e.message?e.message:'Error de conexión');});}
 function autoCmd(action){

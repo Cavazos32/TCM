@@ -6,11 +6,13 @@ from typing import Any, Callable, Optional
 
 from tcp_link import ModuleTcpClient
 
-# --- Comandos maestro → PreFeeder Master (0x2A–0x2C, 0x3F) ---
+# --- Comandos maestro → PreFeeder Master (0x2A–0x2C, 0x3F, 0x4C, 0x51) ---
 CMD_START = 0x2A
 CMD_STOP = 0x2B
 CMD_RESET = 0x2C
 CMD_MATERIALIST = 0x3F
+CMD_TRIGGER_R = 0x4C  # TriggerR() — Tfeed lado R
+CMD_TRIGGER_L = 0x51  # TriggerL() — Tfeed lado L
 
 # --- Errores por lado (esclavo → maestro, 0x2D–0x38) ---
 TX_BUFFER_FULL_R = 0x2D
@@ -115,6 +117,12 @@ class PreFeederClient(ModuleTcpClient):
 
     def cmd_materialist(self) -> bool:
         return self.cmd_byte(CMD_MATERIALIST)
+
+    def cmd_trigger_r(self) -> bool:
+        return self.cmd_byte(CMD_TRIGGER_R)
+
+    def cmd_trigger_l(self) -> bool:
+        return self.cmd_byte(CMD_TRIGGER_L)
 
     def cmd_status(self) -> bool:
         return self.cmd_byte(TX_PF_IDLE)

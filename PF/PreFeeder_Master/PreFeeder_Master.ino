@@ -1,13 +1,13 @@
 // PreFeeder Master — orquesta L/R: lee estados, agrega errores, despacha comandos.
 // Globales (control manual) → L+R | Volátiles (trigger, settings) → un lado (side=L|R).
-// HMI TCM: TCP :8768 JSON+newline (bytes 0x2A–0x3F, ver master_tcp.h).
+// HMI TCM: TCP JSON+newline (opcodes en ../PfStates.h).
 #include <WiFi.h>
 #include <WebServer.h>
 #include "../PF_LR/Status_Mode.h"
+#include "../PfStates.h"
 #include "Config.h"
 #include "master_cmds.h"
 #include "master_html.h"
-#include "master_tcp.h"
 
 static const char* WIFI_SSID = PF_MASTER_WIFI_SSID;
 static const char* WIFI_PASS = PF_MASTER_WIFI_PASS;
@@ -15,7 +15,7 @@ static const IPAddress STA_IP = PF_MASTER_STA_IP;
 static const IPAddress STA_GW = PF_MASTER_STA_GW;
 static const IPAddress STA_MASK = PF_MASTER_STA_MASK;
 static const IPAddress PF_L_IP(10, 10, 32, 101);
-static const IPAddress PF_R_IP(10, 10, 32, 40);
+static const IPAddress PF_R_IP(10, 10, 32, 102);
 static const uint16_t PF_PORT = 8765;
 static const uint16_t PF_UI_PORT = 80;
 static const uint32_t RECONNECT_MS = 2500;
@@ -77,6 +77,8 @@ struct SideView {
   String errorReason = "none";
   bool idleMode = false;
   bool inProcess = false;
+  bool sensorsArmed = false;
+  String machineState = "idle";
   uint32_t lastMsAgo = 99999;
 };
 
@@ -286,6 +288,9 @@ static void parseSideSnapshot(const char* j, SideView& s)
   if (st.length()) s.autoState = st;
   s.idleMode = jBool(j, "idleMode", s.idleMode);
   s.inProcess = jBool(j, "inProcess", s.inProcess);
+  s.sensorsArmed = jBool(j, "sensorsArmed", s.sensorsArmed);
+  String ms = jStr(j, "machineState");
+  if (ms.length()) s.machineState = ms;
   applySideError(s, jBool(j, "error", s.error),
                  (uint8_t)jInt(j, "errorCode", s.errorCode),
                  jStr(j, "errorReason").length() ? jStr(j, "errorReason") : s.errorReason);
@@ -304,6 +309,12 @@ static void parseSideEvent(const char* line, SideView& s)
   else if (field == "holgura") s.holgura = jBool(line, "value", s.holgura);
   else if (field == "idleMode") s.idleMode = jBool(line, "value", s.idleMode);
   else if (field == "inProcess") s.inProcess = jBool(line, "value", s.inProcess);
+  else if (field == "sensorsArmed") s.sensorsArmed = jBool(line, "value", s.sensorsArmed);
+  else if (field == "machineState")
+  {
+    String ms = jStr(line, "value");
+    if (ms.length()) s.machineState = ms;
+  }
   else if (field == "auto")
   {
     s.autoEnabled = jBool(line, "autoEnabled", s.autoEnabled);
@@ -543,6 +554,8 @@ static void appendSideJson(String& j, const char* key, const SideView& s)
   j += ",\"autoState\":"; jsonAppendStr(j, s.autoState);
   j += ",\"idleMode\":"; j += s.idleMode ? "true" : "false";
   j += ",\"inProcess\":"; j += s.inProcess ? "true" : "false";
+  j += ",\"sensorsArmed\":"; j += s.sensorsArmed ? "true" : "false";
+  j += ",\"machineState\":"; jsonAppendStr(j, s.machineState);
   j += ",\"error\":"; j += s.error ? "true" : "false";
   j += ",\"errorCode\":"; j += s.errorCode;
   j += ",\"errorReason\":"; jsonAppendStr(j, s.errorReason);
@@ -849,20 +862,20 @@ static bool pfSideBusy(const SideView& s)
 static uint8_t pfTcpResolveStateByte()
 {
   if (pfError.active && pfError.level >= 2)
-    return PF_TX_ERROR;
+    return PF_ST_ERROR;
   if (pfTcpStopPending)
   {
     if (pfSideBusy(sideL) || pfSideBusy(sideR))
-      return PF_TX_STOP;
-    return PF_TX_RETURN;
+      return PF_ST_STOP;
+    return PF_ST_RETURN;
   }
   if (machinePaused)
-    return PF_TX_STOP;
+    return PF_ST_STOP;
   if (pfSideBusy(sideL) || pfSideBusy(sideR))
-    return PF_TX_BUSY;
+    return PF_ST_BUSY;
   if (sideL.autoEnabled || sideR.autoEnabled)
-    return PF_TX_BUSY;
-  return PF_TX_IDLE;
+    return PF_ST_BUSY;
+  return PF_ST_IDLE;
 }
 
 static void pfTcpPushStateIfChanged()
@@ -870,7 +883,7 @@ static void pfTcpPushStateIfChanged()
   const uint8_t st = pfTcpResolveStateByte();
   if (st == pfTcpLastStateByte) return;
   pfTcpTxState(st, pfTcpStateName(st));
-  if (st == PF_TX_RETURN)
+  if (st == PF_ST_RETURN)
     pfTcpStopPending = false;
 }
 
@@ -896,8 +909,8 @@ static void pfTcpPushSideErrors(char side, SideView& s, bool* lastFlags, bool fo
     if (!force && now == lastFlags[i]) continue;
     lastFlags[i] = now;
     const uint8_t errByte = (side == 'R')
-                                ? (uint8_t)(PF_TX_BUFFER_FULL_R + i)
-                                : (uint8_t)(PF_TX_BUFFER_FULL_L + i);
+                                ? (uint8_t)(PF_ERR_BUFFER_FULL_R + i)
+                                : (uint8_t)(PF_ERR_BUFFER_FULL_L + i);
     pfTcpTxEvent(errByte, pfTcpErrorName(errByte), side, now);
   }
 }
@@ -958,6 +971,13 @@ static uint8_t pfTcpResolveCmdByte(const char* line)
   if (cmd == "ResetPF" || cmd == "reset" || cmd == "Reset") return PF_CMD_RESET;
   if (cmd == "Materialist" || cmd == "materialist" || cmd == "materialistaCall")
     return PF_CMD_MATERIALIST;
+  if (cmd == "TriggerR" || cmd == "triggerR" || cmd == "TriggerFeedR")
+    return PF_CMD_TRIGGER_R;
+  if (cmd == "TriggerL" || cmd == "triggerL" || cmd == "TriggerFeedL")
+    return PF_CMD_TRIGGER_L;
+  // Legacy: Trigger sin lado → R (tabla histórica 0x4C)
+  if (cmd == "Trigger" || cmd == "trigger" || cmd == "TriggerFeed")
+    return PF_CMD_TRIGGER_R;
   return 0;
 }
 
@@ -975,7 +995,7 @@ static bool pfTcpDoByte(uint8_t cmdByte)
       ok = pfDispatchCmd("stop", "", '-');
       if (ok) {
         pfTcpStopPending = true;
-        pfTcpTxState(PF_TX_STOP, "StoprState");
+        pfTcpTxState(PF_ST_STOP, "StoprState");
       }
       break;
     case PF_CMD_RESET:
@@ -988,6 +1008,14 @@ static bool pfTcpDoByte(uint8_t cmdByte)
       break;
     case PF_CMD_MATERIALIST:
       ok = pfDispatchCmd("materialistaCall", "1", '-');
+      break;
+    case PF_CMD_TRIGGER_R:
+      ok = pfDispatchCmd("trigger", "", 'R');
+      if (!ok) err = "TriggerR sin enlace R";
+      break;
+    case PF_CMD_TRIGGER_L:
+      ok = pfDispatchCmd("trigger", "", 'L');
+      if (!ok) err = "TriggerL sin enlace L";
       break;
     default:
       if (pfTcpIsErrorByte(cmdByte))
@@ -1123,7 +1151,7 @@ static void pfTcpPollStateEvents()
   if (!pfTcpLinkOk()) return;
 
   if (pfTcpNeedInit) {
-    pfTcpTxState(PF_TX_INIT, "InitState");
+    pfTcpTxState(PF_ST_INIT, "InitState");
     pfTcpNeedInit = false;
   }
 
