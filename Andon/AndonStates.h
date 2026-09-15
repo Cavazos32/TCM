@@ -7,13 +7,23 @@
 // Andon — opcodes TCP
 //
 // Torre:
-//   • HMI → Andon: ANDON_RX_* (0x40–0x49) estado de máquina.
-//   • Presión FRL (GPIO): local — NO se recibe opcode.
-//     Cambio en PIN_PRESSURE_FRL → activa torreta Error + TX 0x50 a HMI.
-//     0x50 es solo aviso (Andon → HMI); no hay RX de 0x50.
+//   • HMI → Andon: ANDON_RX_* (0x40–0x49) estado de máquina (no EXXX).
+//   • Presión FRL (GPIO): local — NO se recibe opcode de estado.
+//     Cambio en PIN_PRESSURE_FRL → torreta Error + TX 0x50 (E064) a HMI.
+//     0x50 es detalle EXXX (Andon → HMI); no hay RX de 0x50.
 // =============================================================================
 
-// --- RX desde HMI: estado de máquina (torre) ---
+#ifndef ERR_CLASS_DEFINED
+#define ERR_CLASS_DEFINED
+enum ErrClass : uint8_t {
+  ERR_CLASS_NONE = 0,
+  ERR_CLASS_C1   = 1,
+  ERR_CLASS_C2   = 2,
+  ERR_CLASS_C3   = 3,
+};
+#endif
+
+// --- RX desde HMI: estado de máquina (torre) — no EXXX ---
 enum AndonRx : uint8_t {
   ANDON_RX_INIT        = 0x40,  // InitState()      · Green
   ANDON_RX_START       = 0x41,  // StartCycle()
@@ -27,11 +37,15 @@ enum AndonRx : uint8_t {
   ANDON_RX_MATERIALIST = 0x49,  // Materialist()    · Yellow + Buzzer
 };
 
-// --- TX Andon → HMI (solo salida; no se recibe) ---
+// --- TX Andon → HMI (detalle EXXX; solo salida) ---
 enum AndonError : uint8_t {
-  ANDON_ERR_PRESSURE = 0x50,  // PressureError() — pin FRL · avisar HMI
+  ANDON_ERR_PRESSURE = 0x50,  // E064 C1 · PressureError() — pin FRL
 };
 #define ANDON_TX_PRESSURE ANDON_ERR_PRESSURE
+
+static inline ErrClass andonErrClass(uint8_t b) {
+  return (b == ANDON_ERR_PRESSURE) ? ERR_CLASS_C1 : ERR_CLASS_NONE;
+}
 
 static inline bool andonIsMachineByte(uint8_t b) {
   return b >= ANDON_RX_INIT && b <= ANDON_RX_MATERIALIST;

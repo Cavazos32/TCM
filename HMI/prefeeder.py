@@ -58,20 +58,7 @@ TX_PF_ERROR = 0x3C
 TX_PF_STOP = 0x3D
 TX_PF_RETURN = 0x3E
 
-ERROR_LABELS = {
-    TX_BUFFER_FULL_R: "Buffer Full R (0x02D)",
-    TX_BUFFER_MAX_R: "Buffer Max R (0x02E)",
-    TX_TENSION_R: "Tensioner R (0x02F)",
-    TX_CILINDRO_R: "Cilindro R (0x030)",
-    TX_MANGUERA_R: "Manguera ausente R (0x031)",
-    TX_HOLGURA_R: "Holgura R (0x032)",
-    TX_BUFFER_FULL_L: "Buffer Full L (0x033)",
-    TX_BUFFER_MAX_L: "Buffer Max L (0x034)",
-    TX_TENSION_L: "Tensioner L (0x035)",
-    TX_CILINDRO_L: "Cilindro L (0x036)",
-    TX_MANGUERA_L: "Manguera ausente L (0x037)",
-    TX_HOLGURA_L: "Holgura L (0x038)",
-}
+from error_catalog import ERROR_LABELS  # EXXX: Module, Descripción (E052–E063, E069)
 
 STATE_LABELS = {
     TX_PF_INIT: "Init (0x039)",

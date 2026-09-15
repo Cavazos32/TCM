@@ -60,6 +60,8 @@ python app.py
 
 Abrir: **http://localhost:5050**
 
+Al arrancar, si `frontend/src` es más reciente que `dist`, `app.py` ejecuta `npm run build` solo (desactivar con `HMI_AUTO_BUILD_UI=0`). Flask **siempre** sirve `frontend/dist`, no el código fuente.
+
 ### Acceso directo (Windows)
 
 Doble clic en **`Iniciar HMI.bat`**: inicia el servidor en una ventana nueva y abre el navegador. Si el servidor ya corre, solo abre la web.

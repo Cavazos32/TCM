@@ -60,6 +60,9 @@ export interface BackendCycleSnapshot {
   completed?: boolean;
   lastOk: boolean;
   fault: string;
+  faultClass?: string;
+  recovery?: string;
+  c3Pending?: boolean;
   config: BackendCycleConfig;
   flow: BackendFlowStep[];
 }
@@ -78,6 +81,9 @@ export interface BackendMotion {
   enc_l: string;
   feedOffsetMmL: number;
   feedOffsetMmR: number;
+  laserR?: boolean;
+  laserL?: boolean;
+  safetyExhaust?: boolean;
 }
 
 export interface BackendValve {
@@ -90,6 +96,7 @@ export interface BackendPlc {
   connected: boolean;
   status: BackendBanner;
   last_state_byte: number | null;
+  blowerSec?: number;
   valves: Record<string, BackendValve>;
 }
 
@@ -105,12 +112,27 @@ export interface BackendPreFeeder {
   errors: Record<string, BackendPfError>;
 }
 
+export interface BackendErrorLatch {
+  active: boolean;
+  code: string;
+  byte: number;
+  module: string;
+  description: string;
+  class: string;
+  ui: string;
+  needsConfirm: boolean;
+  needsHome: boolean;
+  recovery: string;
+  confirmed: boolean;
+}
+
 export interface BackendSnapshot {
   models: BackendModel[];
   selectedModel: number;
   mm: number;
   rpm: number;
   banner: BackendBanner;
+  error?: BackendErrorLatch;
   progress: number;
   resumeEnabled: boolean;
   cycle: BackendCycleSnapshot;

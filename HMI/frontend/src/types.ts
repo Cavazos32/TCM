@@ -85,6 +85,11 @@ export interface MachineState {
   piecesCount: number;
   targetPieces: number;
   cycleCompleted: boolean;
+  safetyExhaust: boolean;
+  fault?: string;
+  faultClass?: string;
+  errorNeedsConfirm?: boolean;
+  errorNeedsHome?: boolean;
 }
 
 export interface MotionState {
@@ -103,12 +108,15 @@ export interface MotionState {
   feederCanRTesting: boolean;
   offsetL: number;
   offsetR: number;
+  laserR: boolean;
+  laserL: boolean;
   statusText?: string;
 }
 
 export interface PlcState {
   connection: ConnectionState;
   statusText?: string;
+  blowerSec: number;
   valves: ValveItem[];
 }
 

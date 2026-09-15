@@ -8,7 +8,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 from prefeeder import TX_PF_BUSY, TX_PF_ERROR
 from machine_states import (
     CMD_RESET,
@@ -25,6 +25,7 @@ from machine_states import (
     TX_RETURN,
     TX_STOP,
 )
+from error_catalog import format_ui
 
 HMI_ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = HMI_ROOT / "config" / "cycle_config.json"
@@ -205,6 +206,7 @@ class CycleHost(Protocol):
     def cmd_pf_stop(self) -> bool: ...
     def cmd_pf_trigger_r(self) -> bool: ...
     def cmd_pf_trigger_l(self) -> bool: ...
+    def apply_detail_error(self, code_or_byte: str | int) -> bool: ...
 
 class CycleRunner:
     """Ejecuta el flujo de CycleFlowCopy en un hilo (orquestación)."""
@@ -230,9 +232,17 @@ class CycleRunner:
         self._progress = 0
         self._last_ok = False
         self._fault = ""
+        self._fault_class = ""
+        self._c3_stop_after_step = False  # C3: terminar paso actual
+        self._recovery = ""  # home | restart_from_0 | retry_process
         self._lot_rpm = 1200.0
         self._started_at: float | None = None
         self._finished_elapsed = 0.0
+        self._on_machine_state: Callable[[int], None] | None = None
+
+    def set_machine_state_hook(self, cb: Callable[[int], None] | None) -> None:
+        """HMI registra envío a Andon (0x40–0x49)."""
+        self._on_machine_state = cb
     # --- snapshot / config ---
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -263,6 +273,9 @@ class CycleRunner:
                 "completed": self._last_ok and not self._active,
                 "lastOk": self._last_ok,
                 "fault": self._fault,
+                "faultClass": self._fault_class,
+                "recovery": self._recovery,
+                "c3Pending": self._c3_stop_after_step,
                 "config": self._cfg.to_dict(),
                 "flow": FLOW_STEPS,
             }
@@ -325,6 +338,9 @@ class CycleRunner:
         self._pause.clear()
         self._aborted = False
         self._fault = ""
+        self._fault_class = ""
+        self._c3_stop_after_step = False
+        self._recovery = ""
         self._last_ok = False
         self._set_state(TX_BUSY)
         self._host.cycle_log(
@@ -365,13 +381,16 @@ class CycleRunner:
             return {"ok": False, "error": "Detener ciclo antes de Reset"}
         self._aborted = False
         self._fault = ""
+        self._fault_class = ""
+        self._c3_stop_after_step = False
+        self._recovery = ""
         self._last_ok = False
         self._materialist = False
         self._pieces_done = 0
         self._finished_elapsed = 0.0
         self._set_progress(0, 0, 0)
         self._set_state(TX_IDLE)
-        self._host.cycle_log("Cycle Reset (0x042)")
+        self._host.cycle_log("Cycle Reset (0x043)")
         return {"ok": True}
     def set_materialist(self, on: bool) -> dict[str, Any]:
         if on and self.is_active():
@@ -413,8 +432,77 @@ class CycleRunner:
         with self._lock:
             self._state_byte = byte
             if detail and byte in (TX_ERROR, TX_STOP):
-                self._fault = detail
+                self._fault = format_ui(detail, fallback=detail)
         self._host.cycle_notify()
+        hook = self._on_machine_state
+        if hook:
+            try:
+                hook(byte)
+            except Exception:
+                pass
+
+    def _raise_fault(self, slug_or_code: str, err_class: str = "") -> None:
+        """Latchea fallo EXXX vía política HMI (Set flip-flop)."""
+        if hasattr(self._host, "apply_detail_error"):
+            if self._host.apply_detail_error(slug_or_code):
+                return
+        self._fault = format_ui(slug_or_code, fallback=slug_or_code)
+        if err_class:
+            self._fault_class = err_class
+        self._set_state(TX_ERROR, self._fault)
+
+    def apply_error_policy(self, action: str, ui: str, err_class: str, recovery: str) -> dict[str, Any]:
+        """
+        Aplica Set C1/C2/C3 desde HmiState.
+        action: stop_all | pause | finish_step
+        """
+        self._fault = ui
+        self._fault_class = err_class
+        self._recovery = recovery
+        if action == "stop_all":
+            self._c3_stop_after_step = False
+            self._aborted = True
+            self._stop.set()
+            self._pause.clear()
+            # Best-effort: un módulo caído no debe tumbar la política.
+            for fn in (
+                self._host.cmd_motion_stop,
+                self._host.cmd_pf_stop,
+                self._host.cmd_plc_all_safe,
+            ):
+                try:
+                    fn()
+                except Exception:
+                    pass
+            self._set_state(TX_ERROR, ui)
+            self._host.cycle_log(f"Policy {err_class} stop_all · {ui}")
+            return {"ok": True, "action": action}
+        if action == "link_down":
+            # Solo abortar ciclo local; no mandar stop por TCP al nodo caído.
+            self._c3_stop_after_step = False
+            self._aborted = True
+            self._stop.set()
+            self._pause.clear()
+            self._set_state(TX_ERROR, ui)
+            self._host.cycle_log(f"Policy {err_class} link_down · {ui}")
+            self._host.cycle_notify()
+            return {"ok": True, "action": action}
+        if action == "pause":
+            self._c3_stop_after_step = False
+            if self.is_active():
+                self._pause.set()
+            self._set_state(TX_ERROR, ui)
+            self._host.cycle_log(f"Policy {err_class} pause · {ui}")
+            self._host.cycle_notify()
+            return {"ok": True, "action": action}
+        if action == "finish_step":
+            self._c3_stop_after_step = True
+            self._set_state(TX_ERROR, ui)
+            self._host.cycle_log(f"Policy {err_class} finish_step · {ui}")
+            self._host.cycle_notify()
+            return {"ok": True, "action": action}
+        self._set_state(TX_ERROR, ui)
+        return {"ok": True, "action": "error_state"}
     def _set_progress(self, rep: int, step: int, total: int) -> None:
         meta = next((s for s in FLOW_STEPS if s["id"] == step), {})
         with self._lock:
@@ -434,6 +522,13 @@ class CycleRunner:
         self._host.cycle_notify()
     def _enter(self, rep: int, qty: int, key: str) -> bool:
         """Marca paso atómico. True = abortar."""
+        # C3: tras terminar el paso previo, no lanzar el siguiente
+        if self._c3_stop_after_step:
+            self._c3_stop_after_step = False
+            self._pause.set()
+            self._host.cycle_log("C3: paso terminado — pausa para Resume/Reset")
+            self._host.cycle_notify()
+            return True
         meta = STEP_BY_KEY[key]
         self._set_progress(rep, int(meta["id"]), qty)
         if self._pause_before_step(key):
@@ -531,8 +626,8 @@ class CycleRunner:
         cfg = self.get_config()
         ok = self._host.wait_motion_idle_or_reached(cfg.motion_wait_timeout_s)
         if not ok:
-            self._fault = "timeout_motion"
-            self._host.cycle_log("Cycle: timeout espera Motion Idle/Reached")
+            self._raise_fault("timeout_motion")
+            self._host.cycle_log(format_ui("E008"))
         return ok
     def _wait_feed(self) -> bool:
         if self._trial_mode:
@@ -541,8 +636,8 @@ class CycleRunner:
         cfg = self.get_config()
         ok = self._host.wait_feed_length_ok(cfg.feed_wait_timeout_s)
         if not ok:
-            self._fault = "timeout_feed"
-            self._host.cycle_log("Cycle: feed sin LengthOK / timeout")
+            self._raise_fault("timeout_feed")
+            self._host.cycle_log(format_ui("E009"))
         return ok
     def _effective_mm(self, length_mm: float) -> float:
         cfg = self.get_config()
@@ -555,7 +650,7 @@ class CycleRunner:
         self._host.cmd_plc_holder(True)
         self._host.clear_motion_wait_flags()
         if not self._host.cmd_motion_move_zero(self._lot_rpm):
-            self._fault = "home_cmd"
+            self._raise_fault("home_cmd")
             return False
         if not self._wait_motion():
             return False
@@ -565,7 +660,7 @@ class CycleRunner:
         ok_l = self._host.cmd_motion_feed_l()
         ok_r = self._host.cmd_motion_feed_r()
         if not (ok_l or ok_r):
-            self._fault = "feed_cmd"
+            self._raise_fault("feed_cmd")
             return False
         return self._wait_feed()
     def _deposit_extra_mm(self, rep: int) -> float:
@@ -664,7 +759,7 @@ class CycleRunner:
                     break
                 self._host.clear_motion_wait_flags()
                 if not self._host.cmd_motion_move_mm(target_mm, rpm):
-                    self._fault = "move_cmd"
+                    self._raise_fault("move_cmd")
                     break
                 if not self._wait_motion():
                     break
@@ -686,7 +781,7 @@ class CycleRunner:
                 if not self._trial_mode and self._host.pf_connected():
                     st = self._host.pf_state_byte()
                     if st == TX_PF_ERROR:
-                        self._fault = "prefeeder_all_ok"
+                        self._raise_fault("prefeeder_all_ok")
                         self._host.cycle_log("Corte abortado: PreFeeder Error")
                         break
                 self._host.cmd_plc_cutters(True)
@@ -724,7 +819,7 @@ class CycleRunner:
                     else:
                         self._host.clear_motion_wait_flags()
                     if not self._host.cmd_motion_move_mm(deposit_target, rpm):
-                        self._fault = "deposit_cmd"
+                        self._raise_fault("deposit_cmd")
                         break
                     if not self._wait_motion():
                         break
@@ -743,7 +838,7 @@ class CycleRunner:
                 ok_r = self._host.cmd_pf_trigger_r()
                 ok_l = self._host.cmd_pf_trigger_l()
                 if not ok_r and not ok_l:
-                    self._fault = "pf_trigger"
+                    self._raise_fault("pf_trigger")
                     self._host.cycle_log("trigger PreFeeder falló (R+L)")
                     break
                 self._host.cycle_log(
@@ -762,7 +857,7 @@ class CycleRunner:
                 else:
                     self._host.clear_motion_wait_flags()
                 if not self._host.cmd_motion_move_zero(self._lot_rpm):
-                    self._fault = "home_cmd"
+                    self._raise_fault("home_cmd")
                     break
                 if not self._wait_motion():
                     break
@@ -778,7 +873,7 @@ class CycleRunner:
                     else:
                         handoff_ready = False
                         if not self._fault:
-                            self._fault = "feed_incomplete"
+                            self._raise_fault("feed_incomplete")
                         break
                     prefetch_running = False
                 if self._after_step("handoff"):
@@ -809,7 +904,7 @@ class CycleRunner:
                 self._host.cycle_notify()
             self._finish(completed >= qty and not self._aborted and not self._fault)
         except Exception as exc:
-            self._fault = f"exception:{exc}"
+            self._raise_fault(f"exception:{exc}")
             self._host.cycle_log(f"Cycle exception: {exc}")
             self._finish(False)
         finally:

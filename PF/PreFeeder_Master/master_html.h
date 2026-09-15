@@ -143,10 +143,8 @@ SENS.forEach(function(s){var k=s[0];setDot('sens-'+prefix+'-'+k,!!d[k],false);})
 function applyErrorGlobal(me,paused){
 var el=document.getElementById('error-global');
 if(!me.active){el.textContent='Sin error — sistema OK (L+R)';el.className='error-global ok';return;}
-var txt=me.tag||('PF-'+String(me.code).padStart(3,'0'));
-txt+=' · Nivel '+me.level;
-if(me.side&&me.side!=='-')txt+=' · lado '+me.side;
-txt+=' · '+me.reason;
+var txt=me.ui||((me.exxx||me.tag||'E???')+': Pre-Feeder, '+(me.reason||'falla'));
+if(me.side&&me.side!=='-')txt+=' · '+me.side;
 if(paused)txt+=' · PAUSE';
 el.textContent=txt;el.className='error-global '+(me.level>=3?'err':(me.level>=2?'warn':'warn'));
 }

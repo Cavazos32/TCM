@@ -3,9 +3,11 @@
 //
 // RESUMEN:
 //   · Lee 6 entradas (pinzas, sujetador, cortador, manguera A/B, bandeja) con debounce.
-//   · Conmuta 6 salidas válvula (cutter R/L, grippers, holder, encoder, blower, reset).
+//   · Válvulas por impulso (cutter R/L, grippers, holder, encoder, reset):
+//     comando on = un pulso; off = otro pulso. El GPIO no queda enclavado.
+//   · Blower: nivel ON durante durationSec (HMI), luego OFF automático.
 //   · Compatible con protocolo sensor_tubecut (snapshot/alert/poll).
-//   · Status extendido para PLCA_Master (válvulas en JSON type=status).
+//   · Status extendido para PLCA_Master (válvulas lógicas en JSON type=status).
 //
 // ÍNDICE:
 //   01  Estado global
@@ -41,10 +43,13 @@ bool stCutterR   = false;
 bool stCutterL   = false;
 bool stCutters   = false;
 bool stGrippers  = false;
-bool stHolder    = true;
+bool stHolder    = false;  // no auto-ON: lo activa rutina / manual
 bool stEncoder   = false;  // válvula encoder (0x1D)
 bool stBlower    = false;
 bool stReset     = false;
+static bool blowerTimedActive = false;
+static unsigned long blowerStartMs = 0;
+static unsigned long blowerHoldMs = 0;
 
 char tcpRxLine[512];
 uint16_t tcpRxLen = 0;
@@ -55,7 +60,7 @@ static bool lastPeerCutterR = false;
 static bool lastPeerCutterL = false;
 static bool lastPeerCutters = false;
 static bool lastPeerGrippers = false;
-static bool lastPeerHolder = true;
+static bool lastPeerHolder = false;
 static bool lastPeerEncoder = false;
 static bool lastPeerBlower = false;
 static bool lastPeerReset = false;
@@ -123,7 +128,7 @@ static void logSensorMask(uint8_t mask)
 }
 
 // ============================================================
-// SECCION 03 — Válvulas
+// SECCION 03 — Válvulas (pulso ON / pulso OFF, sin enclavado)
 // ============================================================
 static void valveWritePin(uint8_t pin, bool on)
 {
@@ -134,20 +139,80 @@ static void valveWritePin(uint8_t pin, bool on)
 #endif
 }
 
-static void applyPlcOutputs()
+static void valveIdleAll()
+{
+  valveWritePin(PIN_OUT_CUTTER_R, false);
+  valveWritePin(PIN_OUT_CUTTER_L, false);
+  valveWritePin(PIN_OUT_GRIPPERS, false);
+  valveWritePin(PIN_OUT_HOLDER,   false);
+  valveWritePin(PIN_OUT_ENCODER,  false);
+  valveWritePin(PIN_OUT_BLOWER,   false);
+  valveWritePin(PIN_OUT_RESET,    false);
+}
+
+static void valvePulsePin(uint8_t pin)
+{
+  valveWritePin(pin, true);
+  delay(VALVE_PULSE_MS);
+  valveWritePin(pin, false);
+}
+
+static void syncCuttersFlag()
 {
   stCutters = stCutterR || stCutterL;
-  valveWritePin(PIN_OUT_CUTTER_R, stCutterR);
-  valveWritePin(PIN_OUT_CUTTER_L, stCutterL);
-  valveWritePin(PIN_OUT_GRIPPERS, stGrippers);
-  valveWritePin(PIN_OUT_HOLDER,   stHolder);
-  valveWritePin(PIN_OUT_ENCODER,  stEncoder);
-  valveWritePin(PIN_OUT_BLOWER,   stBlower);
-  valveWritePin(PIN_OUT_RESET,    stReset);
+}
+
+// KEEP lógico (Set/Res): pulso solo en transición. Mismo pin = Set o Res
+// según wantOn; el PLC neumático enclava. No pulsar si ya está en el estado
+// pretendido (un pulso de más invertiría un KEEP tipo toggle).
+static bool valveSetPulse(bool& st, uint8_t pin, bool wantOn)
+{
+  if (st == wantOn) return false;
+  st = wantOn;
+  valvePulsePin(pin);
+  syncCuttersFlag();
+  return true;
+}
+
+static void blowerStop()
+{
+  blowerTimedActive = false;
+  blowerHoldMs = 0;
+  valveWritePin(PIN_OUT_BLOWER, false);
+  stBlower = false;
+}
+
+static void blowerStart(unsigned long durationMs)
+{
+  if (durationMs < BLOWER_MIN_MS) durationMs = BLOWER_MIN_MS;
+  if (durationMs > BLOWER_MAX_MS) durationMs = BLOWER_MAX_MS;
+  valveWritePin(PIN_OUT_BLOWER, true);
+  stBlower = true;
+  blowerTimedActive = true;
+  blowerStartMs = millis();
+  blowerHoldMs = durationMs;
 #if PLCA_DEBUG
-  Serial.printf("VALVE cutterR=%d cutterL=%d grippers=%d holder=%d encoder=%d blower=%d reset=%d\n",
+  Serial.printf("BLOWER ON %lums (%.1fs)\n", durationMs, durationMs / 1000.0);
+#endif
+}
+
+static bool blowerSet(bool wantOn, unsigned long durationMs)
+{
+  if (!wantOn) {
+    if (!stBlower && !blowerTimedActive) return false;
+    blowerStop();
+    return true;
+  }
+  blowerStart(durationMs);
+  return true;
+}
+
+static void logValveLogical()
+{
+#if PLCA_DEBUG
+  Serial.printf("VALVE(logic) cutterR=%d cutterL=%d grippers=%d holder=%d encoder=%d blower=%d\n",
                 (int)stCutterR, (int)stCutterL, (int)stGrippers, (int)stHolder,
-                (int)stEncoder, (int)stBlower, (int)stReset);
+                (int)stEncoder, (int)stBlower);
 #endif
 }
 
@@ -156,17 +221,44 @@ static bool setPlcOutputByName(const String& outName, bool state)
   String n = outName;
   n.trim();
   n.toUpperCase();
-  if (n == "CUTTER" || n == "CUTTERS") { stCutterR = stCutterL = state; }
-  else if (n == "CUTTER_R" || n == "CUTTERS_R") stCutterR = state;
-  else if (n == "CUTTER_L" || n == "CUTTERS_L") stCutterL = state;
-  else if (n == "GRIPPER" || n == "GRIPPERS") stGrippers = state;
-  else if (n == "HOLDER") stHolder = state;
-  else if (n == "FGTRAY" || n == "TRAY" || n == "ENCODER") stEncoder = state;
-  else if (n == "BLOWER") stBlower = state;
-  else if (n == "RESET") stReset = state;
+  bool changed = false;
+  if (n == "CUTTER" || n == "CUTTERS") {
+    changed |= valveSetPulse(stCutterR, PIN_OUT_CUTTER_R, state);
+    changed |= valveSetPulse(stCutterL, PIN_OUT_CUTTER_L, state);
+  }
+  else if (n == "CUTTER_R" || n == "CUTTERS_R")
+    changed = valveSetPulse(stCutterR, PIN_OUT_CUTTER_R, state);
+  else if (n == "CUTTER_L" || n == "CUTTERS_L")
+    changed = valveSetPulse(stCutterL, PIN_OUT_CUTTER_L, state);
+  else if (n == "GRIPPER" || n == "GRIPPERS")
+    changed = valveSetPulse(stGrippers, PIN_OUT_GRIPPERS, state);
+  else if (n == "HOLDER")
+    changed = valveSetPulse(stHolder, PIN_OUT_HOLDER, state);
+  else if (n == "FGTRAY" || n == "TRAY" || n == "ENCODER")
+    changed = valveSetPulse(stEncoder, PIN_OUT_ENCODER, state);
+  else if (n == "BLOWER")
+    changed = blowerSet(state, BLOWER_DEFAULT_SEC * 1000UL);
+  else if (n == "RESET") {
+    valvePulsePin(PIN_OUT_RESET);
+    stReset = false;
+    changed = true;
+  }
   else return false;
-  applyPlcOutputs();
+  if (changed) logValveLogical();
   return true;
+}
+
+// HOME / All Off: todas las válvulas OFF (holder incluido; lo activa rutina/manual).
+static void plcGoHomePulse()
+{
+  valveSetPulse(stCutterR,  PIN_OUT_CUTTER_R, false);
+  valveSetPulse(stCutterL,  PIN_OUT_CUTTER_L, false);
+  valveSetPulse(stGrippers, PIN_OUT_GRIPPERS, false);
+  valveSetPulse(stEncoder,  PIN_OUT_ENCODER,  false);
+  blowerStop();
+  valveSetPulse(stHolder,   PIN_OUT_HOLDER,   false);
+  stReset = false;
+  logValveLogical();
 }
 
 static bool parseOnOffVal(const String& val)
@@ -355,11 +447,11 @@ static void sendAlertsForNewBits(uint8_t prev, uint8_t now)
 {
   uint8_t risen = (uint8_t)(now & ~prev);
   if (!risen) return;
-  if (risen & BIT_GRIPPER) { sendAlert(1); plcTcpTxEvent(PLC_TX_GRIPPER_ERR, "GripperE"); }
+  if (risen & BIT_GRIPPER) { sendAlert(1); plcTcpTxEvent(PLC_TX_GRIPPER_ERR, "GripperE"); }  // falla gripper / aire
   if (risen & BIT_HOLDER)  { sendAlert(2); plcTcpTxEvent(PLC_TX_HOLDER_ERR, "HolderE"); }
   if (risen & BIT_CUTTER)  { sendAlert(3); plcTcpTxEvent(PLC_TX_CUTTER_ERR, "CutterE"); }
   if (risen & (BIT_HOSE_A | BIT_HOSE_B)) sendAlert(4);
-  if (risen & BIT_ENCODER) { sendAlert(5); plcTcpTxEvent(PLC_TX_ENCODER_ERR, "EncoderE"); }
+  if (risen & BIT_ENCODER) { sendAlert(5); plcTcpTxEvent(PLC_TX_ENCODER_ERR, "EncoderE"); }  // aire / manguera / cilindro
   plcTcpPushStateIfChanged();
 }
 
@@ -437,6 +529,22 @@ static void replyPollSnapshot()
 #endif
 }
 
+static void blowerService()
+{
+  if (!blowerTimedActive) return;
+  if ((millis() - blowerStartMs) < blowerHoldMs) return;
+  blowerStop();
+#if PLCA_DEBUG
+  Serial.println("BLOWER OFF (timeout)");
+#endif
+  if (tcpLinkOk()) {
+    peerTxEvents();
+    tcpTx(statusJson("status"));
+    plcTcpPushStateIfChanged();
+    lastStatusPushMs = millis();
+  }
+}
+
 // ============================================================
 // SECCION 05 — TCP RX / WiFi
 // ============================================================
@@ -445,6 +553,23 @@ static int jInt(const char* j, const char* k, int d)
   String n = String("\"") + k + "\":";
   int i = String(j).indexOf(n);
   return i < 0 ? d : String(j).substring(i + n.length()).toInt();
+}
+
+static unsigned long blowerParseDurationMs(const char* line)
+{
+  String s(line);
+  auto readNum = [&s](const char* key) -> float {
+    String n = String("\"") + key + "\":";
+    int i = s.indexOf(n);
+    if (i < 0) return -1.0f;
+    return s.substring(i + n.length()).toFloat();
+  };
+  float sec = readNum("durationSec");
+  if (sec < 0) sec = readNum("sec");
+  if (sec > 0) return (unsigned long)(sec * 1000.0f + 0.5f);
+  float ms = readNum("durationMs");
+  if (ms > 0) return (unsigned long)(ms + 0.5f);
+  return BLOWER_DEFAULT_SEC * 1000UL;
 }
 
 static String jStr(const char* j, const char* k)
@@ -507,33 +632,32 @@ static bool plcTcpDoByte(uint8_t cmdByte, const char* line)
 
   switch (cmdByte) {
     case PLC_CMD_CUTTER_R:
-      stCutterR = wantOn;
+      valveSetPulse(stCutterR, PIN_OUT_CUTTER_R, wantOn);
       ok = true;
       break;
     case PLC_CMD_CUTTER_L:
-      stCutterL = wantOn;
+      valveSetPulse(stCutterL, PIN_OUT_CUTTER_L, wantOn);
       ok = true;
       break;
     case PLC_CMD_GRIPPER:
-      stGrippers = wantOn;
+      valveSetPulse(stGrippers, PIN_OUT_GRIPPERS, wantOn);
       ok = true;
       break;
     case PLC_CMD_HOLDER:
-      stHolder = wantOn;
+      valveSetPulse(stHolder, PIN_OUT_HOLDER, wantOn);
       ok = true;
       break;
     case PLC_CMD_ENCODER:
-      stEncoder = wantOn;
+      valveSetPulse(stEncoder, PIN_OUT_ENCODER, wantOn);
       ok = true;
       break;
     case PLC_CMD_BLOWER:
-      stBlower = wantOn;
+      blowerSet(wantOn, wantOn ? blowerParseDurationMs(line) : 0);
       ok = true;
       break;
     case PLC_CMD_RESET:
-      stCutterR = stCutterL = stGrippers = stEncoder = stBlower = false;
-      stHolder = true;
-      stReset = true;
+      valvePulsePin(PIN_OUT_RESET);
+      plcGoHomePulse();
       ok = true;
       break;
     default:
@@ -551,7 +675,6 @@ static bool plcTcpDoByte(uint8_t cmdByte, const char* line)
 
   if (ok) {
     plcTcpStopPending = false;
-    applyPlcOutputs();
     peerTxEvents();
     plcTcpPushStateIfChanged();
   }
@@ -626,15 +749,26 @@ static void tcpOnLine(const char* line)
     const String outName = out.length() ? out : val;
     const String stateRaw = out.length() ? val : String(jInt(line, "value", 0));
     const bool wantOn = parseOnOffVal(stateRaw);
+    String n = outName;
+    n.trim();
+    n.toUpperCase();
 #if PLCA_DEBUG
     Serial.printf("TCP setOut %s -> %s\n", outName.c_str(), wantOn ? "ON" : "OFF");
 #endif
-    if (!setPlcOutputByName(outName, wantOn))
-    {
+    bool changed = false;
+    if (n == "BLOWER") {
+      changed = blowerSet(wantOn, wantOn ? blowerParseDurationMs(line) : 0);
+      if (changed) logValveLogical();
+    } else if (!setPlcOutputByName(outName, wantOn)) {
 #if PLCA_DEBUG
       Serial.printf("TCP setOut RECHAZADO: \"%s\"\n", outName.c_str());
 #endif
       return;
+    } else {
+      changed = true;
+    }
+    if (!changed && n == "BLOWER") {
+      // ya OFF: igual ack con status
     }
     peerTxEvents();
     tcpTx(statusJson("status"));
@@ -645,11 +779,9 @@ static void tcpOnLine(const char* line)
   if (cmd == "allOff")
   {
     const bool alreadyHome = !stCutterR && !stCutterL && !stGrippers
-                             && !stEncoder && !stBlower && !stReset && stHolder;
+                             && !stEncoder && !stBlower && !stReset && !stHolder;
     if (!alreadyHome) {
-      stCutterR = stCutterL = stGrippers = stEncoder = stBlower = stReset = false;
-      stHolder = true;
-      applyPlcOutputs();
+      plcGoHomePulse();
       peerTxEvents();
       plcTcpStopPending = true;
       plcTcpTxState(PLC_TX_STOP, "StoprState");
@@ -660,12 +792,14 @@ static void tcpOnLine(const char* line)
   }
   if (cmd == "poll")
   {
+    // Solo bajo demanda / debug — no usar como heartbeat (regla C1).
     replyPollSnapshot();
     return;
   }
   if (cmd == "ping")
   {
-    peerTxEvents();
+    // Keepalive de enlace: ack mínimo, sin snapshot de sensores.
+    tcpTx("{\"type\":\"pong\"}");
     return;
   }
 }
@@ -715,10 +849,14 @@ static void tcpOnClientAccepted()
 static bool tcpAcceptIncoming()
 {
   if (!tcpServicesUp || !tcpServer.hasClient()) return false;
-  if (tcpClient.connected())
+  WiFiClient incoming = tcpServer.available();
+  if (!incoming) return false;
+
+  // Un solo maestro. Zombies WiFi a menudo quedan con connected()==false
+  // (o true) y bloquean el pool LWIP → HMI “a veces conecta”.
+  if (tcpClient)
     tcpClient.stop();
-  tcpClient = tcpServer.available();
-  if (!tcpClient) return false;
+  tcpClient = incoming;
   tcpOnClientAccepted();
   return true;
 }
@@ -853,16 +991,11 @@ void setup()
   pinMode(PIN_OUT_ENCODER, OUTPUT);
   pinMode(PIN_OUT_BLOWER, OUTPUT);
   pinMode(PIN_OUT_RESET, OUTPUT);
-  digitalWrite(PIN_OUT_CUTTER_R, VALVE_ACTIVE_HIGH ? LOW : HIGH);
-  digitalWrite(PIN_OUT_CUTTER_L, VALVE_ACTIVE_HIGH ? LOW : HIGH);
-  digitalWrite(PIN_OUT_GRIPPERS, VALVE_ACTIVE_HIGH ? LOW : HIGH);
-  digitalWrite(PIN_OUT_HOLDER, VALVE_ACTIVE_HIGH ? LOW : HIGH);
-  digitalWrite(PIN_OUT_ENCODER, VALVE_ACTIVE_HIGH ? LOW : HIGH);
-  digitalWrite(PIN_OUT_BLOWER, VALVE_ACTIVE_HIGH ? LOW : HIGH);
-  digitalWrite(PIN_OUT_RESET, VALVE_ACTIVE_HIGH ? LOW : HIGH);
-  stCutterR = stCutterL = stGrippers = stEncoder = stBlower = stReset = false;
-  stHolder = true;
-  applyPlcOutputs();
+  valveIdleAll();
+  // Reposo: todas OFF (sin pulso). Holder no se auto-activa; rutina/manual.
+  stCutterR = stCutterL = stGrippers = stHolder = stEncoder = stBlower = stReset = false;
+  syncCuttersFlag();
+  Serial.printf("Valvulas: modo pulso %lums (on=pulso, off=pulso); boot=all OFF\n", VALVE_PULSE_MS);
 
   wifiConnectStartedMs = millis();
   WiFi.persistent(false);
@@ -890,6 +1023,7 @@ void setup()
 void loop()
 {
   serviceTcp();
+  blowerService();
 
   unsigned long now = millis();
   uint8_t raw = readSensorBitmask();

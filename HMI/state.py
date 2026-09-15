@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from collections import deque
@@ -11,6 +12,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 HMI_ROOT = Path(__file__).resolve().parent
+PLC_CONFIG_PATH = HMI_ROOT / "config" / "plc_config.json"
+DEFAULT_BLOWER_SEC = 2.0
 
 from cycle import CycleRunner, PROGRESS_STEPS
 from motion import (
@@ -22,14 +25,20 @@ from motion import (
     CMD_FEED_R,
     CMD_MOVE,
     CMD_MOVE_ZERO,
+    CMD_OFF,
+    CMD_ON,
     DEFAULT_HOST,
     DEFAULT_PORT,
+    MOTION_DETAIL_ERROR_BYTES,
     MOTION_STATE_BYTES,
     MotionClient,
     TX_BUSY,
     TX_ENC_ERROR,
     TX_ERROR,
+    TX_EXHAUST,
     TX_IDLE,
+    TX_LASER_L,
+    TX_LASER_R,
     TX_LENGTH_NG,
     TX_LENGTH_NG_L,
     TX_LENGTH_NG_R,
@@ -85,9 +94,15 @@ from prefeeder import (
     TX_PF_RETURN,
     TX_PF_STOP,
 )
+from error_catalog import format_ui
+from error_policy import ErrorPolicy
+from andon import AndonClient
+from machine_states import MACH_ERROR, MACH_IDLE, MACH_RESET
 
 MODELS_PATH = HMI_ROOT / "config" / "models.json"
 MAX_LOG_LINES = 400
+# No latchear E065–E067 en microcortes WiFi; solo si el enlace sigue caído.
+LINK_DOWN_CONFIRM_SEC = 8.0
 
 PLC_ERROR_BYTES = frozenset(
     {TX_CUTTER_ERR, TX_GRIPPER_ERR, TX_HOLDER_ERR, TX_ENCODER_ERR}
@@ -97,16 +112,16 @@ STATE_TEXT = {
     0x09: "Inicializando módulo Motion (0x009)",
     TX_IDLE: "Motion en espera (0x010)",
     TX_BUSY: "Motion ocupado (0x011)",
-    TX_ERROR: "Error general Motion (0x012)",
-    TX_STOP_STATE: "Motion detenido (0x013)",
-    TX_RETURN: "Motion — retorno tras stop (0x014)",
+    TX_ERROR: "Motion — ErrorState (0x0C)",
+    TX_STOP_STATE: "Motion detenido (0x0D)",
+    TX_RETURN: "Motion — retorno tras stop (0x0E)",
 }
 
 PLC_STATE_TEXT = {
     TX_PLC_INIT: "Inicializando módulo PLC (0x024)",
     TX_PLC_IDLE: "PLC en espera (0x025)",
     TX_PLC_BUSY: "PLC ocupado — válvulas activas (0x026)",
-    TX_PLC_ERROR: "Error general PLC (0x027)",
+    TX_PLC_ERROR: "PLC — ErrorState (0x027)",
     TX_PLC_STOP: "PLC detenido (0x028)",
     TX_PLC_RETURN: "PLC — retorno tras stop (0x029)",
 }
@@ -115,7 +130,7 @@ PF_STATE_TEXT = {
     0x39: "Inicializando PreFeeder (0x039)",
     TX_PF_IDLE: "PreFeeder en espera (0x03A)",
     TX_PF_BUSY: "PreFeeder ocupado (0x03B)",
-    TX_PF_ERROR: "Error general PreFeeder (0x03C)",
+    TX_PF_ERROR: "PreFeeder — ErrorState (0x03C)",
     TX_PF_STOP: "PreFeeder detenido (0x03D)",
     TX_PF_RETURN: "PreFeeder — retorno tras stop (0x03E)",
 }
@@ -173,7 +188,7 @@ class HmiState:
     """Mantiene estado de la HMI y procesa mensajes TCP (thread-safe)."""
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._listeners: list[Callable[[], None]] = []
         self._enc_poll_stop = threading.Event()
         self._enc_poll_thread: threading.Thread | None = None
@@ -204,16 +219,21 @@ class HmiState:
             "enc_l": "—",
             "feedOffsetMmL": 0.0,
             "feedOffsetMmR": 0.0,
+            "laserR": False,
+            "laserL": False,
+            "safetyExhaust": False,
         }
         self._plc = {
             "connected": False,
             "status": {"text": "Listo.", "kind": "info"},
             "last_state_byte": None,
+            "blowerSec": DEFAULT_BLOWER_SEC,
             "valves": {
                 str(cmd): {"label": label, "on": None, "error": None}
                 for label, cmd, _, _ in PLC_VALVES
             },
         }
+        self._load_plc_config()
         self._pf = {
             "connected": False,
             "status": {"text": "Listo.", "kind": "info"},
@@ -237,6 +257,10 @@ class HmiState:
             on_message=lambda m: self._enqueue("prefeeder", m),
             on_connection=lambda c: self._on_pf_connection(c),
         )
+        self._andon_client = AndonClient(
+            on_message=lambda m: self._enqueue("andon", m),
+            on_connection=lambda c: self._on_andon_connection(c),
+        )
         self._msg_queue: list[tuple[str, dict]] = []
 
         # Señales para Cycle (espera Idle/Reached / LengthOK L+R)
@@ -247,7 +271,11 @@ class HmiState:
         self._feed_ng_r = threading.Event()
         self._pf_materialist = False
 
+        self._error_policy = ErrorPolicy()
         self._cycle = CycleRunner(self)
+        self._cycle.set_machine_state_hook(self._broadcast_machine_state)
+        # Histéresis enlace: gen+1 cancela timer pendiente al recuperar.
+        self._link_down_gen = {"motion": 0, "plc": 0, "prefeeder": 0}
 
         self._load_models()
 
@@ -255,6 +283,8 @@ class HmiState:
         self._client.start_background()
         self._plc_client.start_background()
         self._pf_client.start_background()
+        if os.environ.get("ANDON_ENABLE", "0") == "1":
+            self._andon_client.start_background()
         self._cycle.mark_init_done()
 
     def stop(self) -> None:
@@ -264,6 +294,8 @@ class HmiState:
         self._client.stop_background()
         self._plc_client.stop_background()
         self._pf_client.stop_background()
+        if os.environ.get("ANDON_ENABLE", "0") == "1":
+            self._andon_client.stop_background()
 
     def subscribe(self, callback: Callable[[], None]) -> None:
         with self._lock:
@@ -295,6 +327,7 @@ class HmiState:
                 "mm": self._mm,
                 "rpm": self._rpm,
                 "banner": dict(self._banner),
+                "error": self._error_policy.snapshot(),
                 "progress": progress,
                 "resumeEnabled": resume,
                 "cycle": cycle_snap,
@@ -556,7 +589,125 @@ class HmiState:
         return self._cycle.request_pause()
 
     def cmd_cycle_reset(self) -> dict:
-        return self._cycle.request_reset()
+        return self.cmd_error_reset(confirm=False, do_home=False)
+
+    def cmd_error_confirm(self) -> dict:
+        """Confirma diálogo C1 (antes de Reset/home)."""
+        ok = self._error_policy.confirm()
+        if not ok:
+            return {"ok": False, "error": "Sin error C1 pendiente de confirmar"}
+        _append_log(self._main_log, f"C1 confirmado · {self._error_policy.latch.ui_text}")
+        self._notify()
+        return {"ok": True, "error": self._error_policy.snapshot()}
+
+    def cmd_error_reset(self, confirm: bool = False, do_home: bool = False) -> dict:
+        """
+        Res del flip-flop: limpia latch + reset Motion/PLC/PF + ciclo Idle.
+        C1: requiere confirm=True (o ya confirmado) y opcional do_home.
+        """
+        latch = self._error_policy.latch
+        if latch.active and latch.needs_confirm:
+            if confirm:
+                self._error_policy.confirm()
+            can, err = self._error_policy.can_reset()
+            if not can:
+                return {
+                    "ok": False,
+                    "error": err,
+                    "needsConfirm": True,
+                    "errorLatch": self._error_policy.snapshot(),
+                }
+
+        needs_home = latch.active and latch.needs_home
+        recovery = latch.recovery
+        ui = latch.ui_text
+
+        # Reset módulos (Res)
+        self._client.cmd_reset_errors()
+        self._plc_client.cmd_reset()
+        self._plc_apply_home_valve_cache()
+        if self._pf_client.connected:
+            self._pf_client.cmd_reset()
+
+        old = self._error_policy.clear()
+        cycle_res = self._cycle.request_reset()
+        self._broadcast_machine_state(MACH_RESET)
+        self._broadcast_machine_state(MACH_IDLE)
+
+        home_ok = None
+        if (do_home or needs_home) and needs_home:
+            home_ok = self.cmd_motion_move_zero()
+            _append_log(
+                self._main_log,
+                f"C1 home general · {'OK' if home_ok else 'FALLÓ'}",
+            )
+
+        self._banner = {"text": "Errores reseteados", "kind": "ok"}
+        if ui:
+            _append_log(self._main_log, f"Res flip-flop · {ui} · recovery={recovery}")
+        self._notify()
+        return {
+            "ok": True,
+            "cycle": cycle_res,
+            "cleared": old.snapshot() if old.active else None,
+            "homeOk": home_ok,
+            "recovery": recovery,
+        }
+
+    def _broadcast_machine_state(self, byte: int) -> None:
+        """Estado máquina → Andon (si hay enlace). No envía EXXX detalle."""
+        try:
+            self._andon_client.send_machine_byte(int(byte) & 0xFF)
+        except Exception:
+            pass
+
+    def _apply_detail_error(self, code_or_byte: str | int, *, source: str = "") -> bool:
+        """
+        Set flip-flop + política C1/C2/C3.
+        True si se aplicó un EXXX conocido.
+        """
+        result = self._error_policy.set_error(code_or_byte)
+        if result is None:
+            return False
+        ui = result["ui"]
+        cls = result["class"]
+        action = result["action"]
+        if result.get("duplicate"):
+            return True
+
+        _append_log(self._main_log, ui)
+        if source == "motion":
+            _append_log(self._motion_log, ui)
+            self._set_motion_status(ui, "error")
+        elif source == "plc":
+            _append_log(self._plc_log, ui)
+            self._set_plc_status(ui, "error")
+        elif source == "prefeeder":
+            _append_log(self._pf_log, ui)
+            self._set_pf_status(ui, "error")
+        elif source == "andon":
+            _append_log(self._main_log, ui)
+
+        self._set_banner(ui, "error")
+        # Caída de enlace: no bombardear TCP (el socket ya está muerto → spam E06x).
+        link_codes = {"E065", "E066", "E067"}
+        if result.get("code") in link_codes:
+            self._cycle.apply_error_policy(
+                "link_down", ui, cls, result.get("recovery", "")
+            )
+        else:
+            self._cycle.apply_error_policy(
+                action, ui, cls, result.get("recovery", "")
+            )
+        self._broadcast_machine_state(MACH_ERROR)
+        self._notify()
+        return True
+
+    def _on_andon_connection(self, connected: bool) -> None:
+        if connected:
+            _append_log(self._main_log, "Enlace Andon OK")
+            self._broadcast_machine_state(self._cycle.state_byte())
+        self._notify()
 
     def cmd_cycle_materialist(self, on: bool = True) -> dict:
         with self._lock:
@@ -578,6 +729,8 @@ class HmiState:
                 float(kwargs.get("rpm", kwargs.get("speedRpm", self._rpm))),
             ),
             "stop": lambda: self._client.cmd_stop(),
+            "on": lambda: self._client.cmd_on(),
+            "off": lambda: self._client.cmd_off(),
             "home": lambda: self._client.cmd_home(
                 str(kwargs.get("direction", "F")),
             ),
@@ -593,7 +746,12 @@ class HmiState:
         }
         fn = handlers.get(action)
         if not fn:
-            return {"ok": False, "error": f"Acción desconocida: {action}"}
+            err = f"Acción desconocida: {action}"
+            with self._lock:
+                _append_log(self._motion_log, err)
+                self._set_motion_status(err, "error")
+            self._notify()
+            return {"ok": False, "error": err}
         if action == "move":
             with self._lock:
                 mm = abs(float(kwargs.get("mm", self._mm)))
@@ -620,19 +778,61 @@ class HmiState:
                     "kind": "ok",
                 }
             self._notify()
+        if ok and action in ("on", "off"):
+            with self._lock:
+                pending = (
+                    "Servo ON enviado (0x004)"
+                    if action == "on"
+                    else "Servo OFF enviado (0x003)"
+                )
+                _append_log(self._motion_log, pending)
+                self._set_motion_status(pending, "info")
+            self._notify()
         return {"ok": ok}
 
+    def _load_plc_config(self) -> None:
+        try:
+            if not PLC_CONFIG_PATH.is_file():
+                return
+            data = json.loads(PLC_CONFIG_PATH.read_text(encoding="utf-8"))
+            sec = float(data.get("blowerSec", DEFAULT_BLOWER_SEC))
+            self._plc["blowerSec"] = max(0.2, min(300.0, sec))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            self._plc["blowerSec"] = DEFAULT_BLOWER_SEC
+
+    def _save_plc_config(self) -> None:
+        try:
+            PLC_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            PLC_CONFIG_PATH.write_text(
+                json.dumps({"blowerSec": self._plc["blowerSec"]}, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+
+    def set_blower_sec(self, sec: float) -> float:
+        sec = max(0.2, min(300.0, float(sec)))
+        with self._lock:
+            self._plc["blowerSec"] = sec
+            self._save_plc_config()
+        self._notify()
+        return sec
+
     def _plc_apply_home_valve_cache(self) -> None:
-        """Estado HOME en caché HMI: holder ON, resto OFF, sin errores."""
+        """Estado HOME en caché HMI: todas las válvulas OFF (sin auto-holder)."""
         for label, cmd, _, _ in PLC_VALVES:
             key = str(cmd)
             if key not in self._plc["valves"]:
                 continue
-            self._plc["valves"][key]["on"] = cmd == CMD_HOLDER
+            self._plc["valves"][key]["on"] = False
             self._plc["valves"][key]["error"] = False
 
     def _plc_sync_valves_from_status(self, msg: dict) -> None:
-        """Sincroniza válvulas desde JSON type=status del PLCA."""
+        """Sincroniza válvulas desde JSON type=status del PLCA.
+
+        Usa cutterR/cutterL por separado. Ignora el agregado ``cutters``
+        (OR lógico) para no marcar ambas como ON.
+        """
         field_map = {
             "cutterR": CMD_CUTTER_R,
             "cutterL": CMD_CUTTER_L,
@@ -648,10 +848,6 @@ class HmiState:
             key = str(cmd_b)
             if key in self._plc["valves"]:
                 self._plc["valves"][key]["on"] = bool(msg[field])
-        if "cutters" in msg:
-            val = bool(msg["cutters"])
-            self._plc["valves"][str(CMD_CUTTER_R)]["on"] = val
-            self._plc["valves"][str(CMD_CUTTER_L)]["on"] = val
 
     def cmd_plc(self, action: str, **kwargs) -> dict:
         if action == "valve":
@@ -659,22 +855,47 @@ class HmiState:
             on = bool(kwargs.get("on", True))
             label = PLC_VALVE_LABELS.get(byte_code, f"0x{byte_code:02X}")
             out_name = PLC_VALVE_OUT_NAMES.get(byte_code, "?")
+            duration_sec = None
+            if byte_code == CMD_BLOWER and on:
+                raw = kwargs.get("durationSec", kwargs.get("blowerSec"))
+                if raw is None:
+                    with self._lock:
+                        duration_sec = float(self._plc.get("blowerSec", DEFAULT_BLOWER_SEC))
+                else:
+                    duration_sec = max(0.2, float(raw))
             with self._lock:
+                extra = f" {duration_sec:g}s" if duration_sec is not None else ""
                 _append_log(
                     self._plc_log,
                     f"CMD {label} byte=0x{byte_code:02X} ({byte_code}) "
-                    f"setOut={out_name} → {'ON' if on else 'OFF'}",
+                    f"setOut={out_name} → {'ON' if on else 'OFF'}{extra}",
                 )
             ok = self._manual_plc(
-                lambda: self._plc_client.cmd_valve_by_byte(byte_code, on=on)
+                lambda: self._plc_client.cmd_valve_by_byte(
+                    byte_code, on=on, duration_sec=duration_sec
+                )
             )
+            if ok:
+                with self._lock:
+                    key = str(byte_code)
+                    if key in self._plc["valves"]:
+                        self._plc["valves"][key]["on"] = on
+                    self._plc["status"] = {
+                        "text": f"{label} → {'ON' if on else 'OFF'}"
+                        + (f" ({duration_sec:g}s)" if duration_sec else ""),
+                        "kind": "ok",
+                    }
+                self._notify()
+        elif action == "set_blower_sec":
+            sec = self.set_blower_sec(float(kwargs.get("blowerSec", kwargs.get("sec", DEFAULT_BLOWER_SEC))))
+            return {"ok": True, "blowerSec": sec}
         elif action == "reset":
             ok = self._manual_plc(lambda: self._plc_client.cmd_reset())
             if ok:
                 with self._lock:
                     self._plc_apply_home_valve_cache()
                     self._plc["status"] = {
-                        "text": "Reset PLC — válvulas en HOME (0x01E)",
+                        "text": "Reset PLC — válvulas OFF / Home (0x01E)",
                         "kind": "ok",
                     }
                 self._notify()
@@ -683,7 +904,7 @@ class HmiState:
             if ok:
                 with self._lock:
                     self._plc_apply_home_valve_cache()
-                    self._plc["status"] = {"text": "All Off — HOME", "kind": "ok"}
+                    self._plc["status"] = {"text": "All Off — Home/Off", "kind": "ok"}
                 self._notify()
         else:
             return {"ok": False, "error": f"Acción PLC desconocida: {action}"}
@@ -768,11 +989,24 @@ class HmiState:
             elif source == "prefeeder":
                 if self._handle_prefeeder_message(msg):
                     changed = True
+            elif source == "andon":
+                if self._handle_andon_message(msg):
+                    changed = True
             else:
                 if self._handle_motion_message(msg):
                     changed = True
         if changed:
             self._notify()
+
+    def _handle_andon_message(self, msg: dict) -> bool:
+        mtype = msg.get("type", "")
+        if mtype == "event":
+            byte_code = int(msg.get("byte", 0))
+            if byte_code == 0x50:
+                return self._apply_detail_error(0x50, source="andon")
+        if mtype == "local_error":
+            return False
+        return False
 
     def _apply_feed_offset_values(self, offset_l: float, offset_r: float) -> None:
         self._motion["feedOffsetMmL"] = clamp_feed_offset_mm(offset_l)
@@ -825,8 +1059,41 @@ class HmiState:
             self._notify()
             return {"ok": False, "error": str(exc)}
 
+    def _clear_link_error_if(self, code: str) -> None:
+        """Si el latch activo es solo de enlace TCP, límpialo al recuperar el socket."""
+        latch = self._error_policy.latch
+        if latch.active and latch.code == code:
+            self._error_policy.clear()
+            _append_log(self._main_log, f"Enlace recuperado · clear {code}")
+
+    def _cancel_link_down(self, key: str) -> None:
+        self._link_down_gen[key] = self._link_down_gen.get(key, 0) + 1
+
+    def _arm_link_down(self, key: str, code: str, *, source: str) -> None:
+        """Latchea E06x solo si el nodo sigue caído tras LINK_DOWN_CONFIRM_SEC."""
+        self._link_down_gen[key] = self._link_down_gen.get(key, 0) + 1
+        gen = self._link_down_gen[key]
+
+        def fire() -> None:
+            time.sleep(LINK_DOWN_CONFIRM_SEC)
+            if self._link_down_gen.get(key) != gen:
+                return
+            with self._lock:
+                still_down = {
+                    "motion": not self._motion["connected"],
+                    "plc": not self._plc["connected"],
+                    "prefeeder": not self._pf["connected"],
+                }.get(key, True)
+            if not still_down:
+                return
+            self._apply_detail_error(code, source=source)
+            self._notify()
+
+        threading.Thread(target=fire, daemon=True).start()
+
     def _on_motion_connection(self, connected: bool) -> None:
         with self._lock:
+            was = self._motion["connected"]
             self._motion["connected"] = connected
             if connected:
                 self._banner = {
@@ -839,14 +1106,18 @@ class HmiState:
                 self._motion["asdaPositionMm"] = None
                 self._motion["enc_r"] = "—"
                 self._motion["enc_l"] = "—"
-                self._motion["status"] = {
-                    "text": f"Sin enlace — {DEFAULT_HOST}:{DEFAULT_PORT}",
-                    "kind": "warn",
-                }
+                self._motion["laserR"] = False
+                self._motion["laserL"] = False
+                self._motion["safetyExhaust"] = False
                 self._banner = {
-                    "text": f"Sin enlace — {DEFAULT_HOST}:{DEFAULT_PORT}",
+                    "text": f"Reconectando Motion ({DEFAULT_HOST}:{DEFAULT_PORT})…",
                     "kind": "warn",
                 }
+        if connected:
+            self._cancel_link_down("motion")
+            self._clear_link_error_if("E065")
+        elif not connected and was:
+            self._arm_link_down("motion", "E065", source="motion")
         self._notify()
         if connected:
             threading.Thread(
@@ -855,29 +1126,51 @@ class HmiState:
 
     def _on_plc_connection(self, connected: bool) -> None:
         with self._lock:
+            was = self._plc["connected"]
             self._plc["connected"] = connected
-            if not connected:
+            if connected:
+                self._banner = {
+                    "text": f"Enlace PLC — {PLC_HOST}:{PLC_PORT}",
+                    "kind": "ok",
+                }
+            else:
                 self._plc["last_state_byte"] = None
                 for v in self._plc["valves"].values():
                     v["on"] = None
                     v["error"] = None
-                self._plc["status"] = {
-                    "text": f"Sin enlace — {PLC_HOST}:{PLC_PORT}",
+                self._banner = {
+                    "text": f"Reconectando PLC ({PLC_HOST}:{PLC_PORT})…",
                     "kind": "warn",
                 }
+        if connected:
+            self._cancel_link_down("plc")
+            self._clear_link_error_if("E066")
+        elif not connected and was:
+            self._arm_link_down("plc", "E066", source="plc")
         self._notify()
 
     def _on_pf_connection(self, connected: bool) -> None:
         with self._lock:
+            was = self._pf["connected"]
             self._pf["connected"] = connected
-            if not connected:
+            if connected:
+                self._banner = {
+                    "text": f"Enlace PreFeeder — {PF_HOST}:{PF_PORT}",
+                    "kind": "ok",
+                }
+            else:
                 self._pf["last_state_byte"] = None
                 for e in self._pf["errors"].values():
                     e["active"] = None
-                self._pf["status"] = {
-                    "text": f"Sin enlace — {PF_HOST}:{PF_PORT}",
+                self._banner = {
+                    "text": f"Reconectando PreFeeder ({PF_HOST}:{PF_PORT})…",
                     "kind": "warn",
                 }
+        if connected:
+            self._cancel_link_down("prefeeder")
+            self._clear_link_error_if("E067")
+        elif not connected and was:
+            self._arm_link_down("prefeeder", "E067", source="prefeeder")
         self._notify()
 
     def reconnect_all_modules(self) -> dict[str, bool]:
@@ -935,6 +1228,9 @@ class HmiState:
         frac = ((rep - 1) + (step - 1 + intra) / max(PROGRESS_STEPS, 1)) / total
         step_prog = int(min(100, max(0, round(frac * 100))))
         return max(runner_prog, step_prog)
+
+    def apply_detail_error(self, code_or_byte: str | int) -> bool:
+        return self._apply_detail_error(code_or_byte)
 
     def _set_banner(self, text: str, kind: str) -> None:
         if self._banner.get("text") == text and self._banner.get("kind") == kind:
@@ -1076,12 +1372,8 @@ class HmiState:
                         self._set_motion_status(text, "ok")
                     return True
                 if byte_code in (TX_LENGTH_NG, TX_LENGTH_NG_L):
-                    text = "Detalle: Feed NG L — longitud fuera de tolerancia (0x015)"
                     self._feed_ng_l.set()
-                    _append_log(self._main_log, text)
-                    _append_log(self._motion_log, text)
-                    if self._last_state_byte != TX_ERROR:
-                        self._set_banner(text, "error")
+                    self._apply_detail_error(TX_LENGTH_NG_L, source="motion")
                     return True
                 if byte_code == TX_LENGTH_OK_R:
                     self._feed_ok_r.set()
@@ -1092,19 +1384,24 @@ class HmiState:
                         self._set_motion_status(text, "ok")
                     return True
                 if byte_code == TX_LENGTH_NG_R:
-                    text = "Detalle: Feed NG R — longitud fuera de tolerancia (0x04B)"
                     self._feed_ng_r.set()
-                    _append_log(self._main_log, text)
-                    _append_log(self._motion_log, text)
-                    if self._last_state_byte != TX_ERROR:
-                        self._set_banner(text, "error")
+                    self._apply_detail_error(TX_LENGTH_NG_R, source="motion")
+                    return True
+                if byte_code in MOTION_DETAIL_ERROR_BYTES:
+                    if byte_code == TX_LASER_R:
+                        self._motion["laserR"] = True
+                    elif byte_code == TX_LASER_L:
+                        self._motion["laserL"] = True
+                    elif byte_code == TX_EXHAUST:
+                        self._motion["safetyExhaust"] = True
+                    self._apply_detail_error(byte_code, source="motion")
                     return True
                 return False
             if mtype == "ack":
                 ok = msg.get("ok", True)
                 detail = msg.get("message", "")
+                byte_code = int(msg.get("byte", 0) or 0)
                 if msg.get("actuator") == "encoder" and not ok:
-                    byte_code = int(msg.get("byte", 0))
                     side = (
                         "R"
                         if byte_code in (CMD_ENC_MEASURE_R, CMD_ENC_SET0_R)
@@ -1118,9 +1415,7 @@ class HmiState:
                     else:
                         self._motion["enc_l"] = text
                     return True
-                if msg.get("actuator") == "motion" and ok and int(
-                    msg.get("byte", 0)
-                ) == 0x16:
+                if msg.get("actuator") == "motion" and ok and byte_code == 0x16:
                     self._stopped_pending_resume = False
                     self._last_state_byte = None
                     text = detail or "Errores limpiados (0x016)"
@@ -1133,6 +1428,15 @@ class HmiState:
                     _append_log(self._motion_log, text)
                     self._set_banner(text, "error")
                     self._set_motion_status(text, "error")
+                    return True
+                # Ack OK ASDA: Servo ON (0x04) / OFF (0x03)
+                if msg.get("actuator") == "asda" and byte_code in (CMD_ON, CMD_OFF):
+                    text = detail or (
+                        "Servo ON (0x004)" if byte_code == CMD_ON else "Servo OFF (0x003)"
+                    )
+                    _append_log(self._motion_log, text)
+                    self._set_banner(text, "ok")
+                    self._set_motion_status(text, "ok")
                     return True
                 return False
             if mtype == "status":
@@ -1149,6 +1453,12 @@ class HmiState:
                     self._last_position_mm = pos_mm
                 if self._move_target_mm is not None and "positionMm" in msg:
                     self._update_progress(float(msg["positionMm"]))
+                if "laserR" in msg:
+                    self._motion["laserR"] = bool(msg["laserR"])
+                if "laserL" in msg:
+                    self._motion["laserL"] = bool(msg["laserL"])
+                if "safetyExhaust" in msg:
+                    self._motion["safetyExhaust"] = bool(msg["safetyExhaust"])
                 return True
         return changed
 
@@ -1179,10 +1489,7 @@ class HmiState:
                 byte_code = int(msg.get("byte", 0))
                 if msg.get("actuator") == "plc":
                     if byte_code in PLC_ERROR_BYTES:
-                        detail = ERROR_LABELS.get(
-                            byte_code, f"Error PLC 0x{byte_code:02X}"
-                        )
-                        _append_log(self._plc_log, detail)
+                        self._apply_detail_error(byte_code, source="plc")
                         for label, cmd, err_b, _ in PLC_VALVES:
                             if err_b == byte_code:
                                 self._plc["valves"][str(cmd)]["error"] = True
@@ -1220,11 +1527,9 @@ class HmiState:
                     "fgtray": CMD_ENCODER,
                     "blower": CMD_BLOWER,
                 }
+                # ``cutters`` es OR de R|L — no usarlo para el estado de botones.
                 if field == "cutters":
-                    val = bool(msg.get("value", False))
-                    self._plc["valves"][str(CMD_CUTTER_R)]["on"] = val
-                    self._plc["valves"][str(CMD_CUTTER_L)]["on"] = val
-                    return True
+                    return False
                 if field in valve_field_map:
                     cmd_b = valve_field_map[field]
                     self._plc["valves"][str(cmd_b)]["on"] = bool(
@@ -1331,11 +1636,8 @@ class HmiState:
                     prev = self._pf["errors"].get(key, {}).get("active")
                     if key in self._pf["errors"]:
                         self._pf["errors"][key]["active"] = active
-                    detail = PF_ERROR_LABELS.get(
-                        byte_code, f"Error PreFeeder 0x{byte_code:02X}"
-                    )
                     if active and prev is not True:
-                        _append_log(self._pf_log, detail)
+                        self._apply_detail_error(byte_code, source="prefeeder")
                     return prev != active
             if mtype == "ack":
                 ok = msg.get("ok", True)

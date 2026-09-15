@@ -138,6 +138,8 @@ function AppMain() {
             onUpdateOffsetR={() => {}}
             onMover={hmi.motionMove}
             onStop={hmi.motionStop}
+            onServoOn={hmi.motionServoOn}
+            onServoOff={hmi.motionServoOff}
             onSearchHome={hmi.motionSearchHome}
             onMoveToZero={hmi.motionMoveZero}
             onResetErrors={hmi.motionReset}
@@ -159,6 +161,8 @@ function AppMain() {
           <PlcTab
             plcState={view.plcState}
             onToggleValve={hmi.toggleValve}
+            valveBusy={hmi.valveBusy}
+            onBlowerSecChange={hmi.setBlowerSec}
             onResetPlc={hmi.plcReset}
             onAllOff={hmi.plcAllOff}
             showLogs={showLogs}

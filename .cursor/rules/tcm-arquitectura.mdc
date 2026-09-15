@@ -1,0 +1,44 @@
+---
+description: Normas de arquitectura TCM — consultar antes de cambios de diseño, comunicación o errores
+alwaysApply: true
+---
+
+# TCM — Arquitectura (solo este repo)
+
+Fuente normativa: `Doc/normas_arquitectura.md`.  
+Si un cambio de diseño/comunicación/errores no encaja, **actualizar ese documento antes** que improvisar en código.
+
+## M4 — Norma ↔ archivos
+
+Toda norma nueva o cambiada debe reflejarse en los **archivos necesarios** (Excel, `*States.h`, HMI/Main, HTML local del módulo, GPIO doc, firmware).  
+No dejar doc actualizado y código/UI en el comportamiento viejo.  
+Si cambia una prohibición dura, actualizar también este `.mdc`.  
+Al cerrar el cambio: indicar qué archivos se alinearon.
+
+## Responsabilidad
+
+- Main/HMI orquesta lote, política ante fallos y estado de máquina.
+- Cada esclavo (Motion, PLC, PreFeeder, Andon) solo su dominio.
+- Un módulo no necesita el detalle interno de otro.
+
+## Comunicación
+
+- Flip-flop **Set / Res**: no polling de sensores ni de “¿sigues en error?”.
+- Heartbeat TCP solo valida enlace; no sustituye eventos de aplicación.
+- Opcode = contrato (Excel / Opcodes). No inventar bytes sueltos.
+- PLC válvulas: pulso ON/OFF (KEEP); no enclavado en GPIO ESP. Excepción: Blower (nivel + duration).
+
+## Estados y errores
+
+- Estado ≠ EXXX. ErrorState es estado; el detalle es EXXX.
+- Política **C1/C2/C3** solo en Main/HMI.
+- EXXX no se reenvía entre esclavos; se alinean por estado / stop / reset.
+- Mismo EXXX + descripción en Main y en HTML local del módulo (R0).
+- Catálogo oficial: hoja Error list en `Doc/TCM - D.xlsx`.
+- Salida de fallo: secuencia fija de su clase; no atajos por EXXX ni por módulo.
+
+## Código
+
+- Opcodes/enums en `*States.h` (o HMI); política en Main.
+- Sin logs/debug verbosos salvo pedido explícito.
+- GPIO: alinear con `Doc/gpio_list_updated.md` / Excel I-O.

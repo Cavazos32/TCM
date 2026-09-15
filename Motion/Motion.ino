@@ -59,6 +59,7 @@ static uint32_t motionJobTimeoutMs = 0;
 static int32_t motionJobPos = 0;
 static String motionJobDetail;
 static String motionAlarmMsg;
+static uint8_t motionAlarmErrByte = 0;
 
 static uint16_t cachedP5007 = 0;
 static int32_t cachedPosPuu = 0;
@@ -80,6 +81,7 @@ static bool asdaTcpNotifyReached = false;
 static int32_t asdaTcpReachedPos = 0;
 static uint8_t asdaTcpLastStateByte = 0;
 static bool motionTcpNotifyEncError = false;
+static bool motionTcpNotifyEncErrorL = false;
 static bool motionTcpNotifyFeedOkL = false;
 static bool motionTcpNotifyFeedNgL = false;
 static bool motionTcpNotifyFeedOkR = false;
@@ -87,6 +89,12 @@ static bool motionTcpNotifyFeedNgR = false;
 static bool motionTcpNotifyLaserR = false;
 static bool motionTcpNotifyLaserL = false;
 static bool motionTcpNotifySafety = false;
+// Estado vivo sensores IO (status TCP / HMI) — debounced
+static bool ioLaserRActive = false;
+static bool ioLaserLActive = false;
+static bool ioSafetyActive = false;
+static uint8_t motionTcpPendingDetailErr = 0;
+static char motionTcpPendingDetailName[32] = "";
 
 // =============================================================================
 // ENCODER — estado runtime (dos unidades físicas L / R)
@@ -275,12 +283,31 @@ String errJson(const String& message) {
 void clearMotionAlarm() {
   motionAlarm = false;
   motionAlarmMsg = "";
+  motionAlarmErrByte = 0;
 }
 
-void raiseMotionAlarm(const String& msg) {
+void raiseMotionAlarm(const String& msg, uint8_t errByte = 0) {
   motionAlarm = true;
   motionAlarmMsg = msg;
   motionJobDetail = msg;
+  if (errByte != 0) {
+    motionAlarmErrByte = errByte;
+    motionTcpPendingDetailErr = errByte;
+    // name corto para JSON
+    const char* n = "DetailErr";
+    switch (errByte) {
+      case MOT_ERR_ACTUATOR_TARGET: n = "ActuatorTarget"; break;
+      case MOT_ERR_ASDA_MODBUS: n = "AsdaModbus"; break;
+      case MOT_ERR_ACTUATOR_HOME: n = "ActuatorHome"; break;
+      case MOT_ERR_ACTUATOR_OUT_ZONE: n = "ActuatorOutZone"; break;
+      case MOT_ERR_ACTUATOR_ABORTED: n = "ActuatorAborted"; break;
+      case MOT_ERR_RESET_WHILE_MOVING: n = "ResetWhileMoving"; break;
+      case MOT_ERR_ACTUATOR_NO_RESP: n = "ActuatorNoResp"; break;
+      default: break;
+    }
+    strncpy(motionTcpPendingDetailName, n, sizeof(motionTcpPendingDetailName) - 1);
+    motionTcpPendingDetailName[sizeof(motionTcpPendingDetailName) - 1] = '\0';
+  }
 }
 
 float clampMoveRpm(float rpm) {
@@ -656,7 +683,7 @@ bool pollMotionOnce() {
         ? String("ALARMA: timeout — no llego a destino (limite ") +
               String(motionJobTimeoutMs) + " ms)"
         : String("ALARMA: Modbus timeout leyendo P5.007");
-    raiseMotionAlarm(alarm);
+    raiseMotionAlarm(alarm, got ? MOT_ERR_ACTUATOR_TARGET : MOT_ERR_ASDA_MODBUS);
     if (read32(REG_P5_016, motionJobPos)) {
       cachedPosPuu = motionJobPos;
       cachedPosOk = true;
@@ -782,6 +809,7 @@ static bool asdaStartHome(bool forward, String& err) {
   if (!homeTorque(forward, torque, timeMs, speed)) {
     busyMotion = false;
     err = "No se pudo disparar homing";
+    raiseMotionAlarm(err, MOT_ERR_ACTUATOR_HOME);
     return false;
   }
   motionJobBegin(0, timeoutMs);
@@ -861,6 +889,7 @@ static bool asdaExecResume(String& err) {
 static bool asdaExecResetError(String& err) {
   if (busyMotion || motionJobActive) {
     err = "No se puede resetear error en movimiento";
+    raiseMotionAlarm(err, MOT_ERR_RESET_WHILE_MOVING);
     return false;
   }
   clearMotionAlarm();
@@ -923,20 +952,37 @@ static String asdaStatusJsonBody() {
 
   const float mm = okP ? puuToMm(pos, false) : 0.0f;
   const bool reportOk = busyMotion ? true : (okT && okP);
-  char buf[480];
+  char uiBuf[96];
+  uiBuf[0] = '\0';
+  if (motionAlarmErrByte)
+    motErrFormatUi(uiBuf, sizeof(uiBuf), motionAlarmErrByte);
+  const char* exxx = motionAlarmErrByte ? motErrExxx(motionAlarmErrByte) : "";
+  char buf[720];
   snprintf(buf, sizeof(buf),
            "{\"ok\":%s,\"busy\":%s,\"alarm\":%s,\"message\":\"%s\","
+           "\"errByte\":%u,\"exxx\":\"%s\",\"ui\":\"%s\","
            "\"p5007\":%u,\"state\":\"%s\","
-           "\"positionPuu\":%ld,\"positionMm\":%.2f,\"ip\":\"%s\"}",
+           "\"positionPuu\":%ld,\"positionMm\":%.2f,\"ip\":\"%s\","
+           "\"laserR\":%s,\"laserL\":%s,\"safetyExhaust\":%s,"
+           "\"laserRByte\":%u,\"laserLByte\":%u,\"safetyExhaustByte\":%u}",
            reportOk ? "true" : "false",
            busyMotion ? "true" : "false",
            motionAlarm ? "true" : "false",
            jsonEscape(motionAlarmMsg).c_str(),
+           (unsigned)motionAlarmErrByte,
+           exxx,
+           jsonEscape(String(uiBuf)).c_str(),
            (unsigned)trigger,
            state.c_str(),
            okP ? (long)pos : 0L,
            mm,
-           WiFi.localIP().toString().c_str());
+           WiFi.localIP().toString().c_str(),
+           ioLaserRActive ? "true" : "false",
+           ioLaserLActive ? "true" : "false",
+           ioSafetyActive ? "true" : "false",
+           (unsigned)MOT_ERR_LASER_R,
+           (unsigned)MOT_ERR_LASER_L,
+           (unsigned)MOT_ERR_EXHAUST);
   return String(buf);
 }
 
@@ -1321,7 +1367,21 @@ static bool motionExecSet0Side(bool sideR, String& err) {
 }
 
 static bool motionExecSet0(String& err) {
-  return motionExecSet0Side(false, err);
+  bool any = false;
+  if (encSideHwOk(false)) {
+    any = true;
+    if (!motionExecSet0Side(false, err)) return false;
+  }
+  if (encSideHwOk(true)) {
+    any = true;
+    if (!motionExecSet0Side(true, err)) return false;
+  }
+  if (!any) {
+    err = "Sin encoder instalado";
+    return false;
+  }
+  err = "Set0 L+R OK";
+  return true;
 }
 
 static bool motionExecResetErrors(String& err) {
@@ -1376,30 +1436,31 @@ static float encSettleMmRoundedFeed() {
 }
 
 // =============================================================================
-// ENCODER — JSON de estado (lado R si está instalado; si no, L)
+// ENCODER — JSON de estado dual L + R
 // =============================================================================
-String encoderStatusJson() {
-  const EncSideState* ep = nullptr;
-  bool sideR = true;
-  if (encSide[ENC_IX_R].installed && encSide[ENC_IX_R].pcntOk)
-    ep = &encSide[ENC_IX_R];
-  else if (encSide[ENC_IX_L].installed && encSide[ENC_IX_L].pcntOk) {
-    ep = &encSide[ENC_IX_L];
-    sideR = false;
-  }
-  if (!ep) {
-    return String("{\"ok\":false,\"error\":\"sin encoder OM instalado\"}");
+static int encoderSideJsonInto(char* out, size_t outSz, bool sideR) {
+  if (!encSideHwOk(sideR)) {
+    return snprintf(out, outSz,
+                    "{\"ok\":false,\"side\":\"%c\",\"error\":\"no instalado\","
+                    "\"offsetMm\":%.3f,\"cpr\":%u,\"pulleyMm\":%.0f,"
+                    "\"ref100\":%ld}",
+                    sideR ? 'R' : 'L',
+                    (double)(sideR ? cfgOmOffsetMmR : cfgOmOffsetMm),
+                    (unsigned)ENC_CPR, ENC_PULLEY_DIAM_MM,
+                    (long)ENC_COUNTS_PER_100MM);
   }
 
-  const int32_t count = readEncoderCountSide(encIxFromSideR(sideR));
-  const uint32_t zCount = ep->zCount;
-  const int a = gpio_get_level(ep->pinA);
-  const int b = gpio_get_level(ep->pinB);
-  const int z = gpio_get_level(ep->pinZ);
+  const uint8_t ix = encIxFromSideR(sideR);
+  const EncSideState& ep = encSide[ix];
+  const int32_t count = readEncoderCountSide(ix);
+  const uint32_t zCount = ep.zCount;
+  const int a = gpio_get_level(ep.pinA);
+  const int b = gpio_get_level(ep.pinB);
+  const int z = gpio_get_level(ep.pinZ);
 
   const int32_t absC = count >= 0 ? count : -count;
   const int32_t settledAbs =
-      ep->settledCount >= 0 ? ep->settledCount : -ep->settledCount;
+      ep.settledCount >= 0 ? ep.settledCount : -ep.settledCount;
   const int32_t wrapped =
       ((count % (int32_t)ENC_CPR) + (int32_t)ENC_CPR) % (int32_t)ENC_CPR;
   const float angle = (360.0f * (float)wrapped) / (float)ENC_CPR;
@@ -1409,28 +1470,50 @@ String encoderStatusJson() {
   const float mmSettleRaw = encCountsToMm(settledAbs);
   const float mmSettleRound = omRoundMm(mmSettleRaw);
   const float off = sideR ? cfgOmOffsetMmR : cfgOmOffsetMm;
-  const float mmSettle = ep->settled ? (mmSettleRound + off) : mmSettleRaw;
+  const float mmSettle = ep.settled ? (mmSettleRound + off) : mmSettleRaw;
   const int32_t expectZ = (absC + ENC_CPR / 2) / (int32_t)ENC_CPR;
 
-  char buf[520];
+  return snprintf(
+      out, outSz,
+      "{\"ok\":true,\"side\":\"%c\",\"c\":%ld,\"r\":%.4f,\"ang\":%.2f,"
+      "\"rpm\":%.1f,\"mms\":%.1f,\"mmsPeak\":%.1f,\"f\":%.1f,\"d\":%d,"
+      "\"z\":%lu,\"a\":%d,\"b\":%d,\"iz\":%d,\"mm\":%.2f,\"mmAbs\":%.2f,"
+      "\"settled\":%s,\"cSettle\":%ld,\"mmSettle\":%.2f,"
+      "\"mmSettleRound\":%.2f,\"offsetMm\":%.3f,"
+      "\"ref100\":%ld,\"cpr\":%u,\"quad\":%u,\"expectZ\":%ld,\"pulleyMm\":%.0f}",
+      sideR ? 'R' : 'L',
+      (long)count, revs, angle, ep.rpm, ep.mmS, ep.mmSPeak, ep.freqHz,
+      (int)ep.dir, (unsigned long)zCount, a, b, z, mm, mmAbs,
+      ep.settled ? "true" : "false", (long)ep.settledCount, mmSettle,
+      ep.settled ? mmSettleRound : mmSettleRaw, off,
+      (long)ENC_COUNTS_PER_100MM, (unsigned)ENC_CPR, (unsigned)ENC_QUAD,
+      (long)expectZ, ENC_PULLEY_DIAM_MM);
+}
+
+String encoderStatusJson() {
+  static char sideL[520];
+  static char sideR[520];
+  static char buf[1400];
+  encoderSideJsonInto(sideL, sizeof(sideL), false);
+  encoderSideJsonInto(sideR, sizeof(sideR), true);
+
+  const bool okL = encSideHwOk(false);
+  const bool okR = encSideHwOk(true);
+  bool feedR = false;
+  const char* legacy = sideL;
+  if (encFeedSide(feedR))
+    legacy = feedR ? sideR : sideL;
+  else if (okR && !okL)
+    legacy = sideR;
+
+  // Dual L/R + campos planos legacy (lado de feed / primario) para clientes viejos.
   snprintf(buf, sizeof(buf),
-           "{\"ok\":true,\"side\":\"%c\",\"c\":%ld,\"r\":%.4f,\"ang\":%.2f,"
-           "\"rpm\":%.1f,\"mms\":%.1f,\"mmsPeak\":%.1f,\"f\":%.1f,\"d\":%d,"
-           "\"z\":%lu,\"a\":%d,\"b\":%d,\"iz\":%d,\"mm\":%.2f,\"mmAbs\":%.2f,"
-           "\"settled\":%s,\"cSettle\":%ld,\"mmSettle\":%.2f,"
-           "\"mmSettleRound\":%.2f,\"offsetMm\":%.3f,"
-           "\"hwL\":%s,\"hwR\":%s,"
-           "\"ref100\":%ld,\"cpr\":%u,\"quad\":%u,\"expectZ\":%ld,\"pulleyMm\":%.0f}",
-           sideR ? 'R' : 'L',
-           (long)count, revs, angle, ep->rpm, ep->mmS, ep->mmSPeak, ep->freqHz,
-           (int)ep->dir, (unsigned long)zCount, a, b, z,
-           mm, mmAbs, ep->settled ? "true" : "false",
-           (long)ep->settledCount, mmSettle,
-           ep->settled ? mmSettleRound : mmSettleRaw, off,
-           encSideHwOk(false) ? "true" : "false",
-           encSideHwOk(true) ? "true" : "false",
-           (long)ENC_COUNTS_PER_100MM, (unsigned)ENC_CPR, (unsigned)ENC_QUAD,
-           (long)expectZ, ENC_PULLEY_DIAM_MM);
+           "{\"ok\":%s,\"hwL\":%s,\"hwR\":%s,\"l\":%s,\"r\":%s,"
+           "\"primary\":%s}",
+           (okL || okR) ? "true" : "false",
+           okL ? "true" : "false",
+           okR ? "true" : "false",
+           sideL, sideR, legacy);
   return String(buf);
 }
 
@@ -2053,16 +2136,38 @@ void handleEncoderGet() {
 void handleEncoderPost() {
   String body = server.hasArg("plain") ? server.arg("plain") : "";
   if (jsonHasKey(body, "offsetMm")) {
-    cfgOmOffsetMm = clampOmOffsetMm(jsonFloat(body, "offsetMm", cfgOmOffsetMm));
+    String side = jsonString(body, "side", "");
+    if (side.length() == 0 && server.hasArg("side"))
+      side = server.arg("side");
+    const float off = clampOmOffsetMm(jsonFloat(body, "offsetMm", 0.0f));
+    if (side == "R" || side == "r") {
+      cfgOmOffsetMmR = off;
+      Serial.printf("OM offsetMm R=%.3f (post-round)\n", cfgOmOffsetMmR);
+    } else {
+      cfgOmOffsetMm = off;
+      Serial.printf("OM offsetMm L=%.3f (post-round)\n", cfgOmOffsetMm);
+    }
     saveCfg();
-    Serial.printf("OM offsetMm=%.3f (post-round)\n", cfgOmOffsetMm);
   }
   sendJson(200, encoderStatusJson());
 }
 
 void handleEncoderReset() {
+  String body = server.hasArg("plain") ? server.arg("plain") : "";
+  String side = jsonString(body, "side", "");
+  if (side.length() == 0 && server.hasArg("side"))
+    side = server.arg("side");
+
   String err;
-  if (!motionExecSet0(err)) {
+  bool ok = false;
+  if (side == "R" || side == "r")
+    ok = motionExecSet0Side(true, err);
+  else if (side == "L" || side == "l")
+    ok = motionExecSet0Side(false, err);
+  else
+    ok = motionExecSet0(err);
+
+  if (!ok) {
     sendJson(503, errJson(err));
     return;
   }
@@ -2168,6 +2273,7 @@ static void asdaTcpTxEvent(uint8_t byteCode, const char* name, int32_t posPuu) {
 }
 
 void motionTcpOnEncoderError() { motionTcpNotifyEncError = true; }
+void motionTcpOnEncoderErrorL() { motionTcpNotifyEncErrorL = true; }
 
 void motionTcpOnFeedOk(bool sideR) {
   if (sideR) motionTcpNotifyFeedOkR = true;
@@ -2177,6 +2283,18 @@ void motionTcpOnFeedOk(bool sideR) {
 void motionTcpOnFeedNg(bool sideR) {
   if (sideR) motionTcpNotifyFeedNgR = true;
   else motionTcpNotifyFeedNgL = true;
+}
+
+void motionTcpOnDetailError(uint8_t errByte, const char* name) {
+  if (errByte == 0) return;
+  motionTcpPendingDetailErr = errByte;
+  motionAlarmErrByte = errByte;
+  if (name && name[0]) {
+    strncpy(motionTcpPendingDetailName, name, sizeof(motionTcpPendingDetailName) - 1);
+    motionTcpPendingDetailName[sizeof(motionTcpPendingDetailName) - 1] = '\0';
+  } else {
+    motionTcpPendingDetailName[0] = '\0';
+  }
 }
 
 static void motionTcpTxMeasured(uint8_t byteCode, bool sideR,
@@ -2249,6 +2367,10 @@ static bool feederTcpDoByte(uint8_t cmdByte, const char* line) {
     default:
       err = "byte/cmd feeder desconocido";
       break;
+  }
+
+  if (!ok && err.indexOf("CAN") >= 0) {
+    motionTcpOnDetailError(MOT_ERR_FEED_CAN_NO_RESP, "FeedCanNoResp");
   }
 
   char buf[256];
@@ -2436,6 +2558,11 @@ static void asdaTcpOnLine(const char* line) {
   if (!strstr(line, "\"type\":\"command\"")) return;
 
   const String cmd = asdaTcpJStr(line, "command");
+  if (cmd == "ping") {
+    // Keepalive de enlace (regla C1): ack mínimo, sin Modbus/status.
+    asdaTcpTx("{\"type\":\"pong\"}");
+    return;
+  }
   if (cmd == "resetAll" || cmd == "ResetMotion") {
     motionTcpDoResetAll();
     return;
@@ -2511,10 +2638,16 @@ static void asdaTcpOnClientAccepted() {
 
 static bool asdaTcpAcceptIncoming() {
   if (!asdaTcpServicesUp || !asdaTcpServer.hasClient()) return false;
-  if (asdaTcpClient.connected())
+  WiFiClient incoming = asdaTcpServer.available();
+  if (!incoming) return false;
+
+  // Un solo maestro. Si hay cliente previo (a menudo zombie WiFi con
+  // connected()==true), sustituirlo — rechazar al nuevo dejaba el puerto
+  // muerto hasta reset del ESP.
+  if (asdaTcpClient) {
     asdaTcpClient.stop();
-  asdaTcpClient = asdaTcpServer.available();
-  if (!asdaTcpClient) return false;
+  }
+  asdaTcpClient = incoming;
   asdaTcpOnClientAccepted();
   return true;
 }
@@ -2571,7 +2704,11 @@ static void motionTcpPollFeedEvents() {
 
   if (motionTcpNotifyEncError) {
     motionTcpNotifyEncError = false;
-    motionTcpTxEvent("encoder", ENC_TX_ERROR, "Error");
+    motionTcpTxEvent("encoder", ENC_TX_ERROR_R, "ErrorER");
+  }
+  if (motionTcpNotifyEncErrorL) {
+    motionTcpNotifyEncErrorL = false;
+    motionTcpTxEvent("encoder", ENC_TX_ERROR_L, "ErrorEL");
   }
   if (motionTcpNotifyFeedOkL) {
     motionTcpNotifyFeedOkL = false;
@@ -2589,17 +2726,23 @@ static void motionTcpPollFeedEvents() {
     motionTcpNotifyFeedNgR = false;
     motionTcpTxEvent("feeder", FEED_TX_LENGTH_NG_R, "LenghtNG_R");
   }
+  if (motionTcpPendingDetailErr != 0) {
+    const uint8_t b = motionTcpPendingDetailErr;
+    motionTcpPendingDetailErr = 0;
+    const char* n = motionTcpPendingDetailName[0] ? motionTcpPendingDetailName : "DetailErr";
+    motionTcpTxEvent("motion", b, n);
+  }
 }
 
-// Láseres / safety exhaust — stubs + poll opcional (MOT_IO_SENSOR_EVENTS)
+// Láseres / safety exhaust — encolan TX detalle (MOT_IO_SENSOR_EVENTS)
 static void LaserR() {
-  // TODO: TX MOT_ERR_LASER_R (0x4D)
+  motionTcpOnDetailError(MOT_ERR_LASER_R, "LaserR");
 }
 static void LaserL() {
-  // TODO: TX MOT_ERR_LASER_L (0x4E)
+  motionTcpOnDetailError(MOT_ERR_LASER_L, "LaserL");
 }
 static void Exhaust() {
-  // TODO: TX MOT_ERR_EXHAUST (0x4F) — Error desfoga el aire
+  motionTcpOnDetailError(MOT_ERR_EXHAUST, "Exhaust");
 }
 
 static bool motionSensorActiveLaser(uint8_t pin) {
@@ -2615,9 +2758,6 @@ static bool motionSensorActiveSafety() {
 }
 
 static void motionPollIoSensors() {
-#if !MOT_IO_SENSOR_EVENTS
-  return;
-#else
   static bool lastLaserR = false, lastLaserL = false, lastSafety = false;
   static bool rawLaserR = false, rawLaserL = false, rawSafety = false;
   static uint32_t tLaserR = 0, tLaserL = 0, tSafety = 0;
@@ -2627,23 +2767,31 @@ static void motionPollIoSensors() {
   if (rLaserR != rawLaserR) { rawLaserR = rLaserR; tLaserR = now; }
   else if ((now - tLaserR) >= MOT_SENSOR_DEBOUNCE_MS && rLaserR != lastLaserR) {
     lastLaserR = rLaserR;
+    ioLaserRActive = rLaserR;
+#if MOT_IO_SENSOR_EVENTS
     if (rLaserR) { motionTcpNotifyLaserR = true; LaserR(); }
+#endif
   }
 
   const bool rLaserL = motionSensorActiveLaser(LRX_LaserL);
   if (rLaserL != rawLaserL) { rawLaserL = rLaserL; tLaserL = now; }
   else if ((now - tLaserL) >= MOT_SENSOR_DEBOUNCE_MS && rLaserL != lastLaserL) {
     lastLaserL = rLaserL;
+    ioLaserLActive = rLaserL;
+#if MOT_IO_SENSOR_EVENTS
     if (rLaserL) { motionTcpNotifyLaserL = true; LaserL(); }
+#endif
   }
 
   const bool rSafety = motionSensorActiveSafety();
   if (rSafety != rawSafety) { rawSafety = rSafety; tSafety = now; }
   else if ((now - tSafety) >= MOT_SENSOR_DEBOUNCE_MS && rSafety != lastSafety) {
     lastSafety = rSafety;
+    ioSafetyActive = rSafety;
+#if MOT_IO_SENSOR_EVENTS
     if (rSafety) { motionTcpNotifySafety = true; Exhaust(); }
-  }
 #endif
+  }
 }
 
 static void motionTcpPollIoSensorEvents() {
@@ -2722,6 +2870,7 @@ static void serviceAsdaTcp() {
 bool connectWifi() {
   WiFi.mode(WIFI_STA);
   WiFi.setHostname("motion");
+  WiFi.setSleep(false);
 
   if (!WiFi.config(STA_IP, STA_GW, STA_MASK, STA_DNS)) {
     Serial.println("WiFi.config() fallo (IP estatica)");

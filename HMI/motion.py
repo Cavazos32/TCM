@@ -29,9 +29,12 @@ TX_RETURN = 0x0E
 CMD_RESUME = 0x0E
 
 # --- Encoder (bytes) ---
+# Lado lógico R = OM físico izquierdo (Motion GPIO 18/19/21)
+# Lado lógico L = OM físico derecho   (Motion GPIO 22/23/25)
 CMD_ENC_MEASURE_R = 0x0F
 CMD_ENC_SET0_R = 0x10
-TX_ENC_ERROR = 0x11  # detalle; coexiste con TX_ERROR (0x012)
+TX_ENC_ERROR = 0x11  # E001 detalle; coexiste con TX_ERROR (0x0C estado)
+TX_ENC_ERROR_L = 0x78  # E046
 CMD_ENC_MEASURE_L = 0x17
 CMD_ENC_SET0_L = 0x18
 
@@ -39,13 +42,45 @@ CMD_ENC_SET0_L = 0x18
 CMD_FEED_R = 0x12
 CMD_FEED_L = 0x13
 TX_LENGTH_OK_L = 0x14
-TX_LENGTH_NG_L = 0x15
+TX_LENGTH_NG_L = 0x15  # E002
 TX_LENGTH_OK_R = 0x4A
-TX_LENGTH_NG_R = 0x4B
+TX_LENGTH_NG_R = 0x4B  # E003
 # Alias legacy (lado L)
 TX_LENGTH_OK = TX_LENGTH_OK_L
 TX_LENGTH_NG = TX_LENGTH_NG_L
 CMD_MOT_RESET_ERR = 0x16
+
+# --- Errores detalle Motion (EXXX → solo HMI) ---
+TX_LASER_R = 0x4D
+TX_LASER_L = 0x4E
+TX_EXHAUST = 0x4F
+MOTION_DETAIL_ERROR_BYTES = frozenset(
+    {
+        TX_ENC_ERROR,
+        TX_LENGTH_NG_L,
+        TX_LENGTH_NG_R,
+        TX_LASER_R,
+        TX_LASER_L,
+        TX_EXHAUST,
+        0x59,
+        0x5A,
+        0x5B,
+        0x5C,
+        0x5D,
+        0x5E,
+        0x60,
+        0x61,
+        0x62,
+        0x63,
+        0x64,
+        0x65,
+        0x66,
+        0x67,
+        0x68,
+        0x69,
+        TX_ENC_ERROR_L,
+    }
+)
 
 STATE_LABELS = {
     TX_INIT: "Motion — Init (0x009)",
@@ -116,13 +151,17 @@ class MotionClient(ModuleTcpClient):
         super().__init__(DEFAULT_HOST, DEFAULT_PORT, on_message, on_connection)
 
     def _send_probe(self) -> bool:
-        return self.send_command(byte=CMD_STATUS)
+        # Keepalive de enlace (tcp_link), no GetStatus/Modbus (regla C1).
+        return self.send_command(command="ping")
 
     def cmd_byte(self, byte_code: int, **extra: Any) -> bool:
         return self.send_command(byte=byte_code, **extra)
 
     def cmd_on(self) -> bool:
         return self.cmd_byte(CMD_ON)
+
+    def cmd_off(self) -> bool:
+        return self.cmd_byte(CMD_OFF)
 
     def cmd_stop(self) -> bool:
         return self.cmd_byte(CMD_STOP)

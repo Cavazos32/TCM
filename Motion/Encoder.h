@@ -20,14 +20,14 @@ static const uint16_t ENC_CPR = ENC_PPR * ENC_QUAD;
 static const float    ENC_PULLEY_DIAM_MM = 50.0f;
 static const int32_t  ENC_COUNTS_PER_100MM = 1273;
 
-// Lado R (OM derecho) — hardware actual cableado
+// Lado R (OM izquierdo) — cableado en GPIOs 18/19/21
 static const bool       ENC_R_HW_INSTALLED = true;
 static const gpio_num_t ENC_R_PIN_A = GPIO_NUM_18;
 static const gpio_num_t ENC_R_PIN_B = GPIO_NUM_19;
 static const gpio_num_t ENC_R_PIN_Z = GPIO_NUM_21;
 
-// Lado L (OM izquierdo) — poner ENC_L_HW_INSTALLED=true al cablear 2.º encoder
-static const bool       ENC_L_HW_INSTALLED = false;
+// Lado L (OM derecho) — cableado en GPIOs 22/23/25
+static const bool       ENC_L_HW_INSTALLED = true;
 static const gpio_num_t ENC_L_PIN_A = GPIO_NUM_22;
 static const gpio_num_t ENC_L_PIN_B = GPIO_NUM_23;
 static const gpio_num_t ENC_L_PIN_Z = GPIO_NUM_25;

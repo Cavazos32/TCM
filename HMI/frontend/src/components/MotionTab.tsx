@@ -6,6 +6,9 @@ import {
   Square,
   Compass,
   Home,
+  Power,
+  PowerOff,
+  Crosshair,
 } from 'lucide-react';
 import { MotionState, LogEntry } from '../types';
 import { LogTerminal } from './LogTerminal';
@@ -19,6 +22,8 @@ interface MotionTabProps {
   onUpdateOffsetR?: (offset: number) => void;
   onMover: (mm: number, rpm: number) => void;
   onStop: () => void;
+  onServoOn: () => void;
+  onServoOff: () => void;
   onSearchHome: () => void;
   onMoveToZero: () => void;
   onResetErrors: () => void;
@@ -41,6 +46,8 @@ export const MotionTab: React.FC<MotionTabProps> = ({
   onUpdateOffsetR,
   onMover,
   onStop,
+  onServoOn,
+  onServoOff,
   onSearchHome,
   onMoveToZero,
   onResetErrors,
@@ -119,9 +126,50 @@ export const MotionTab: React.FC<MotionTabProps> = ({
     );
   };
 
+  const laserChip = (
+    id: string,
+    label: string,
+    active: boolean,
+    opcode: string
+  ) => (
+    <div
+      key={id}
+      className={`flex items-center justify-between gap-2 rounded-lg border px-2.5 py-2 ${
+        active
+          ? 'border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40'
+          : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60'
+      }`}
+    >
+      <div className="flex items-center gap-2 min-w-0">
+        <span
+          className={`h-2 w-2 rounded-full shrink-0 ${
+            active ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'
+          }`}
+        />
+        <span className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">
+          {label}
+        </span>
+      </div>
+      <div className="flex items-center gap-1.5 shrink-0">
+        <span
+          className={`text-[10px] font-bold font-mono ${
+            active
+              ? 'text-amber-800 dark:text-amber-200'
+              : 'text-emerald-700 dark:text-emerald-300'
+          }`}
+        >
+          {active ? t('sensor_active') : t('sensor_ok')}
+        </span>
+        <span className="rounded bg-slate-100 dark:bg-slate-700 px-1 py-0.5 font-mono text-[10px] text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-600">
+          {opcode}
+        </span>
+      </div>
+    </div>
+  );
+
   return (
     <div className="space-y-4">
-      {/* Unified Compact Status & Link Bar */}
+      {/* Status / link */}
       <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-2.5 text-slate-800 dark:text-slate-200 shadow-2xs flex flex-wrap items-center justify-between gap-3 transition-colors">
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
@@ -162,11 +210,11 @@ export const MotionTab: React.FC<MotionTabProps> = ({
         </div>
       </div>
 
-      {/* Main Grid: ASDA B3 + (OM Encoder & Feeder CAN) */}
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
-        {/* ASDA B3 Controller Panel (Left Card) */}
-        <div className="lg:col-span-7 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 shadow-2xs flex flex-col justify-between transition-colors">
-          <div>
+      {/* 2 columnas: ASDA+láseres | OM+Feeder */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-12 lg:items-start">
+        {/* —— Izquierda —— */}
+        <div className="lg:col-span-7 space-y-4">
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 shadow-2xs transition-colors">
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2.5">
               <div className="flex items-center gap-2">
                 <Move className="h-4 w-4 text-slate-600 dark:text-slate-400" />
@@ -179,9 +227,7 @@ export const MotionTab: React.FC<MotionTabProps> = ({
               </span>
             </div>
 
-            {/* Inputs Section - Compact Grid */}
             <div className="mt-3.5 space-y-3">
-              {/* Posición mm */}
               <div className="flex items-center justify-between gap-3">
                 <label
                   htmlFor="input-pos-mm"
@@ -217,7 +263,6 @@ export const MotionTab: React.FC<MotionTabProps> = ({
                 </div>
               </div>
 
-              {/* RPM */}
               <div className="flex items-center justify-between gap-3">
                 <label
                   htmlFor="input-rpm"
@@ -257,82 +302,116 @@ export const MotionTab: React.FC<MotionTabProps> = ({
                 </div>
               </div>
             </div>
+
+            {/* Comandos: movimiento / servo / home */}
+            <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800 space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  id="btn-mover-motion"
+                  onClick={handleMove}
+                  disabled={motionState.isMoving}
+                  className="group flex items-center justify-center gap-1.5 rounded-lg bg-slate-900 dark:bg-slate-100 hover:bg-slate-800 dark:hover:bg-white px-3.5 py-2 text-xs font-bold text-white dark:text-slate-900 transition active:scale-95 shadow-2xs disabled:opacity-50"
+                >
+                  <span>{t('btn_move')}</span>
+                  <span className="rounded bg-slate-800 dark:bg-slate-200 px-1 py-0.2 font-mono text-[10px] text-slate-300 dark:text-slate-800 border border-slate-700 dark:border-slate-300">
+                    0x005
+                  </span>
+                </button>
+                <button
+                  id="btn-stop-motion"
+                  onClick={onStop}
+                  className="group flex items-center justify-center gap-1.5 rounded-lg border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/40 hover:bg-red-100 dark:hover:bg-red-950/70 px-3.5 py-2 text-xs font-bold text-red-700 dark:text-red-300 transition active:scale-95 shadow-2xs"
+                >
+                  <Square className="h-3 w-3 fill-current" />
+                  <span>{t('btn_stop')}</span>
+                  <span className="rounded bg-red-100 dark:bg-red-900/60 px-1 py-0.2 font-mono text-[10px] text-red-800 dark:text-red-200 border border-red-200 dark:border-red-800">
+                    0x002
+                  </span>
+                </button>
+                <button
+                  id="btn-servo-on-motion"
+                  onClick={onServoOn}
+                  disabled={motionState.isMoving}
+                  className="group flex items-center justify-center gap-1.5 rounded-lg border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-950/70 px-3.5 py-2 text-xs font-bold text-emerald-800 dark:text-emerald-300 transition active:scale-95 shadow-2xs disabled:opacity-50"
+                >
+                  <Power className="h-3 w-3" />
+                  <span>{t('btn_servo_on')}</span>
+                  <span className="rounded bg-emerald-100 dark:bg-emerald-900/60 px-1 py-0.2 font-mono text-[10px] text-emerald-800 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-800">
+                    0x004
+                  </span>
+                </button>
+                <button
+                  id="btn-servo-off-motion"
+                  onClick={onServoOff}
+                  className="group flex items-center justify-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 px-3.5 py-2 text-xs font-bold text-slate-700 dark:text-slate-200 transition active:scale-95 shadow-2xs"
+                >
+                  <PowerOff className="h-3 w-3" />
+                  <span>{t('btn_servo_off')}</span>
+                  <span className="rounded bg-slate-100 dark:bg-slate-700 px-1 py-0.2 font-mono text-[10px] text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-600">
+                    0x003
+                  </span>
+                </button>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  id="btn-search-home-motion"
+                  onClick={onSearchHome}
+                  disabled={motionState.isMoving}
+                  className="group flex items-center justify-center gap-1.5 rounded-lg border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-950/70 px-3.5 py-2 text-xs font-bold text-emerald-800 dark:text-emerald-300 transition active:scale-95 shadow-2xs disabled:opacity-50"
+                >
+                  <Home className="h-3 w-3" />
+                  <span>{t('btn_search_home')}</span>
+                  <span className="rounded bg-emerald-100 dark:bg-emerald-900/60 px-1 py-0.2 font-mono text-[10px] text-emerald-800 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-800">
+                    0x001
+                  </span>
+                </button>
+                <button
+                  id="btn-move0-motion"
+                  onClick={onMoveToZero}
+                  className="group flex items-center justify-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 px-3.5 py-2 text-xs font-bold text-slate-700 dark:text-slate-200 transition active:scale-95 shadow-2xs"
+                >
+                  <span>{t('btn_move_to_zero')}</span>
+                  <span className="rounded bg-slate-100 dark:bg-slate-700 px-1 py-0.2 font-mono text-[10px] text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-600">
+                    0x007
+                  </span>
+                </button>
+                <button
+                  id="btn-reset-errores-motion"
+                  onClick={onResetErrors}
+                  className="flex items-center justify-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 px-3.5 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 transition active:scale-95 shadow-2xs"
+                >
+                  <RotateCcw className="h-3 w-3 text-amber-600 dark:text-amber-400" />
+                  <span>{t('btn_reset_errors')}</span>
+                  <span className="rounded bg-slate-100 dark:bg-slate-700 px-1 py-0.2 font-mono text-[10px] text-amber-700 dark:text-amber-300 border border-slate-200 dark:border-slate-600">
+                    0x016
+                  </span>
+                </button>
+              </div>
+            </div>
           </div>
 
-          {/* Action Buttons - Compact & Shortened */}
-          <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800">
-            <div className="flex flex-wrap items-center gap-2">
-              {/* Mover (0x005) */}
-              <button
-                id="btn-mover-motion"
-                onClick={handleMove}
-                disabled={motionState.isMoving}
-                className="group flex items-center justify-center gap-1.5 rounded-lg bg-slate-900 dark:bg-slate-100 hover:bg-slate-800 dark:hover:bg-white px-3.5 py-2 text-xs font-bold text-white dark:text-slate-900 transition active:scale-95 shadow-2xs disabled:opacity-50"
-              >
-                <span>{t('btn_move')}</span>
-                <span className="rounded bg-slate-800 dark:bg-slate-200 px-1 py-0.2 font-mono text-[10px] text-slate-300 dark:text-slate-800 border border-slate-700 dark:border-slate-300">
-                  0x005
-                </span>
-              </button>
-
-              {/* Stop (0x002) */}
-              <button
-                id="btn-stop-motion"
-                onClick={onStop}
-                className="group flex items-center justify-center gap-1.5 rounded-lg border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/40 hover:bg-red-100 dark:hover:bg-red-950/70 px-3.5 py-2 text-xs font-bold text-red-700 dark:text-red-300 transition active:scale-95 shadow-2xs"
-              >
-                <Square className="h-3 w-3 fill-current" />
-                <span>{t('btn_stop')}</span>
-                <span className="rounded bg-red-100 dark:bg-red-900/60 px-1 py-0.2 font-mono text-[10px] text-red-800 dark:text-red-200 border border-red-200 dark:border-red-800">
-                  0x002
-                </span>
-              </button>
-
-              {/* Search HOME (0x001) — torque homing HomeASDA() */}
-              <button
-                id="btn-search-home-motion"
-                onClick={onSearchHome}
-                disabled={motionState.isMoving}
-                className="group flex items-center justify-center gap-1.5 rounded-lg border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-950/70 px-3.5 py-2 text-xs font-bold text-emerald-800 dark:text-emerald-300 transition active:scale-95 shadow-2xs disabled:opacity-50"
-              >
-                <Home className="h-3 w-3" />
-                <span>{t('btn_search_home')}</span>
-                <span className="rounded bg-emerald-100 dark:bg-emerald-900/60 px-1 py-0.2 font-mono text-[10px] text-emerald-800 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-800">
-                  0x001
-                </span>
-              </button>
-
-              {/* Move to 0 (0x007) */}
-              <button
-                id="btn-move0-motion"
-                onClick={onMoveToZero}
-                className="group flex items-center justify-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 px-3.5 py-2 text-xs font-bold text-slate-700 dark:text-slate-200 transition active:scale-95 shadow-2xs"
-              >
-                <span>{t('btn_move_to_zero')}</span>
-                <span className="rounded bg-slate-100 dark:bg-slate-700 px-1 py-0.2 font-mono text-[10px] text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-600">
-                  0x007
-                </span>
-              </button>
-
-              {/* Reset errores */}
-              <button
-                id="btn-reset-errores-motion"
-                onClick={onResetErrors}
-                className="flex items-center justify-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 px-3.5 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 transition active:scale-95 shadow-2xs"
-              >
-                <RotateCcw className="h-3 w-3 text-amber-600 dark:text-amber-400" />
-                <span>{t('btn_reset_errors')}</span>
-                <span className="rounded bg-slate-100 dark:bg-slate-700 px-1 py-0.2 font-mono text-[10px] text-amber-700 dark:text-amber-300 border border-slate-200 dark:border-slate-600">
-                  0x016
-                </span>
-              </button>
+          {/* Láseres bajo ASDA (misma columna) */}
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 shadow-2xs transition-colors">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2.5">
+              <div className="flex items-center gap-2">
+                <Crosshair className="h-4 w-4 text-slate-600 dark:text-slate-400" />
+                <h2 className="text-xs font-bold uppercase tracking-wider text-slate-800 dark:text-slate-200">
+                  {t('laser_sensors')}
+                </h2>
+              </div>
+              <span className="rounded bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-2 py-0.5 font-mono text-[10px] text-slate-600 dark:text-slate-400">
+                Keyence LR-X · E004/E005
+              </span>
+            </div>
+            <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {laserChip('laser-r', t('laser_r'), motionState.laserR, '0x4D')}
+              {laserChip('laser-l', t('laser_l'), motionState.laserL, '0x4E')}
             </div>
           </div>
         </div>
 
-        {/* Right Column: OM Encoder & Feeder CAN */}
+        {/* —— Derecha —— */}
         <div className="lg:col-span-5 space-y-4">
-          {/* OM Encoder Card */}
           <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 shadow-2xs transition-colors">
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2.5">
               <div className="flex items-center gap-2">
@@ -346,9 +425,7 @@ export const MotionTab: React.FC<MotionTabProps> = ({
               </span>
             </div>
 
-            {/* Readout Rows - Compact 2-column layout */}
             <div className="mt-3 grid grid-cols-2 gap-2.5">
-              {/* Lectura R */}
               <div className="rounded-lg bg-slate-50 dark:bg-slate-800/60 p-2.5 border border-slate-200 dark:border-slate-700">
                 <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
                   <span className="font-medium">{t('reading_r')}</span>
@@ -370,7 +447,6 @@ export const MotionTab: React.FC<MotionTabProps> = ({
                 </div>
               </div>
 
-              {/* Lectura L */}
               <div className="rounded-lg bg-slate-50 dark:bg-slate-800/60 p-2.5 border border-slate-200 dark:border-slate-700">
                 <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
                   <span className="font-medium">{t('reading_l')}</span>
@@ -394,7 +470,6 @@ export const MotionTab: React.FC<MotionTabProps> = ({
             </div>
           </div>
 
-          {/* Feeder CAN Card */}
           <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 shadow-2xs transition-colors">
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2.5">
               <div className="flex items-center gap-2">
@@ -408,9 +483,7 @@ export const MotionTab: React.FC<MotionTabProps> = ({
               </span>
             </div>
 
-            {/* Test Actions & Respective Offsets */}
             <div className="mt-3 grid grid-cols-2 gap-3">
-              {/* Left Side (L) */}
               <div className="flex flex-col gap-2 rounded-lg bg-slate-50 dark:bg-slate-800/60 p-2.5 border border-slate-200 dark:border-slate-700">
                 <button
                   id="btn-test-can-l"
@@ -426,7 +499,6 @@ export const MotionTab: React.FC<MotionTabProps> = ({
                     0x013
                   </span>
                 </button>
-
                 <div className="space-y-1">
                   <label htmlFor="input-offset-can-l" className="text-[11px] font-semibold text-slate-600 dark:text-slate-400 flex items-center justify-between">
                     <span>Offset L</span>
@@ -444,7 +516,6 @@ export const MotionTab: React.FC<MotionTabProps> = ({
                 </div>
               </div>
 
-              {/* Right Side (R) */}
               <div className="flex flex-col gap-2 rounded-lg bg-slate-50 dark:bg-slate-800/60 p-2.5 border border-slate-200 dark:border-slate-700">
                 <button
                   id="btn-test-can-r"
@@ -460,7 +531,6 @@ export const MotionTab: React.FC<MotionTabProps> = ({
                     0x012
                   </span>
                 </button>
-
                 <div className="space-y-1">
                   <label htmlFor="input-offset-can-r" className="text-[11px] font-semibold text-slate-600 dark:text-slate-400 flex items-center justify-between">
                     <span>Offset R</span>

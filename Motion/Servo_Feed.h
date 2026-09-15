@@ -76,5 +76,7 @@ bool feedQueueTestSide(int8_t onlySide, String& err);
 bool feedResetRuntime();
 
 void motionTcpOnEncoderError();
+void motionTcpOnEncoderErrorL();
 void motionTcpOnFeedOk(bool sideR);
 void motionTcpOnFeedNg(bool sideR);
+void motionTcpOnDetailError(uint8_t errByte, const char* name);

@@ -2042,6 +2042,12 @@ static void appendRefillObject(String& json)
 
 static void appendErrorObject(String& json)
 {
+  char uiBuf[96];
+  uiBuf[0] = '\0';
+  const char sideCh = PREFEEDER_SIDE_TAG[0];
+  if (systemFault != FAULT_NONE)
+    pfErrorFormatUiFromFault(uiBuf, sizeof(uiBuf), systemFault, sideCh);
+
   json += "\"error\":{\"active\":";
   json += (systemFault != FAULT_NONE) ? "true" : "false";
   json += ",\"reason\":";
@@ -2050,7 +2056,13 @@ static void appendErrorObject(String& json)
   jsonAppendUInt(json, systemFaultCode());
   json += ",\"tag\":";
   jsonAppendStrC(json, pfErrorTagFromFault(systemFault));
-  json += "}";
+  json += ",\"exxx\":";
+  jsonAppendStrC(json, pfErrorExxxFromFault(systemFault, sideCh));
+  json += ",\"ui\":";
+  jsonAppendStrC(json, uiBuf);
+  json += ",\"side\":\"";
+  json += PREFEEDER_SIDE_TAG;
+  json += "\"}";
 }
 
 // ====================== WEB UI ======================

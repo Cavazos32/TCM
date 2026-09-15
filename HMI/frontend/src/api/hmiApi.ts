@@ -47,8 +47,22 @@ export function pauseCycle() {
   return post('/api/cycle/pause');
 }
 
-export function resetCycle() {
-  return post('/api/cycle/reset');
+export function resetCycle(opts?: { confirm?: boolean; doHome?: boolean }) {
+  return post('/api/cycle/reset', {
+    confirm: !!opts?.confirm,
+    doHome: !!opts?.doHome,
+  });
+}
+
+export function confirmError() {
+  return post('/api/error/confirm');
+}
+
+export function resetError(opts?: { confirm?: boolean; doHome?: boolean }) {
+  return post('/api/error/reset', {
+    confirm: opts?.confirm ?? true,
+    doHome: opts?.doHome ?? true,
+  });
 }
 
 export function cycleMaterialist(on: boolean) {

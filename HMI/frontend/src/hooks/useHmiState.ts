@@ -21,6 +21,9 @@ import type {
   TabType,
 } from '../types';
 
+/** Bloqueo tras toggle: evita doble click ON→OFF antes de que el KEEP/pulso asiente. */
+const VALVE_TOGGLE_LOCK_MS = 450;
+
 export interface HmiViewState {
   connected: boolean;
   machineState: MachineState;
@@ -57,6 +60,7 @@ const DEFAULT_MACHINE: MachineState = {
   piecesCount: 0,
   targetPieces: 1,
   cycleCompleted: false,
+  safetyExhaust: false,
 };
 
 export function useHmiState() {
@@ -78,9 +82,12 @@ export function useHmiState() {
       feederCanRTesting: false,
       offsetL: 0,
       offsetR: 0,
+      laserR: false,
+      laserL: false,
     },
     plcState: {
       connection: { connected: false, ip: '', port: 0 },
+      blowerSec: 2,
       valves: [],
     },
     preFeederState: {
@@ -102,6 +109,10 @@ export function useHmiState() {
   const targetQtyRef = useRef(1);
   const snapRef = useRef<BackendSnapshot | null>(null);
   const encPollRef = useRef(false);
+  /** Estado lógico local por válvula (fuente de verdad entre clicks). */
+  const valveOnRef = useRef<Record<string, boolean>>({});
+  const valveLockRef = useRef<Record<string, boolean>>({});
+  const [valveBusy, setValveBusy] = useState<Record<string, boolean>>({});
 
   const applySnapshot = useCallback((snap: BackendSnapshot) => {
     snapRef.current = snap;
@@ -110,11 +121,18 @@ export function useHmiState() {
       targetQtyRef.current = model.qty;
     }
     const targetQty = targetQtyRef.current;
+    const plc = mapPlcState(snap);
+    // Sincronizar lectura ON/OFF desde servidor solo si la válvula no está bloqueada.
+    for (const v of plc.valves) {
+      if (!valveLockRef.current[v.id]) {
+        valveOnRef.current[v.id] = v.active;
+      }
+    }
     setView({
       connected: true,
       machineState: mapMachineState(snap, targetQty),
       motionState: mapMotionState(snap),
-      plcState: mapPlcState(snap),
+      plcState: plc,
       preFeederState: mapPreFeederState(snap),
       cycleConfig: mapCycleConfig(snap.cycle.config),
       cycleStep: snap.cycle.step,
@@ -218,8 +236,31 @@ export function useHmiState() {
     api.pauseCycle().catch(() => {});
   }, []);
 
-  const resetCycleCmd = useCallback(() => {
-    api.resetCycle().catch(() => {});
+  const resetCycleCmd = useCallback(async () => {
+    const snap = snapRef.current;
+    const err = snap?.error;
+    if (err?.active && err.needsConfirm && !err.confirmed) {
+      const ok = window.confirm(
+        `${err.ui}\n\nClase ${err.class}: stop inmediato. Confirmar para Reset + homing general?`
+      );
+      if (!ok) return;
+      try {
+        await api.confirmError();
+      } catch {
+        /* ignore */
+      }
+      api.resetError({ confirm: true, doHome: true }).catch(() => {});
+      return;
+    }
+    if (err?.active && err.needsHome) {
+      const ok = window.confirm(
+        `${err.ui}\n\nReset errores y ejecutar homing general?`
+      );
+      if (!ok) return;
+      api.resetError({ confirm: true, doHome: true }).catch(() => {});
+      return;
+    }
+    api.resetCycle({ confirm: true, doHome: false }).catch(() => {});
   }, []);
 
   const setCutOffset = useCallback(async (mm: number) => {
@@ -278,6 +319,14 @@ export function useHmiState() {
     api.motionAction('stop').catch(() => {});
   }, []);
 
+  const motionServoOn = useCallback(() => {
+    api.motionAction('on').catch(() => {});
+  }, []);
+
+  const motionServoOff = useCallback(() => {
+    api.motionAction('off').catch(() => {});
+  }, []);
+
   const motionMoveZero = useCallback(() => {
     const snap = snapRef.current;
     const rpm = snap?.rpm ?? view.motionState.rpm;
@@ -313,14 +362,62 @@ export function useHmiState() {
   }, []);
 
   const toggleValve = useCallback((valveId: string) => {
+    if (valveLockRef.current[valveId]) return;
+
     const snap = snapRef.current;
     if (!snap) return;
     const valves = mapPlcState(snap).valves;
     const byte = valveByteFromId(valves, valveId);
     if (byte == null) return;
+
     const current = snap.plc.valves[String(byte)];
-    const newOn = current?.on !== null ? !current.on : true;
-    api.plcAction('valve', { byte, on: newOn }).catch(() => {});
+    const knownOn =
+      valveOnRef.current[valveId] ??
+      (current?.on === true);
+    const newOn = !knownOn;
+
+    valveLockRef.current[valveId] = true;
+    valveOnRef.current[valveId] = newOn;
+    setValveBusy((prev) => ({ ...prev, [valveId]: true }));
+
+    const extra: Record<string, unknown> = { byte, on: newOn };
+    if (valveId === 'blower' && newOn) {
+      extra.durationSec = Number(snap.plc.blowerSec ?? 2);
+    }
+    if (snap.plc.valves[String(byte)]) {
+      snap.plc.valves[String(byte)] = {
+        ...snap.plc.valves[String(byte)],
+        on: newOn,
+      };
+    }
+    setView((prev) => ({
+      ...prev,
+      plcState: {
+        ...prev.plcState,
+        valves: prev.plcState.valves.map((v) =>
+          v.id === valveId ? { ...v, active: newOn } : v
+        ),
+      },
+    }));
+    api.plcAction('valve', extra).catch(() => {});
+
+    window.setTimeout(() => {
+      valveLockRef.current[valveId] = false;
+      setValveBusy((prev) => {
+        const next = { ...prev };
+        delete next[valveId];
+        return next;
+      });
+      // Releer estado del snap (puede haber llegado evento OFF del blower, etc.)
+      const latest = snapRef.current?.plc.valves[String(byte)];
+      if (latest && latest.on !== null && latest.on !== undefined) {
+        valveOnRef.current[valveId] = !!latest.on;
+      }
+    }, VALVE_TOGGLE_LOCK_MS);
+  }, []);
+
+  const setBlowerSec = useCallback((sec: number) => {
+    api.plcAction('set_blower_sec', { blowerSec: sec }).catch(() => {});
   }, []);
 
   const plcReset = useCallback(() => {
@@ -393,6 +490,8 @@ export function useHmiState() {
     setMmRpm,
     motionMove,
     motionStop,
+    motionServoOn,
+    motionServoOff,
     motionSearchHome,
     motionMoveZero,
     motionReset,
@@ -402,6 +501,8 @@ export function useHmiState() {
     feedR,
     saveFeedOffset,
     toggleValve,
+    valveBusy,
+    setBlowerSec,
     plcReset,
     plcAllOff,
     pfStart,

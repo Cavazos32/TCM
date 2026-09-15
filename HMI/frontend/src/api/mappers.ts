@@ -123,6 +123,11 @@ export function mapMachineState(
     piecesCount: cycle.completed ? targetReps : piecesDone,
     targetPieces: targetReps,
     cycleCompleted: cycle.completed ?? false,
+    safetyExhaust: !!snap.motion.safetyExhaust,
+    fault: snap.error?.active ? snap.error.ui : cycle.fault || undefined,
+    faultClass: snap.error?.class || cycle.faultClass || undefined,
+    errorNeedsConfirm: !!snap.error?.needsConfirm && !snap.error?.confirmed,
+    errorNeedsHome: !!snap.error?.needsHome,
   };
 }
 
@@ -158,6 +163,8 @@ export function mapMotionState(snap: BackendSnapshot): MotionState {
     feederCanRTesting: false,
     offsetL: m.feedOffsetMmL ?? 0,
     offsetR: m.feedOffsetMmR ?? 0,
+    laserR: !!m.laserR,
+    laserL: !!m.laserL,
     statusText,
   };
 }
@@ -186,6 +193,7 @@ export function mapPlcState(snap: BackendSnapshot): PlcState {
       port: snap.plcLink.port,
     },
     statusText: snap.plc.status?.text ?? '',
+    blowerSec: Number(snap.plc.blowerSec ?? 2),
     valves,
   };
 }

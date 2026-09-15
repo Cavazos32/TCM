@@ -27,12 +27,7 @@ TX_PLC_ERROR = 0x27
 TX_PLC_STOP = 0x28
 TX_PLC_RETURN = 0x29
 
-ERROR_LABELS = {
-    TX_CUTTER_ERR: "Error cutter (0x01F)",
-    TX_GRIPPER_ERR: "Error gripper (0x020)",
-    TX_HOLDER_ERR: "Error holder (0x021)",
-    TX_ENCODER_ERR: "Error encoder (0x022)",
-}
+from error_catalog import ERROR_LABELS  # EXXX: Module, Descripción (E047–E050)
 
 STATE_LABELS = {
     TX_PLC_INIT: "Init (0x024)",
@@ -76,7 +71,8 @@ class PlcClient(ModuleTcpClient):
         super().__init__(DEFAULT_HOST, DEFAULT_PORT, on_message, on_connection)
 
     def _send_probe(self) -> bool:
-        return self.send_command(command="poll")
+        # Keepalive de enlace (tcp_link), no sondeo de sensores (regla C1 Set/Res).
+        return self.send_command(command="ping")
 
     def cmd_byte(self, byte_code: int, **extra: Any) -> bool:
         return self.send_command(byte=byte_code, **extra)
@@ -84,18 +80,31 @@ class PlcClient(ModuleTcpClient):
     def cmd_valve(self, byte_code: int, on: bool = True) -> bool:
         return self.cmd_byte(byte_code, on=on)
 
-    def cmd_set_out(self, out_name: str, on: bool = True) -> bool:
-        return self.send_command(
-            command="setOut",
-            out=out_name,
-            value="on" if on else "off",
-        )
+    def cmd_set_out(
+        self, out_name: str, on: bool = True, duration_sec: float | None = None
+    ) -> bool:
+        fields: dict[str, Any] = {
+            "command": "setOut",
+            "out": out_name,
+            "value": "on" if on else "off",
+        }
+        if on and duration_sec is not None:
+            fields["durationSec"] = max(0.2, float(duration_sec))
+        return self.send_command(**fields)
 
-    def cmd_valve_by_byte(self, byte_code: int, on: bool = True) -> bool:
+    def cmd_valve_by_byte(
+        self,
+        byte_code: int,
+        on: bool = True,
+        duration_sec: float | None = None,
+    ) -> bool:
         out_name = PLC_VALVE_OUT_NAMES.get(byte_code)
         if out_name:
-            return self.cmd_set_out(out_name, on)
-        return self.cmd_valve(byte_code, on)
+            return self.cmd_set_out(out_name, on, duration_sec=duration_sec)
+        extra: dict[str, Any] = {"on": on}
+        if on and duration_sec is not None:
+            extra["durationSec"] = max(0.2, float(duration_sec))
+        return self.cmd_byte(byte_code, **extra)
 
     def cmd_cutter_r(self, on: bool = True) -> bool:
         return self.cmd_valve(CMD_CUTTER_R, on)
@@ -112,8 +121,8 @@ class PlcClient(ModuleTcpClient):
     def cmd_encoder(self, on: bool = True) -> bool:
         return self.cmd_valve(CMD_ENCODER, on)
 
-    def cmd_blower(self, on: bool = True) -> bool:
-        return self.cmd_valve(CMD_BLOWER, on)
+    def cmd_blower(self, on: bool = True, duration_sec: float | None = None) -> bool:
+        return self.cmd_valve_by_byte(CMD_BLOWER, on, duration_sec=duration_sec)
 
     def cmd_reset(self) -> bool:
         return self.cmd_byte(CMD_RESET, on=True)

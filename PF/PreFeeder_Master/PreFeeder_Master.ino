@@ -86,7 +86,8 @@ struct MasterErrorVar {
   bool active = false;
   uint8_t level = 0;
   uint8_t code = 0;
-  String tag = "PF-000";
+  String tag = "";      // EXXX oficial (E052…)
+  String ui = "";        // "EXXX: Pre-Feeder, Descripción"
   char side = '-';
   String reason = "none";
   uint32_t seq = 0;
@@ -234,7 +235,8 @@ static void recomputeMasterError()
   next.code = 0;
   next.side = '-';
   next.reason = "none";
-  next.tag = "PF-000";
+  next.tag = "";
+  next.ui = "";
 
   if (sideL.error)
   {
@@ -242,7 +244,12 @@ static void recomputeMasterError()
     next.side = 'L';
     next.code = sideL.errorCode;
     next.reason = sideL.errorReason;
-    next.tag = String(pfErrorTagFromWireCode(next.code));
+    next.tag = String(pfErrorExxxFromWireCode(next.code));
+    char uiBuf[96];
+    pfErrorFormatUi(uiBuf, sizeof(uiBuf), pfErrorIdFromWireCode(next.code), 'L');
+    next.ui = String(uiBuf);
+    if (!next.tag.length())
+      next.tag = String(pfErrorTagFromWireCode(next.code));
     const PfErrorEntry* e = pfErrorFindById(pfErrorIdFromWireCode(next.code));
     next.level = e ? e->level : 2;
   }
@@ -252,7 +259,12 @@ static void recomputeMasterError()
     next.side = 'R';
     next.code = sideR.errorCode;
     next.reason = sideR.errorReason;
-    next.tag = String(pfErrorTagFromWireCode(next.code));
+    next.tag = String(pfErrorExxxFromWireCode(next.code));
+    char uiBuf[96];
+    pfErrorFormatUi(uiBuf, sizeof(uiBuf), pfErrorIdFromWireCode(next.code), 'R');
+    next.ui = String(uiBuf);
+    if (!next.tag.length())
+      next.tag = String(pfErrorTagFromWireCode(next.code));
     const PfErrorEntry* e = pfErrorFindById(pfErrorIdFromWireCode(next.code));
     next.level = e ? e->level : 2;
   }
@@ -715,6 +727,8 @@ void handleApiStatus()
   j += ",\"level\":"; j += pfError.level;
   j += ",\"code\":"; j += pfError.code;
   j += ",\"tag\":"; jsonAppendStr(j, pfError.tag);
+  j += ",\"exxx\":"; jsonAppendStr(j, pfError.tag);
+  j += ",\"ui\":"; jsonAppendStr(j, pfError.ui);
   j += ",\"side\":\""; j += String(pfError.side); j += "\"";
   j += ",\"reason\":"; jsonAppendStr(j, pfError.reason);
   j += ",\"seq\":"; j += pfError.seq;
@@ -1113,10 +1127,13 @@ static void pfTcpOnClientAccepted()
 static bool pfTcpAcceptIncoming()
 {
   if (!pfTcpServicesUp || !pfTcpServer.hasClient()) return false;
-  if (pfTcpClient.connected())
+  WiFiClient incoming = pfTcpServer.available();
+  if (!incoming) return false;
+
+  // Igual que Motion/PLC: sustituir siempre (zombies LWIP).
+  if (pfTcpClient)
     pfTcpClient.stop();
-  pfTcpClient = pfTcpServer.available();
-  if (!pfTcpClient) return false;
+  pfTcpClient = incoming;
   pfTcpOnClientAccepted();
   return true;
 }

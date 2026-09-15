@@ -20,9 +20,9 @@ constexpr unsigned long WIFI_CONNECT_TIMEOUT_MS = 30000;
 
 // --- Entradas sensores (errores → TX 0x1F–0x22) ---
 constexpr uint8_t PIN_CUTTER          = 26;  // 0x1F Cutter error
-constexpr uint8_t PIN_GRIPPER         = 27;  // 0x20 Gripper error
+constexpr uint8_t PIN_GRIPPER         = 27;  // 0x20 GripperE — falla gripper / aire baja·nula
 constexpr uint8_t PIN_HOLDER          = 32;  // 0x21 Holder error
-constexpr uint8_t PIN_ENCODER         = 34;  // 0x22 Encoder error
+constexpr uint8_t PIN_ENCODER         = 34;  // 0x22 EncoderE — aire / manguera / cilindro
 
 // --- Salidas válvulas / relés (Opcode TCP → GPIO) ---
 //  0x19  Cutter R  → 25
@@ -51,6 +51,15 @@ constexpr uint8_t PIN_ETH_INT      = 35;
 #ifndef VALVE_ACTIVE_HIGH
 #define VALVE_ACTIVE_HIGH 1
 #endif
+
+// Válvulas por impulso: ON = un pulso, OFF = otro pulso (no enclavado).
+// Ancho suficiente para que el KEEP (Set/Res) del PLC neumático lea y enclaves.
+constexpr unsigned long VALVE_PULSE_MS = 100;
+
+// Blower: nivel ON durante N s (ajustable desde HMI), luego OFF automático.
+constexpr unsigned long BLOWER_DEFAULT_SEC = 2;
+constexpr unsigned long BLOWER_MIN_MS = 200;
+constexpr unsigned long BLOWER_MAX_MS = 300000;  // 5 min
 
 constexpr uint8_t BIT_GRIPPER = (1 << 0);
 constexpr uint8_t BIT_HOLDER  = (1 << 1);

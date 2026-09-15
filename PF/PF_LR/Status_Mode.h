@@ -2,6 +2,7 @@
 
 #include "Types.h"
 #include <stdint.h>
+#include <stdio.h>
 
 // Catálogo unificado PreFeeder: códigos PF-xxx, fases auto y estado operativo.
 // Wire code legacy: base L=20 / R=30 + PfErrorId (1..7) → 21–27 / 31–37.
@@ -129,6 +130,55 @@ static inline const char* pfErrorDescFromFault(SystemFault fault)
 {
   const PfErrorEntry* e = pfErrorFindByFault(fault);
   return e ? e->desc : "none";
+}
+
+/** EXXX oficial (Error list) según lado L/R. Operator stop no tiene EXXX TCP. */
+static inline const char* pfErrorExxx(PfErrorId id, char side)
+{
+  const bool r = (side == 'R' || side == 'r');
+  switch (id) {
+    case PF_ERR_BUFFER:  return r ? "E052" : "E058";
+    case PF_ERR_ENDSTOP: return r ? "E053" : "E059";
+    case PF_ERR_TENSION: return r ? "E054" : "E060";
+    case PF_ERR_CYLINDER:return r ? "E055" : "E061";
+    case PF_ERR_HOSE:    return r ? "E056" : "E062";
+    case PF_ERR_HOLGURA: return r ? "E057" : "E063";
+    default:             return "";
+  }
+}
+
+static inline const char* pfErrorExxxFromFault(SystemFault fault, char side)
+{
+  return pfErrorExxx(pfErrorIdFromFault(fault), side);
+}
+
+static inline const char* pfErrorExxxFromWireCode(uint8_t code)
+{
+  const PfErrorId id = pfErrorIdFromWireCode(code);
+  char side = '-';
+  if (code > PF_WIRE_BASE_R && code <= PF_WIRE_BASE_R + 7) side = 'R';
+  else if (code > PF_WIRE_BASE_L && code <= PF_WIRE_BASE_L + 7) side = 'L';
+  return pfErrorExxx(id, side);
+}
+
+/** UI normativa: "EXXX: Pre-Feeder, Descripción" */
+static inline void pfErrorFormatUi(char* buf, size_t n, PfErrorId id, char side)
+{
+  if (!buf || n == 0) return;
+  const char* ex = pfErrorExxx(id, side);
+  const PfErrorEntry* e = pfErrorFindById(id);
+  const char* desc = e ? e->desc : "unknown";
+  if (ex && ex[0])
+    snprintf(buf, n, "%s: Pre-Feeder, %s", ex, desc);
+  else if (e)
+    snprintf(buf, n, "%s: Pre-Feeder, %s", e->tag, desc);
+  else
+    snprintf(buf, n, "Pre-Feeder, unknown");
+}
+
+static inline void pfErrorFormatUiFromFault(char* buf, size_t n, SystemFault fault, char side)
+{
+  pfErrorFormatUi(buf, n, pfErrorIdFromFault(fault), side);
 }
 
 static inline uint8_t pfErrorLevelFromFault(SystemFault fault)

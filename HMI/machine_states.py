@@ -1,9 +1,14 @@
-# Machine / ciclo TCM — opcodes 0x40–0x49 (fuente Python; HMI no usa .h)
-# Andon refleja estos bytes en la torre. Detalle de errores de esclavos ≠ estos bytes.
+# Machine / ciclo TCM — opcodes 0x40–0x49 + errores Cycle/Main (EXXX)
+# Fuente Python; HMI no usa .h de firmware.
 #
-# Flujo:
-#   esclavo (error detalle) → HMI → Andon (estado máquina) + esclavos (Stop/Error de módulo)
+# Flujo flip-flop:
+#   Set (detalle EXXX del esclavo / ciclo) → HMI latchea → UI + clase C1/C2/C3
+#                                         → estado máquina 0x46 a Andon / Stop a esclavos
+#   Res (Reset HMI) → limpia latch + reset por módulo
+#
+# Estados MACH_* informan sin detalle. EXXX = identidad del fallo (solo HMI).
 
+# --- Estados máquina / Andon RX (no EXXX) ---
 MACH_INIT = 0x40        # InitState · Green
 MACH_START = 0x41       # StartCycle
 MACH_STOP = 0x42        # StopCycle · Red
@@ -15,8 +20,23 @@ MACH_FINISH = 0x47      # FinishParts / LotCompleate · Green + Buzzer
 MACH_RETURN = 0x48      # ReturnState
 MACH_MATERIALIST = 0x49 # Materialist · Yellow + Buzzer
 
-# Andon propio: TX only (pin FRL → torreta Error local + aviso HMI). No se recibe 0x50.
-ANDON_ERR_PRESSURE = 0x50  # PressureError — baja/nula presión FRL
+# Andon propio: TX only (E064) — pin FRL → torreta + aviso HMI
+ANDON_ERR_PRESSURE = 0x50  # E064 C1 · PressureError
+
+# --- Cycle (HMI) — EXXX E008–E014 ---
+CYC_ERR_SERVO_IDLE_TIMEOUT = 0x52  # E008 C1
+CYC_ERR_LENGTH_OK_TIMEOUT = 0x53   # E009 C1
+CYC_ERR_HOME_FAILED = 0x54         # E010 C1
+CYC_ERR_FEED_START_FAILED = 0x55   # E011 C1
+CYC_ERR_MOVE_ABS_FAILED = 0x56     # E012 C1
+CYC_ERR_DROP_CMD_FAILED = 0x57     # E013 C1
+CYC_ERR_FEED_INCOMPLETE = 0x58     # E014 C2
+
+# --- Main / enlace — EXXX E065–E068 ---
+MAIN_ERR_MOTION_ESP_DISCONNECTED = 0x79  # E065 C1
+MAIN_ERR_PLC_ESP_DISCONNECTED = 0x7A     # E066 C1
+MAIN_ERR_PF_MASTER_DISCONNECTED = 0x7B   # E067 C1
+MAIN_ERR_CYCLE_ABORTED = 0x7C            # E068 C1
 
 # Aliases usados por cycle.py
 CMD_START = MACH_START

@@ -13,6 +13,8 @@ import { useApp } from '../context/AppContext';
 interface PlcTabProps {
   plcState: PlcState;
   onToggleValve: (valveId: string) => void;
+  valveBusy?: Record<string, boolean>;
+  onBlowerSecChange: (sec: number) => void;
   onResetPlc: () => void;
   onAllOff: () => void;
   showLogs?: boolean;
@@ -23,6 +25,8 @@ interface PlcTabProps {
 export const PlcTab: React.FC<PlcTabProps> = ({
   plcState,
   onToggleValve,
+  valveBusy = {},
+  onBlowerSecChange,
   onResetPlc,
   onAllOff,
   showLogs = true,
@@ -127,6 +131,7 @@ export const PlcTab: React.FC<PlcTabProps> = ({
           {/* Table Rows */}
           <div className="divide-y divide-slate-100 dark:divide-slate-800/70">
             {plcState.valves.map((valve) => {
+              const busy = !!valveBusy[valve.id];
               return (
                 <div
                   key={valve.id}
@@ -135,7 +140,7 @@ export const PlcTab: React.FC<PlcTabProps> = ({
                   }`}
                 >
                   {/* Función Name */}
-                  <div className="col-span-6 sm:col-span-5 flex items-center gap-2">
+                  <div className="col-span-6 sm:col-span-5 flex items-center gap-2 min-w-0">
                     <span
                       className={`h-2 w-2 rounded-full shrink-0 ${
                         valve.active
@@ -144,29 +149,55 @@ export const PlcTab: React.FC<PlcTabProps> = ({
                       }`}
                     />
                     <span className="font-semibold text-slate-800 dark:text-slate-200 truncate">{valve.name}</span>
+                    {valve.id === 'blower' && (
+                      <label className="ml-auto flex items-center gap-1 shrink-0 text-[10px] font-mono text-slate-500 dark:text-slate-400">
+                        <span>{t('blower_sec')}</span>
+                        <input
+                          id="input-blower-sec"
+                          type="number"
+                          min={0.2}
+                          max={300}
+                          step={0.5}
+                          value={plcState.blowerSec}
+                          onChange={(e) => {
+                            const v = Number(e.target.value);
+                            if (!Number.isFinite(v)) return;
+                            onBlowerSecChange(v);
+                          }}
+                          className="w-14 rounded border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-1.5 py-0.5 text-xs font-mono text-slate-800 dark:text-slate-100"
+                        />
+                        <span>s</span>
+                      </label>
+                    )}
                   </div>
 
                   {/* Estado Action Button */}
                   <div className="col-span-3 sm:col-span-4 flex justify-center">
                     <button
                       id={`btn-valve-${valve.id}`}
+                      type="button"
+                      disabled={busy}
                       onClick={() => onToggleValve(valve.id)}
-                      className={`group flex items-center justify-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-mono font-bold transition active:scale-95 border shadow-2xs ${
+                      className={`group flex items-center justify-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-mono font-bold transition border shadow-2xs ${
+                        busy ? 'opacity-60 cursor-wait' : 'active:scale-95'
+                      } ${
                         valve.active
                           ? 'bg-emerald-600 dark:bg-emerald-600 text-white border-emerald-600'
                           : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 hover:text-slate-900 dark:hover:text-white border-slate-300 dark:border-slate-700'
                       }`}
                     >
-                      <span>{valve.active ? 'ON' : t('valve_home')}</span>
-                      <span
-                        className={`rounded px-1 py-0.2 text-[10px] ${
-                          valve.active
-                            ? 'bg-emerald-700 text-white'
-                            : 'bg-blue-50 dark:bg-blue-950/50 text-blue-700 dark:text-blue-300 group-hover:text-blue-800 dark:group-hover:text-blue-200 border border-blue-200 dark:border-blue-800'
-                        }`}
-                      >
-                        {valve.active ? valve.hexCode : t('valve_home')}
-                      </span>
+                      {valve.active ? (
+                        <>
+                          <span>ON</span>
+                          <span
+                            className={`rounded px-1 py-0.2 text-[10px] bg-emerald-700 text-white`}
+                          >
+                            {valve.hexCode}
+                          </span>
+                        </>
+                      ) : (
+                        <span>OFF</span>
+                      )}
                     </button>
                   </div>
 

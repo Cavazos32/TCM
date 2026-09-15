@@ -259,6 +259,30 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
     .ok { color: var(--ok); }
     .badc { color: var(--bad); }
     .enc-foot { color: var(--muted); font-size: .78rem; margin-top: .85rem; line-height: 1.4; }
+    .enc-dual { display: grid; gap: 1rem; }
+    @media (min-width: 800px) {
+      .enc-dual { grid-template-columns: 1fr 1fr; }
+    }
+    .enc-card {
+      background: #151b21;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: .9rem 1rem 1rem;
+    }
+    .enc-card-head {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: .75rem;
+    }
+    .enc-side-tag {
+      font-weight: 700; color: var(--accent); letter-spacing: .04em;
+      font-size: .95rem;
+    }
+    .enc-hw {
+      font-family: var(--mono); font-size: .72rem; color: var(--muted);
+      border: 1px solid var(--line); border-radius: 999px; padding: .15rem .55rem;
+    }
+    .enc-hw.on { color: var(--ok); border-color: rgba(61,186,122,.45); }
+    .enc-hw.off { color: var(--bad); border-color: rgba(224,82,82,.45); }
     .hit-grid {
       display: grid;
       gap: .65rem;
@@ -489,62 +513,93 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
     <!-- ========== VENTANA OM ENCODER ========== -->
     <div class="panel" id="panelEnc">
       <div class="banner wait" id="encBanner">
-        <h2 id="encBannerTitle">Encoder</h2>
-        <p id="encBannerDetail">RE30AJ2000F · valores al settle</p>
+        <h2 id="encBannerTitle">Encoder L / R</h2>
+        <p id="encBannerDetail">RE30AJ2000F · ambos lados · valores al settle</p>
       </div>
 
-      <div class="grid">
-        <section>
+      <div class="enc-dual">
+        <section class="enc-card" id="encCardL">
+          <div class="enc-card-head">
+            <span class="enc-side-tag">Lado L</span>
+            <span class="enc-hw" id="encHwL">HW …</span>
+          </div>
           <div class="dial-wrap">
-            <div class="mm-hero" id="encMmAbs">—</div>
+            <div class="mm-hero" id="encLMmAbs">—</div>
             <div class="unit">longitud final (settle)</div>
             <div class="dial-outer">
               <svg class="dial-sweep" viewBox="0 0 100 100" aria-hidden="true">
                 <circle cx="50" cy="50" r="38" fill="none" stroke="#3a4652" stroke-width="12"/>
-                <g id="encSweepSegs"></g>
+                <g id="encLSweepSegs"></g>
               </svg>
               <div class="dial-hub">
                 <div>
-                  <div class="deg" id="encAngle">—</div>
+                  <div class="deg" id="encLAngle">—</div>
                   <div class="unit">ángulo al settle</div>
                 </div>
               </div>
             </div>
-            <div class="sub" id="encDirLabel">Dirección: —</div>
+            <div class="sub" id="encLDirLabel">Dirección: —</div>
           </div>
-          <div class="btns" style="margin-top:1rem">
-            <button class="btn" type="button" onclick="resetEnc()">Poner a cero</button>
+          <div class="stats" style="margin-top:.85rem">
+            <div class="stat"><span>mm con signo</span><b id="encLMm">—</b></div>
+            <div class="stat"><span>RPM pico</span><b id="encLRpm">—</b></div>
+            <div class="stat"><span>Velocidad pico</span><b id="encLMmS">—</b></div>
+            <div class="stat"><span>Final (settle)</span><b id="encLSettle">—</b></div>
+          </div>
+          <div class="row" style="margin-top:.85rem;align-items:end">
+            <label style="flex:1">Offset L (mm)
+              <input id="encLOffsetMm" type="number" step="0.01" min="-5" max="5" value="0">
+            </label>
+            <button class="btn2" type="button" onclick="saveEncOffset('L')">Guardar</button>
+          </div>
+          <div class="btns" style="margin-top:.75rem">
+            <button class="btn" type="button" onclick="resetEnc('L')">Set0 L</button>
           </div>
         </section>
 
-        <section>
-          <h2>Métricas (settle)</h2>
-          <div class="stats">
-            <div class="stat"><span>mm con signo</span><b id="encMm">—</b></div>
-            <div class="stat stat-hide"><span>Vueltas</span><b id="encRevs">—</b></div>
-            <div class="stat"><span>RPM pico</span><b id="encRpm">—</b></div>
-            <div class="stat"><span>Velocidad pico</span><b id="encMmS">—</b></div>
-            <div class="stat"><span>Pico mm/s</span><b id="encMmSPeak">—</b></div>
-            <div class="stat stat-hide"><span>Frecuencia A</span><b id="encFreq">—</b></div>
-            <div class="stat"><span>Final (settle)</span><b id="encSettle">—</b></div>
+        <section class="enc-card" id="encCardR">
+          <div class="enc-card-head">
+            <span class="enc-side-tag">Lado R</span>
+            <span class="enc-hw" id="encHwR">HW …</span>
           </div>
-          <div class="stat stat-hide" style="margin-top:.55rem">
-            <span>Referencia 100 mm</span>
-            <b id="encRef">1273 cuentas</b>
+          <div class="dial-wrap">
+            <div class="mm-hero" id="encRMmAbs">—</div>
+            <div class="unit">longitud final (settle)</div>
+            <div class="dial-outer">
+              <svg class="dial-sweep" viewBox="0 0 100 100" aria-hidden="true">
+                <circle cx="50" cy="50" r="38" fill="none" stroke="#3a4652" stroke-width="12"/>
+                <g id="encRSweepSegs"></g>
+              </svg>
+              <div class="dial-hub">
+                <div>
+                  <div class="deg" id="encRAngle">—</div>
+                  <div class="unit">ángulo al settle</div>
+                </div>
+              </div>
+            </div>
+            <div class="sub" id="encRDirLabel">Dirección: —</div>
+          </div>
+          <div class="stats" style="margin-top:.85rem">
+            <div class="stat"><span>mm con signo</span><b id="encRMm">—</b></div>
+            <div class="stat"><span>RPM pico</span><b id="encRRpm">—</b></div>
+            <div class="stat"><span>Velocidad pico</span><b id="encRMmS">—</b></div>
+            <div class="stat"><span>Final (settle)</span><b id="encRSettle">—</b></div>
           </div>
           <div class="row" style="margin-top:.85rem;align-items:end">
-            <label style="flex:1">Offset OM (mm)
-              <input id="encOffsetMm" type="number" step="0.01" min="-5" max="5" value="0">
+            <label style="flex:1">Offset R (mm)
+              <input id="encROffsetMm" type="number" step="0.01" min="-5" max="5" value="0">
             </label>
-            <button class="btn2" type="button" onclick="saveEncOffset()">Guardar offset</button>
+            <button class="btn2" type="button" onclick="saveEncOffset('R')">Guardar</button>
           </div>
-          <p class="enc-foot">
-            Polea ø50 mm · 2000 c/rev · 100 mm = 1273 cuentas.
-            Poner a cero → pasar pieza → al parar se actualizan todos los valores (settle).
-            Offset se suma <b>después</b> del redondeo 0/0.5/1 (no se re-redondea).
-          </p>
+          <div class="btns" style="margin-top:.75rem">
+            <button class="btn" type="button" onclick="resetEnc('R')">Set0 R</button>
+          </div>
         </section>
       </div>
+      <p class="enc-foot">
+        Polea ø50 mm · 2000 c/rev · 100 mm = 1273 cuentas.
+        Cada lado tiene Set0 y offset independientes. Offset se suma <b>después</b> del redondeo 0/0.5/1.
+      </p>
     </div>
   </div>
 
@@ -555,19 +610,19 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
     let cfg = { stepsPerMm: 770 / 45, offsetSteps: 0, egearN: 1, factoryStepsPerMm: 770 / 45, moveRpm: 1200 };
     let encTimer = null;
     let ovTimer = null;
-    let lastEncAngDraw = -1;
-    let lastEncSettleC = null;
+    let lastEncAngDraw = { L: -1, R: -1 };
+    let lastEncSettleC = { L: null, R: null };
 
     function encPolar(cx, cy, r, deg) {
       const rad = deg * Math.PI / 180;
       return [cx + r * Math.cos(rad), cy + r * Math.sin(rad)];
     }
 
-    function updateEncSweep(ang) {
+    function updateEncSweep(side, ang) {
       const a = ((ang % 360) + 360) % 360;
-      if (Math.abs(a - lastEncAngDraw) < 0.4) return;
-      lastEncAngDraw = a;
-      const g = $('encSweepSegs');
+      if (Math.abs(a - lastEncAngDraw[side]) < 0.4) return;
+      lastEncAngDraw[side] = a;
+      const g = $('enc' + side + 'SweepSegs');
       if (!g) return;
       if (a < 0.5) { g.innerHTML = ''; return; }
       const R = 38, SW = 11, STEP = 7, GAP = 2.2;
@@ -591,53 +646,78 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
       g.innerHTML = parts.join('');
     }
 
-    function encClearDisplay() {
-      lastEncAngDraw = -1;
-      lastEncSettleC = null;
-      $('encMmAbs').textContent = '—';
-      $('encAngle').textContent = '—';
-      updateEncSweep(0);
-      $('encDirLabel').textContent = 'Dirección: —';
-      $('encDirLabel').className = 'sub';
-      ['encMm', 'encRevs', 'encRpm', 'encMmS', 'encMmSPeak', 'encSettle', 'encFreq'].forEach(id => {
-        const el = $(id); if (el) el.textContent = '—';
+    function encClearDisplay(side) {
+      lastEncAngDraw[side] = -1;
+      lastEncSettleC[side] = null;
+      $('enc' + side + 'MmAbs').textContent = '—';
+      $('enc' + side + 'Angle').textContent = '—';
+      updateEncSweep(side, 0);
+      const lab = $('enc' + side + 'DirLabel');
+      lab.textContent = 'Dirección: —';
+      lab.className = 'sub';
+      ['Mm', 'Rpm', 'MmS', 'Settle'].forEach(k => {
+        const el = $('enc' + side + k);
+        if (el) el.textContent = '—';
       });
     }
 
-    function encApplySettle(d) {
+    function encApplySettle(side, d) {
       const cpr = d.cpr || 2000;
       const cSettle = d.cSettle;
-      if (cSettle === lastEncSettleC) return;
-      lastEncSettleC = cSettle;
+      if (cSettle === lastEncSettleC[side]) return;
+      lastEncSettleC[side] = cSettle;
 
-      $('encMmAbs').textContent = Number(d.mmSettle).toFixed(2) + ' mm';
-      $('encSettle').textContent = Number(d.mmSettle).toFixed(2) + ' mm';
-      $('encRevs').textContent = (cSettle / cpr).toFixed(3);
+      $('enc' + side + 'MmAbs').textContent = Number(d.mmSettle).toFixed(2) + ' mm';
+      $('enc' + side + 'Settle').textContent = Number(d.mmSettle).toFixed(2) + ' mm';
       const wrapped = ((cSettle % cpr) + cpr) % cpr;
       const ang = 360 * wrapped / cpr;
-      $('encAngle').textContent = ang.toFixed(2) + '°';
-      updateEncSweep(ang);
+      $('enc' + side + 'Angle').textContent = ang.toFixed(2) + '°';
+      updateEncSweep(side, ang);
 
       const mmSigned = (d.mmSettleRound != null)
         ? Number(d.mmSettleRound) * (cSettle < 0 ? -1 : 1)
         : Number(d.mm);
-      $('encMm').textContent = mmSigned.toFixed(2);
+      $('enc' + side + 'Mm').textContent = mmSigned.toFixed(2);
 
       const mmsPeak = d.mmsPeak != null ? Number(d.mmsPeak) : 0;
       const pulley = d.pulleyMm || 50;
       const rpmPeak = mmsPeak * 60 / (Math.PI * pulley);
-      $('encMmS').textContent = mmsPeak.toFixed(1) + ' mm/s';
-      $('encMmSPeak').textContent = mmsPeak.toFixed(1);
-      $('encRpm').textContent = rpmPeak.toFixed(1);
+      $('enc' + side + 'MmS').textContent = mmsPeak.toFixed(1) + ' mm/s';
+      $('enc' + side + 'Rpm').textContent = rpmPeak.toFixed(1);
 
-      const lab = $('encDirLabel');
+      const lab = $('enc' + side + 'DirLabel');
       lab.className = 'sub';
       if (cSettle > 0) { lab.textContent = 'Dirección: CW (horario)'; lab.classList.add('dir-cw'); }
       else if (cSettle < 0) { lab.textContent = 'Dirección: CCW (antihorario)'; lab.classList.add('dir-ccw'); }
       else { lab.textContent = 'Dirección: parado'; }
+    }
 
-      if (d.f !== undefined) $('encFreq').textContent = Number(d.f).toFixed(1) + ' Hz';
-      if (d.ref100) $('encRef').textContent = d.ref100 + ' cuentas (= 100 mm)';
+    function paintEncSide(side, d, hwOk) {
+      const hw = $('encHw' + side);
+      if (hw) {
+        hw.textContent = hwOk ? 'HW OK' : 'no instalado';
+        hw.className = 'enc-hw ' + (hwOk ? 'on' : 'off');
+      }
+      const offEl = $('enc' + side + 'OffsetMm');
+      if (d && d.offsetMm !== undefined && document.activeElement !== offEl) {
+        offEl.value = Number(d.offsetMm).toFixed(3);
+      }
+      if (!d || !d.ok) {
+        encClearDisplay(side);
+        if ($('enc' + side + 'MmAbs'))
+          $('enc' + side + 'MmAbs').textContent = hwOk ? '—' : 'N/A';
+        return;
+      }
+      const moving = !d.settled && Number(d.mms) >= 20;
+      if (moving) {
+        $('enc' + side + 'MmAbs').textContent = 'midiendo…';
+        return;
+      }
+      if (d.settled) {
+        encApplySettle(side, d);
+        return;
+      }
+      if (Math.abs(Number(d.c)) < 1) encClearDisplay(side);
     }
 
     function omSettleTxt(hit) {
@@ -677,7 +757,7 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
         ? 'Vista general · ASDA + OM'
         : (name === 'asda'
           ? 'ASDA-B3 · Home · move PUU · speed'
-          : 'OM RE30AJ2000F · valores al settle');
+          : 'OM RE30AJ2000F · L / R al settle');
       stopEncPoll();
       stopOvPoll();
       if (name === 'enc') startEncPoll();
@@ -767,7 +847,8 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
       if (!s) return;
       if (!waiting) {
         if (s.alarm) {
-          setBanner('bad', 'ALARMA', s.message || 'Timeout de movimiento');
+          var alarmTxt = s.ui || (s.exxx ? (s.exxx + ': Motion, ' + (s.message || '')) : (s.message || 'Timeout de movimiento'));
+          setBanner('bad', s.exxx || 'ALARMA', alarmTxt);
         } else {
           setBanner(
             s.ok ? 'ok' : 'bad',
@@ -864,27 +945,16 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
 
     function paintEnc(d) {
       if (!d) return;
+      const okL = !!(d.hwL || (d.l && d.l.ok));
+      const okR = !!(d.hwR || (d.r && d.r.ok));
       const eb = $('encBanner');
-      eb.className = 'banner ' + (d.ok ? 'ok' : 'bad');
-      $('encBannerTitle').textContent = d.ok ? 'Encoder OK' : 'Encoder no iniciado';
-      $('encBannerDetail').textContent = 'RE30AJ2000F · indicadores se actualizan al settle';
-
-      if (d.offsetMm !== undefined && document.activeElement !== $('encOffsetMm')) {
-        $('encOffsetMm').value = Number(d.offsetMm).toFixed(3);
-      }
-
-      const moving = !d.settled && Number(d.mms) >= 20;
-      if (moving) {
-        $('encMmAbs').textContent = 'midiendo…';
-        return;
-      }
-
-      if (d.settled) {
-        encApplySettle(d);
-        return;
-      }
-
-      if (Math.abs(Number(d.c)) < 1) encClearDisplay();
+      eb.className = 'banner ' + ((okL || okR) ? 'ok' : 'bad');
+      $('encBannerTitle').textContent = (okL || okR) ? 'Encoder L / R' : 'Encoder no iniciado';
+      $('encBannerDetail').textContent =
+        'L=' + (okL ? 'OK' : 'off') + ' · R=' + (okR ? 'OK' : 'off') +
+        ' · indicadores al settle';
+      paintEncSide('L', d.l || null, okL);
+      paintEncSide('R', d.r || null, okR);
     }
 
     async function pollEnc() {
@@ -908,20 +978,21 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
       if (encTimer) { clearInterval(encTimer); encTimer = null; }
     }
 
-    async function resetEnc() {
+    async function resetEnc(side) {
       try {
-        paintEnc(await api('POST', '/api/encoder/reset'));
+        const q = side ? ('?side=' + side) : '';
+        paintEnc(await api('POST', '/api/encoder/reset' + q));
       } catch (e) {}
     }
 
-    async function saveEncOffset() {
-      const offsetMm = Number($('encOffsetMm').value);
+    async function saveEncOffset(side) {
+      const offsetMm = Number($('enc' + side + 'OffsetMm').value);
       try {
-        const j = await api('POST', '/api/encoder', { offsetMm });
+        const j = await api('POST', '/api/encoder', { side: side, offsetMm: offsetMm });
         paintEnc(j);
-        log('OM offsetMm → ' + Number(j.offsetMm).toFixed(3));
+        log('OM offsetMm ' + side + ' → ' + Number(offsetMm).toFixed(3));
       } catch (e) {
-        log('Error offset OM: ' + e.message);
+        log('Error offset OM ' + side + ': ' + e.message);
       }
     }
 
@@ -1190,7 +1261,7 @@ function runTest(side){
   }).then(function(st){
     if(!st)return;
     if(st.feedOk){showMsg('Feed OK · OM '+st.omOfficial+' mm','ok');}
-    else showMsg(st.fault||'Feed falló','bad');
+    else showMsg(st.ui||st.fault||'Feed falló','bad');
     pollCan();
   }).catch(function(){showMsg('Error red','bad');});
 }

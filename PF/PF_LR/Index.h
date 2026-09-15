@@ -1116,20 +1116,15 @@ const char index_html[] PROGMEM = R"rawliteral(
       var ok = true;
       if (err && err.active) {
         ok = false;
-        if (err.reason === 'endstop') txt = 'Buffer Max';
-        else if (err.reason === 'tension_timeout') txt = 'Tensión prolongada';
-        else if (err.reason === 'cylinder_open') txt = 'Cilindro abierto';
-        else if (err.reason === 'hose_absent') txt = 'Cinta/manguera ausente';
-        else if (err.reason === 'buffer_timeout') {
-          txt = 'Buffer no rellenó (10 s)';
-        }
-        else if (err.reason === 'holgura_timeout') {
-          var hf = document.getElementById('holgura-fault-s');
-          txt = 'Sin holgura (' + (hf ? hf.value : '1.5') + ' s)';
-        }
-        else if (err.reason === 'operator_stop') {
-          txt = 'Parada operador · falta Reset';
-        }
+        if (err.ui) txt = err.ui;
+        else if (err.reason === 'endstop') txt = (err.exxx || 'E053') + ': Pre-Feeder, Buffer Max (endstop)';
+        else if (err.reason === 'tension_timeout') txt = (err.exxx || 'E054') + ': Pre-Feeder, Tension timeout';
+        else if (err.reason === 'cylinder_open') txt = (err.exxx || 'E055') + ': Pre-Feeder, Cilindro abierto';
+        else if (err.reason === 'hose_absent') txt = (err.exxx || 'E056') + ': Pre-Feeder, Manguera ausente';
+        else if (err.reason === 'buffer_timeout') txt = (err.exxx || 'E052') + ': Pre-Feeder, Buffer sin relleno';
+        else if (err.reason === 'holgura_timeout') txt = (err.exxx || 'E057') + ': Pre-Feeder, Sin holgura';
+        else if (err.reason === 'operator_stop') txt = 'PF-007: Pre-Feeder, Parada operador';
+        else txt = err.tag || 'Error';
       } else if (idleOn) {
         txt = 'Materialista · solo manual';
       } else if (!a.enabled) {
@@ -1257,22 +1252,25 @@ const char index_html[] PROGMEM = R"rawliteral(
       if (data.error) {
         var active = data.error.active;
         var reason = 'Ninguno';
-        if (data.error.reason === 'endstop') reason = 'Buffer Max (GPIO 21)';
-        else if (data.error.reason === 'tension_timeout') reason = 'Tensión prolongada (GPIO 23)';
-        else if (data.error.reason === 'cylinder_open') reason = 'Cilindro abierto (GPIO 25)';
-        else if (data.error.reason === 'hose_absent') reason = 'Cinta/manguera ausente (GPIO 27)';
-        else if (data.error.reason === 'buffer_timeout') {
-          reason = 'Buffer Full no rellenó en 10 s (GPIO 19)';
+        if (active && data.error.ui) {
+          reason = data.error.ui;
+        } else if (data.error.reason === 'endstop') {
+          reason = (data.error.exxx || data.error.tag || 'E053') + ': Pre-Feeder, Buffer Max (endstop)';
+        } else if (data.error.reason === 'tension_timeout') {
+          reason = (data.error.exxx || data.error.tag || 'E054') + ': Pre-Feeder, Tension timeout';
+        } else if (data.error.reason === 'cylinder_open') {
+          reason = (data.error.exxx || data.error.tag || 'E055') + ': Pre-Feeder, Cilindro abierto';
+        } else if (data.error.reason === 'hose_absent') {
+          reason = (data.error.exxx || data.error.tag || 'E056') + ': Pre-Feeder, Manguera ausente';
+        } else if (data.error.reason === 'buffer_timeout') {
+          reason = (data.error.exxx || data.error.tag || 'E052') + ': Pre-Feeder, Buffer sin relleno';
+        } else if (data.error.reason === 'holgura_timeout') {
+          reason = (data.error.exxx || data.error.tag || 'E057') + ': Pre-Feeder, Sin holgura';
+        } else if (data.error.reason === 'operator_stop') {
+          reason = 'PF-007: Pre-Feeder, Parada operador';
+        } else if (active && data.error.tag) {
+          reason = data.error.tag + (data.error.reason ? ' · ' + data.error.reason : '');
         }
-        else if (data.error.reason === 'holgura_timeout') {
-          var hf3 = document.getElementById('holgura-fault-s');
-          reason = 'Sin holgura > ' + (hf3 ? hf3.value : '1.5') + ' s (GPIO 22)';
-        }
-        else if (data.error.reason === 'operator_stop') {
-          reason = 'Parada operador (Detener) — Reset + Iniciar';
-        }
-        if (active && data.error.tag) reason = data.error.tag + ' · ' + reason;
-        if (data.side) reason += ' · ' + data.side;
         document.getElementById('error-reason').textContent = reason;
         document.getElementById('error-reason-line').hidden = !active;
       }

@@ -87,9 +87,20 @@ export const Header: React.FC<HeaderProps> = ({
             </div>
 
             {/* Status text */}
-            <span className="text-xs font-medium tracking-wide text-slate-800 dark:text-slate-200">
-              {machineState.statusText || t('state_ready')}
+            <span
+              className={`text-xs font-medium tracking-wide ${
+                machineState.fault
+                  ? 'text-red-700 dark:text-red-300'
+                  : 'text-slate-800 dark:text-slate-200'
+              }`}
+            >
+              {machineState.fault || machineState.statusText || t('state_ready')}
             </span>
+            {machineState.faultClass ? (
+              <span className="rounded border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/50 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-red-700 dark:text-red-300">
+                {machineState.faultClass}
+              </span>
+            ) : null}
           </div>
         </div>
       </div>

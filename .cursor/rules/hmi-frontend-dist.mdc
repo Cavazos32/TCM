@@ -1,0 +1,29 @@
+---
+description: Tras cambios en HMI frontend, siempre recompilar dist (Flask sirve dist, no src)
+globs: HMI/frontend/**/*
+alwaysApply: false
+---
+
+# HMI frontend → dist obligatorio
+
+Flask (`HMI/app.py`) sirve **solo** `HMI/frontend/dist`. Editar `src/` **no** actualiza la UI en `:5050` hasta recompilar.
+
+## Tras cualquier cambio en UI (tsx/ts/css/i18n)
+
+1. Ejecutar en terminal (no solo mencionarlo):
+
+```bash
+cd HMI/frontend && npm run build
+```
+
+2. Confirmar que el build terminó OK antes de dar la tarea por hecha.
+3. Si el usuario mira `:5050`, indicar **Ctrl+F5** (o confiar en `Cache-Control` de `index.html`).
+
+## No dar por aplicado
+
+- No digas “ya está en el HMI” basándote solo en `src/`.
+- Si cambiaste botones/paneles y el usuario no los ve: el fallo típico es **dist viejo**, no lógica backend.
+
+## Backend Python
+
+Cambios en `HMI/*.py` requieren **reiniciar** `app.py` (no bastan con rebuild de frontend).

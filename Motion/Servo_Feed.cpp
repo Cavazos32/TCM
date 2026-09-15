@@ -1,5 +1,6 @@
 #include "Servo_Feed.h"
 #include "FeederCan.h"
+#include "MotionStates.h"
 #include "driver/twai.h"
 #include <Preferences.h>
 #include <math.h>
@@ -674,7 +675,7 @@ static void feedSsArmAbsDueMs(uint32_t now, uint32_t moveMs)
   feedSsAbsDueMs = now + moveMs + FEED_SS_ABS_MARGIN_MS;
 }
 
-static void feedAbort(const char* reason)
+static void feedAbort(const char* reason, uint8_t errByte = 0)
 {
   feedPhase = FEED_ERROR;
   feedRuntimeActive = false;
@@ -683,6 +684,10 @@ static void feedAbort(const char* reason)
     strncpy(feedFaultReason, reason, sizeof(feedFaultReason) - 1);
     feedFaultReason[sizeof(feedFaultReason) - 1] = '\0';
     Serial.printf("FEED ABORT: %s\n", reason);
+  }
+  if (errByte != 0) {
+    feedErrorCode = errByte;
+    motionTcpOnDetailError(errByte, "FeedAbort");
   }
 }
 
@@ -709,8 +714,8 @@ static void feedSsBeginStepsSensor()
 {
   const FeedEncPlan planL = feedPlanEncTarget(feedTargetMmL, feedOffsetMm, false);
   const FeedEncPlan planR = feedPlanEncTarget(feedTargetMmR, feedOffsetMmB, true);
-  if (!planL.ok) { feedAbort("FEED: target L + offset negativo"); return; }
-  if (!planR.ok) { feedAbort("FEED: target R + offset negativo"); return; }
+  if (!planL.ok) { feedAbort("FEED: target L + offset negativo", MOT_ERR_FEED_L_NEG_TARGET); return; }
+  if (!planR.ok) { feedAbort("FEED: target R + offset negativo", MOT_ERR_FEED_R_NEG_TARGET); return; }
 
   feedStepsTargetThisFeed = planL.targetCounts;
   feedStepsTargetB = feedTestExactSides ? planR.targetCounts : (planR.targetCounts > 0 ? planR.targetCounts : planL.targetCounts);
@@ -722,8 +727,8 @@ static void feedSsBeginStepsSensor()
 
   feedSsEncTrackL = feedNeedSensorL && canReadSdoI32(SERVO_NODE_L, SERVO_OD_POSITION_ACTUAL, 0x00, feedSsEncStartPosL, CAN_SDO_TIMEOUT_MS);
   feedSsEncTrackR = feedNeedSensorR && canReadSdoI32(SERVO_NODE_R, SERVO_OD_POSITION_ACTUAL, 0x00, feedSsEncStartPosR, CAN_SDO_TIMEOUT_MS);
-  if (feedNeedSensorL && !feedSsEncTrackL && !feedCalibrationTest) { feedAbort("FEED: no 6064 L"); return; }
-  if (feedNeedSensorR && !feedSsEncTrackR && !feedCalibrationTest) { feedAbort("FEED: no 6064 R"); return; }
+  if (feedNeedSensorL && !feedSsEncTrackL && !feedCalibrationTest) { feedAbort("FEED: no 6064 L", MOT_ERR_FEED_L_NO_FB); return; }
+  if (feedNeedSensorR && !feedSsEncTrackR && !feedCalibrationTest) { feedAbort("FEED: no 6064 R", MOT_ERR_FEED_R_NO_FB); return; }
 
   feedSolidTargetMet = false;
   feedOmLengthMet = false;
@@ -778,7 +783,7 @@ static bool feedSsEvaluateOmAfterStop(uint32_t now)
       feedOmAwaitSettle = true;
       return true;
     }
-    feedAbort("FEED: sin lectura OM tras move");
+    feedAbort("FEED: sin lectura OM tras move", MOT_ERR_ENCODER_NO_PULSES);
     return true;
   }
   feedOmSettleReadMiss = 0;
@@ -788,13 +793,13 @@ static bool feedSsEvaluateOmAfterStop(uint32_t now)
   if (feedOmOvershoot(omMm))
   {
     snprintf(feedFaultReason, sizeof(feedFaultReason), "OM %.1f > %.1f+%.1f", omMm, target, FEED_OM_TARGET_TOL_MM);
-    feedAbort(feedFaultReason);
+    feedAbort(feedFaultReason, MOT_ERR_TOLERANCE_WINDOW);
     return true;
   }
   if (feedOmSettleResumeCount >= FEED_OM_CORR_RETRY_MAX)
   {
     snprintf(feedFaultReason, sizeof(feedFaultReason), "OM %.1f < %.1f-%.1f", omMm, target, FEED_OM_TARGET_TOL_MM);
-    feedAbort(feedFaultReason);
+    feedAbort(feedFaultReason, MOT_ERR_TOLERANCE_WINDOW);
     return true;
   }
   feedOmSettleResumeCount++;
@@ -839,7 +844,7 @@ static void feedSsPollOmMonitor(uint32_t now)
     if (feedOmLastMmSigned > 0.0f)
     {
       canHalt();
-      feedAbort("FEED: sentido horario (OM+); debe ser antihorario (OM-)");
+      feedAbort("FEED: sentido horario (OM+); debe ser antihorario (OM-)", MOT_ERR_FEED_DIR_CW);
     }
   }
 #endif
@@ -904,7 +909,7 @@ static void waitServoFeedDone(uint32_t timeoutMs)
     if (feedPhase == FEED_DONE || feedPhase == FEED_ERROR) return;
     delay(FEED_LOOP_YIELD_MS);
   }
-  if (feedPhaseIsActive()) feedAbort("FEED: timeout");
+  if (feedPhaseIsActive()) feedAbort("FEED: timeout", MOT_ERR_FEED_TIMEOUT);
 }
 
 bool runFeedCycle(bool skipEncoderConfirm, int8_t onlySide)
@@ -1033,6 +1038,12 @@ void feedLoop()
 
 String feedStatusJson()
 {
+  char uiBuf[96];
+  uiBuf[0] = '\0';
+  if (feedErrorCode)
+    motErrFormatUi(uiBuf, sizeof(uiBuf), (uint8_t)feedErrorCode);
+  const char* exxx = feedErrorCode ? motErrExxx((uint8_t)feedErrorCode) : "";
+
   String j = "{";
   j += "\"canInitialized\":"; j += canInitialized ? "true" : "false";
   j += ",\"canBitrateKbps\":"; j += CAN_BITRATE_KBPS;
@@ -1041,6 +1052,9 @@ String feedStatusJson()
   j += ",\"feedPhase\":" + String((unsigned)feedPhase);
   j += ",\"feedOk\":"; j += feedThisCycleSucceeded() ? "true" : "false";
   j += ",\"fault\":\""; j += String(feedFaultReason); j += "\"";
+  j += ",\"errByte\":"; j += String((unsigned)feedErrorCode);
+  j += ",\"exxx\":\""; j += String(exxx); j += "\"";
+  j += ",\"ui\":\""; j += String(uiBuf); j += "\"";
   j += ",\"omOfficial\":" + String(feedOmLastOfficialMm, 2);
   j += ",\"targetMmL\":" + String(feedTargetMmL, 1);
   j += ",\"targetMmR\":" + String(feedTargetMmR, 1);
@@ -1112,8 +1126,18 @@ static void feedNotifyTcpResult(bool ok, int8_t onlySide)
     if (sideR) motionTcpOnFeedOk(true);
     return;
   }
+  // Si ya se encoló MOT_ERR_* en feedAbort, no duplicar LengthNG
+  if (feedErrorCode != 0)
+    return;
   if (strstr(feedFaultReason, "lectura OM") != nullptr)
-    motionTcpOnEncoderError();
+  {
+    if (sideL && !sideR) motionTcpOnEncoderErrorL();
+    else if (sideR && !sideL) motionTcpOnEncoderError();
+    else {
+      motionTcpOnEncoderError();
+      motionTcpOnEncoderErrorL();
+    }
+  }
   else
   {
     if (sideL) motionTcpOnFeedNg(false);
