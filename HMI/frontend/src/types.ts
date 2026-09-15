@@ -1,4 +1,4 @@
-export type TabType = 'maquina' | 'cycle' | 'motion' | 'plc' | 'prefeeder';
+export type TabType = 'maquina' | 'cycle' | 'motion' | 'plc' | 'prefeeder' | 'andon';
 
 export interface CycleConfig {
   holderOnMs: number;
@@ -35,7 +35,7 @@ export interface LogEntry {
   id: string;
   timestamp: string;
   type: 'info' | 'cmd' | 'warn' | 'error' | 'rx';
-  module: 'MAQUINA' | 'MOTION' | 'PLC' | 'PREFEEDER' | 'SYSTEM';
+  module: 'MAQUINA' | 'MOTION' | 'PLC' | 'PREFEEDER' | 'ANDON' | 'SYSTEM';
   code?: string;
   message: string;
 }
@@ -126,4 +126,17 @@ export interface PreFeederState {
   statusText?: string;
   sensorsL: PreFeederSensor[];
   sensorsR: PreFeederSensor[];
+}
+
+export interface AppConfigState {
+  andonBuzzerMute: boolean;
+}
+
+export interface AndonState {
+  connection: ConnectionState;
+  green: boolean;
+  yellow: boolean;
+  red: boolean;
+  buzzer: boolean;
+  manual: boolean;
 }

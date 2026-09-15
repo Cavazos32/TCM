@@ -13,7 +13,9 @@ from typing import Any, Callable
 
 HMI_ROOT = Path(__file__).resolve().parent
 PLC_CONFIG_PATH = HMI_ROOT / "config" / "plc_config.json"
+APP_CONFIG_PATH = HMI_ROOT / "config" / "app_config.json"
 DEFAULT_BLOWER_SEC = 2.0
+DEFAULT_ANDON_BUZZER_MUTE = False
 
 from cycle import CycleRunner, PROGRESS_STEPS
 from motion import (
@@ -96,8 +98,9 @@ from prefeeder import (
 )
 from error_catalog import format_ui
 from error_policy import ErrorPolicy
-from andon import AndonClient
+from andon import AndonClient, DEFAULT_HOST as ANDON_HOST, DEFAULT_PORT as ANDON_PORT
 from machine_states import MACH_ERROR, MACH_IDLE, MACH_RESET
+from latency_debug import mark as lat_mark
 
 MODELS_PATH = HMI_ROOT / "config" / "models.json"
 MAX_LOG_LINES = 400
@@ -234,6 +237,18 @@ class HmiState:
             },
         }
         self._load_plc_config()
+        self._andon_buzzer_mute = DEFAULT_ANDON_BUZZER_MUTE
+        self._debug_password = "tcm"
+        self._load_app_config()
+        self._andon = {
+            "connected": False,
+            "green": False,
+            "yellow": False,
+            "red": False,
+            "buzzer": False,
+            "manual": False,
+        }
+        self._andon_log: deque[str] = deque(maxlen=MAX_LOG_LINES)
         self._pf = {
             "connected": False,
             "status": {"text": "Listo.", "kind": "info"},
@@ -263,7 +278,16 @@ class HmiState:
         )
         self._msg_queue: list[tuple[str, dict]] = []
 
-        # Señales para Cycle (espera Idle/Reached / LengthOK L+R)
+        # Publicación SSE/notificaciones fuera del hilo RX TCP
+        self._notify_event = threading.Event()
+        self._notify_stop = threading.Event()
+        self._notify_thread = threading.Thread(
+            target=self._notify_worker_loop,
+            name="hmi-notify",
+            daemon=True,
+        )
+
+        # Señales para Cycle: Motion (Idle/Return/Reached) ≠ Feed (LengthOK/NG L+R)
         self._motion_idle_or_reached = threading.Event()
         self._feed_ok_l = threading.Event()
         self._feed_ok_r = threading.Event()
@@ -278,23 +302,30 @@ class HmiState:
         self._link_down_gen = {"motion": 0, "plc": 0, "prefeeder": 0}
 
         self._load_models()
+        self._started = False
 
     def start(self) -> None:
+        if self._started:
+            return
+        self._started = True
+        self._notify_thread.start()
         self._client.start_background()
         self._plc_client.start_background()
         self._pf_client.start_background()
-        if os.environ.get("ANDON_ENABLE", "0") == "1":
+        if os.environ.get("ANDON_ENABLE", "1") == "1":
             self._andon_client.start_background()
         self._cycle.mark_init_done()
 
     def stop(self) -> None:
         self._enc_poll_stop.set()
+        self._notify_stop.set()
+        self._notify_event.set()
         if self._cycle.is_active():
             self._cycle.request_stop()
         self._client.stop_background()
         self._plc_client.stop_background()
         self._pf_client.stop_background()
-        if os.environ.get("ANDON_ENABLE", "0") == "1":
+        if os.environ.get("ANDON_ENABLE", "1") == "1":
             self._andon_client.stop_background()
 
     def subscribe(self, callback: Callable[[], None]) -> None:
@@ -306,13 +337,29 @@ class HmiState:
             if callback in self._listeners:
                 self._listeners.remove(callback)
 
+    def _notify_worker_loop(self) -> None:
+        """Worker persistente: coalesce ráfagas y publica SSE sin bloquear RX."""
+        while not self._notify_stop.is_set():
+            if not self._notify_event.wait(timeout=0.3):
+                continue
+            while True:
+                self._notify_event.clear()
+                time.sleep(0.012)
+                if not self._notify_event.is_set():
+                    break
+            if self._notify_stop.is_set():
+                break
+            listeners: list[Callable[[], None]]
+            with self._lock:
+                listeners = list(self._listeners)
+            for cb in listeners:
+                try:
+                    cb()
+                except Exception:
+                    pass
+
     def _notify(self) -> None:
-        listeners = list(self._listeners)
-        for cb in listeners:
-            try:
-                cb()
-            except Exception:
-                pass
+        self._notify_event.set()
 
     def snapshot(self) -> dict[str, Any]:
         cycle_snap = self._cycle.snapshot()
@@ -346,6 +393,22 @@ class HmiState:
                     "host": PF_HOST,
                     "port": PF_PORT,
                 },
+                "andonLink": {
+                    "connected": self._andon["connected"],
+                    "host": ANDON_HOST,
+                    "port": ANDON_PORT,
+                },
+                "appConfig": {
+                    "andonBuzzerMute": self._andon_buzzer_mute,
+                },
+                "andon": {
+                    "connected": self._andon["connected"],
+                    "green": self._andon["green"],
+                    "yellow": self._andon["yellow"],
+                    "red": self._andon["red"],
+                    "buzzer": self._andon["buzzer"],
+                    "manual": self._andon["manual"],
+                },
                 "motion": dict(self._motion),
                 "plc": {
                     **self._plc,
@@ -360,6 +423,7 @@ class HmiState:
                     "motion": list(self._motion_log),
                     "plc": list(self._plc_log),
                     "prefeeder": list(self._pf_log),
+                    "andon": list(self._andon_log),
                 },
             }
 
@@ -402,12 +466,14 @@ class HmiState:
                 self._motion_log.clear()
                 self._plc_log.clear()
                 self._pf_log.clear()
+                self._andon_log.clear()
             else:
                 logs = {
                     "main": self._main_log,
                     "motion": self._motion_log,
                     "plc": self._plc_log,
                     "prefeeder": self._pf_log,
+                    "andon": self._andon_log,
                 }
                 log = logs.get(target)
                 if log is not None:
@@ -435,9 +501,11 @@ class HmiState:
     # --- CycleHost (orquestación) ---
 
     def cycle_log(self, text: str) -> None:
+        """Log de ciclo. No pisa el banner si hay EXXX activo (UI = error.ui)."""
         with self._lock:
             _append_log(self._main_log, text)
-            self._banner = {"text": text, "kind": "info"}
+            if not self._error_policy.latch.active:
+                self._banner = {"text": text, "kind": "info"}
         self._notify()
 
     def cycle_notify(self) -> None:
@@ -491,16 +559,20 @@ class HmiState:
 
     def cmd_motion_move_mm(self, mm: float, rpm: float) -> bool:
         mm = abs(float(mm))
+        lat_mark("0", source="motion", cmd="move_mm", mm=mm)
         with self._lock:
             self._move_target_mm = mm
             self._move_start_mm = self._last_position_mm
+        lat_mark("1", source="motion", cmd="move_mm")
         return self._client.cmd_move_mm(mm, rpm)
 
     def cmd_motion_move_zero(self, rpm: float | None = None) -> bool:
+        lat_mark("0", source="motion", cmd="move_zero")
         with self._lock:
             self._move_target_mm = 0.0
             self._move_start_mm = self._last_position_mm
             use_rpm = float(rpm) if rpm is not None else self._rpm
+        lat_mark("1", source="motion", cmd="move_zero")
         return self._client.cmd_move_zero(use_rpm)
 
     def cmd_motion_stop(self) -> bool:
@@ -596,7 +668,7 @@ class HmiState:
         ok = self._error_policy.confirm()
         if not ok:
             return {"ok": False, "error": "Sin error C1 pendiente de confirmar"}
-        _append_log(self._main_log, f"C1 confirmado · {self._error_policy.latch.ui_text}")
+        _append_log(self._main_log, f"Confirmado · {self._error_policy.latch.ui_text}")
         self._notify()
         return {"ok": True, "error": self._error_policy.snapshot()}
 
@@ -639,12 +711,12 @@ class HmiState:
             home_ok = self.cmd_motion_move_zero()
             _append_log(
                 self._main_log,
-                f"C1 home general · {'OK' if home_ok else 'FALLÓ'}",
+                f"Home general · {'OK' if home_ok else 'FALLÓ'}",
             )
 
         self._banner = {"text": "Errores reseteados", "kind": "ok"}
         if ui:
-            _append_log(self._main_log, f"Res flip-flop · {ui} · recovery={recovery}")
+            _append_log(self._main_log, f"Reset · {ui}")
         self._notify()
         return {
             "ok": True,
@@ -703,9 +775,68 @@ class HmiState:
         self._notify()
         return True
 
+    def _load_app_config(self) -> None:
+        try:
+            if not APP_CONFIG_PATH.is_file():
+                return
+            data = json.loads(APP_CONFIG_PATH.read_text(encoding="utf-8"))
+            if "andonBuzzerMute" in data:
+                self._andon_buzzer_mute = bool(data["andonBuzzerMute"])
+            if "debugPassword" in data and str(data["debugPassword"]).strip():
+                self._debug_password = str(data["debugPassword"]).strip()
+        except Exception:
+            pass
+
+    def _save_app_config(self) -> None:
+        try:
+            APP_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            APP_CONFIG_PATH.write_text(
+                json.dumps(
+                    {
+                        "andonBuzzerMute": self._andon_buzzer_mute,
+                        "debugPassword": self._debug_password,
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
+    def get_app_config(self) -> dict[str, Any]:
+        with self._lock:
+            # No exponer debugPassword al cliente
+            return {"andonBuzzerMute": self._andon_buzzer_mute}
+
+    def set_app_config(self, data: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            if "andonBuzzerMute" in data:
+                self._andon_buzzer_mute = bool(data["andonBuzzerMute"])
+            if "debugPassword" in data and str(data["debugPassword"]):
+                self._debug_password = str(data["debugPassword"])
+            self._save_app_config()
+            mute = self._andon_buzzer_mute
+        self._andon_client.set_buzzer_mute(mute)
+        self._notify()
+        return self.get_app_config()
+
+    def check_debug_password(self, password: str) -> bool:
+        # Releer disco: cambiar debugPassword no exige reiniciar app.py
+        self._load_app_config()
+        with self._lock:
+            return str(password).strip() == str(self._debug_password).strip()
+
+    def _push_andon_prefs(self) -> None:
+        self._andon_client.set_buzzer_mute(self._andon_buzzer_mute)
+
     def _on_andon_connection(self, connected: bool) -> None:
+        with self._lock:
+            self._andon["connected"] = connected
         if connected:
             _append_log(self._main_log, "Enlace Andon OK")
+            self._push_andon_prefs()
             self._broadcast_machine_state(self._cycle.state_byte())
         self._notify()
 
@@ -862,7 +993,8 @@ class HmiState:
                     with self._lock:
                         duration_sec = float(self._plc.get("blowerSec", DEFAULT_BLOWER_SEC))
                 else:
-                    duration_sec = max(0.2, float(raw))
+                    duration_sec = float(raw)
+                duration_sec = max(0.2, min(300.0, duration_sec))
             with self._lock:
                 extra = f" {duration_sec:g}s" if duration_sec is not None else ""
                 _append_log(
@@ -879,6 +1011,7 @@ class HmiState:
                 with self._lock:
                     key = str(byte_code)
                     if key in self._plc["valves"]:
+                        # Optimista para UI manual; status/event PLC es autoritativo.
                         self._plc["valves"][key]["on"] = on
                     self._plc["status"] = {
                         "text": f"{label} → {'ON' if on else 'OFF'}"
@@ -935,6 +1068,84 @@ class HmiState:
             self._notify()
         return {"ok": ok}
 
+    def _manual_andon(self, action: Callable[[], bool]) -> bool:
+        if not self._andon_client.connected:
+            with self._lock:
+                msg = f"Sin enlace Andon ({ANDON_HOST}:{ANDON_PORT})"
+                _append_log(self._andon_log, msg)
+            self._notify()
+            return False
+        return action()
+
+    def _apply_andon_status(self, msg: dict) -> None:
+        self._andon["green"] = bool(msg.get("green"))
+        self._andon["yellow"] = bool(msg.get("yellow"))
+        self._andon["red"] = bool(msg.get("red"))
+        self._andon["buzzer"] = bool(msg.get("buzzer"))
+        self._andon["manual"] = bool(msg.get("manual"))
+        if "mute" in msg:
+            self._andon_buzzer_mute = bool(msg.get("mute"))
+
+    def cmd_andon(self, action: str, **kwargs: Any) -> dict:
+        if action == "set_out":
+            out = str(kwargs.get("out", "")).strip().lower()
+            on = bool(kwargs.get("on", True))
+            if out not in ("green", "yellow", "red", "buzzer"):
+                return {"ok": False, "error": "Salida Andon desconocida"}
+            ok = self._manual_andon(
+                lambda: self._andon_client.set_output(out, on)
+            )
+            if ok:
+                with self._lock:
+                    key = out if out != "buzzer" else "buzzer"
+                    self._andon[key] = on
+                    self._andon["manual"] = True
+                    _append_log(
+                        self._andon_log,
+                        f"{out.upper()} {'ON' if on else 'OFF'}",
+                    )
+                self._notify()
+            return {"ok": ok}
+
+        if action == "all_off":
+            ok = self._manual_andon(lambda: self._andon_client.all_off())
+            if ok:
+                with self._lock:
+                    self._andon["green"] = False
+                    self._andon["yellow"] = False
+                    self._andon["red"] = False
+                    self._andon["buzzer"] = False
+                    self._andon["manual"] = True
+                    _append_log(self._andon_log, "Torre OFF (manual)")
+                self._notify()
+            return {"ok": ok}
+
+        if action == "resume_auto":
+            ok = self._manual_andon(lambda: self._andon_client.resume_auto())
+            if ok:
+                with self._lock:
+                    self._andon["manual"] = False
+                    _append_log(self._andon_log, "Torre → automático (HMI)")
+                self._notify()
+            return {"ok": ok}
+
+        if action == "state":
+            byte = int(kwargs.get("byte", 0))
+            from machine_states import STATE_LABELS
+
+            label = STATE_LABELS.get(byte, f"0x{byte:02X}")
+            ok = self._manual_andon(
+                lambda: self._andon_client.send_machine_byte(byte)
+            )
+            if ok:
+                with self._lock:
+                    self._andon["manual"] = False
+                    _append_log(self._andon_log, f"Estado máquina · {label}")
+                self._notify()
+            return {"ok": ok}
+
+        return {"ok": False, "error": f"Acción Andon desconocida: {action}"}
+
     def _manual_motion(self, action: Callable[[], bool]) -> bool:
         if not self._client.connected:
             with self._lock:
@@ -973,6 +1184,7 @@ class HmiState:
     # --- TCP callbacks ---
 
     def _enqueue(self, source: str, msg: dict) -> None:
+        lat_mark("8", source=source, mtype=msg.get("type", ""))
         with self._lock:
             self._msg_queue.append((source, msg))
         self._flush_queue()
@@ -996,10 +1208,22 @@ class HmiState:
                 if self._handle_motion_message(msg):
                     changed = True
         if changed:
+            lat_mark("9", source="flush")
             self._notify()
 
     def _handle_andon_message(self, msg: dict) -> bool:
         mtype = msg.get("type", "")
+        if mtype == "status":
+            with self._lock:
+                self._apply_andon_status(msg)
+            return True
+        if mtype == "ack":
+            with self._lock:
+                if msg.get("byte") is not None:
+                    pass
+                if msg.get("message"):
+                    _append_log(self._andon_log, str(msg.get("message")))
+            return True
         if mtype == "event":
             byte_code = int(msg.get("byte", 0))
             if byte_code == 0x50:
@@ -1064,7 +1288,7 @@ class HmiState:
         latch = self._error_policy.latch
         if latch.active and latch.code == code:
             self._error_policy.clear()
-            _append_log(self._main_log, f"Enlace recuperado · clear {code}")
+            _append_log(self._main_log, f"Enlace recuperado · {code}")
 
     def _cancel_link_down(self, key: str) -> None:
         self._link_down_gen[key] = self._link_down_gen.get(key, 0) + 1
@@ -1174,14 +1398,16 @@ class HmiState:
         self._notify()
 
     def reconnect_all_modules(self) -> dict[str, bool]:
-        """Fuerza reconexión TCP a Motion, PLC y PreFeeder (en paralelo)."""
+        """Fuerza reconexión TCP a Motion, PLC, PreFeeder y Andon (en paralelo)."""
         results: dict[str, bool] = {}
         lock = threading.Lock()
-        clients = (
+        clients: list[tuple[str, ModuleTcpClient]] = [
             ("motion", self._client),
             ("plc", self._plc_client),
             ("prefeeder", self._pf_client),
-        )
+        ]
+        if os.environ.get("ANDON_ENABLE", "1") == "1":
+            clients.append(("andon", self._andon_client))
 
         def worker(name: str, client: ModuleTcpClient) -> None:
             ok = client.reconnect(silent=True)
@@ -1296,6 +1522,7 @@ class HmiState:
                 return
         elif byte_code == TX_BUSY:
             kind = "info"
+            lat_mark("9", source="motion", state="BUSY")
             if self._move_target_mm is not None and self._progress < 5:
                 self._progress = 5
         self._set_banner(text, kind)
@@ -1365,7 +1592,6 @@ class HmiState:
                     return True
                 if byte_code in (TX_LENGTH_OK, TX_LENGTH_OK_L):
                     self._feed_ok_l.set()
-                    self._motion_idle_or_reached.set()
                     if not self._cycle.is_active():
                         text = "Feed OK L — longitud en tolerancia (0x014)"
                         self._set_banner(text, "ok")
@@ -1377,7 +1603,6 @@ class HmiState:
                     return True
                 if byte_code == TX_LENGTH_OK_R:
                     self._feed_ok_r.set()
-                    self._motion_idle_or_reached.set()
                     if not self._cycle.is_active():
                         text = "Feed OK R — longitud en tolerancia (0x04A)"
                         self._set_banner(text, "ok")

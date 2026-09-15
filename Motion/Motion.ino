@@ -68,6 +68,40 @@ static bool cachedPosOk = false;
 static uint32_t lastLiveStatusMs = 0;
 static uint32_t lastMotionPollMs = 0;
 
+// Preparación Modbus asíncrona (un paso por iteración de loop)
+enum MotionPrepKind : uint8_t {
+  MOT_PREP_NONE = 0,
+  MOT_PREP_MOVE,
+  MOT_PREP_HOME,
+};
+static MotionPrepKind motionPrepKind = MOT_PREP_NONE;
+static uint8_t motionPrepStep = 0;
+static int32_t motionPrepTargetPuu = 0;
+static float motionPrepSpeed = 0.0f;
+static bool motionPrepForward = true;
+static uint16_t motionPrepTorque = 0;
+static uint16_t motionPrepTimeMs = 0;
+static uint32_t motionPrepTimeoutMs = 0;
+
+#if MOT_LATENCY_DEBUG
+#define LAT_MARK(tag)                                                      \
+  Serial.printf(                                                           \
+      "[LAT-MOT] T%s ms=%lu us=%lu prep=%u step=%u busy=%d job=%d\n",      \
+      tag, (unsigned long)millis(), (unsigned long)micros(),               \
+      (unsigned)motionPrepKind, (unsigned)motionPrepStep, (int)busyMotion, \
+      (int)motionJobActive)
+#else
+#define LAT_MARK(tag) ((void)0)
+#endif
+
+static bool motionPrepActive() { return motionPrepKind != MOT_PREP_NONE; }
+
+static bool motionIsOccupied() {
+  return busyMotion || motionJobActive || motionPrepActive();
+}
+
+static void asdaTcpPushStateIfChanged();
+
 // ASDA TCP — protocolo maestro (bytes tabla ASDA)
 static WiFiServer asdaTcpServer(MOTION_TCP_PORT);
 static WiFiClient asdaTcpClient;
@@ -86,9 +120,7 @@ static bool motionTcpNotifyFeedOkL = false;
 static bool motionTcpNotifyFeedNgL = false;
 static bool motionTcpNotifyFeedOkR = false;
 static bool motionTcpNotifyFeedNgR = false;
-static bool motionTcpNotifyLaserR = false;
-static bool motionTcpNotifyLaserL = false;
-static bool motionTcpNotifySafety = false;
+static bool motionTcpNotifyIoStatus = false;  // push niveles laser/safety al maestro
 // Estado vivo sensores IO (status TCP / HMI) — debounced
 static bool ioLaserRActive = false;
 static bool ioLaserLActive = false;
@@ -658,6 +690,7 @@ bool pollMotionOnce() {
       overviewOnAsdaMoveDone(puuToMm(cachedPosPuu, false));
       asdaTcpReachedPos = cachedPosPuu;
       asdaTcpNotifyReached = true;
+      LAT_MARK("7");
     }
     return true;
   }
@@ -674,6 +707,7 @@ bool pollMotionOnce() {
       overviewOnAsdaMoveDone(puuToMm(cachedPosPuu, false));
       asdaTcpReachedPos = cachedPosPuu;
       asdaTcpNotifyReached = true;
+      LAT_MARK("7");
     }
     return true;
   }
@@ -696,13 +730,133 @@ bool pollMotionOnce() {
   return false;
 }
 
+static uint32_t calcMoveTimeoutMs(int32_t targetPuu, float speed) {
+  speed = clampMoveRpm(speed);
+  float distMm = 0.0f;
+  if (cachedPosOk) {
+    distMm = fabsf(puuToMm(targetPuu, false) - puuToMm(cachedPosPuu, false));
+  } else {
+    int32_t curPuu = 0;
+    if (read32(REG_P5_016, curPuu)) {
+      cachedPosPuu = curPuu;
+      cachedPosOk = true;
+      distMm = fabsf(puuToMm(targetPuu, false) - puuToMm(curPuu, false));
+    } else {
+      // Sin posición fiable: timeout conservador (no bloquea el loop).
+      distMm = FACTORY_LINEAR_ACTUATOR_MM;
+    }
+  }
+  return calcTravelTimeoutMs(distMm, speed);
+}
+
+static void motionPrepAbort(const String& err, uint8_t errByte = MOT_ERR_ASDA_MODBUS) {
+  motionPrepKind = MOT_PREP_NONE;
+  motionPrepStep = 0;
+  busyMotion = false;
+  motionJobActive = false;
+  if (err.length()) raiseMotionAlarm(err, errByte);
+  asdaTcpPushStateIfChanged();
+}
+
+static void motionPrepComplete(uint16_t jobCmd) {
+  motionPrepKind = MOT_PREP_NONE;
+  motionPrepStep = 0;
+  motionJobBegin(jobCmd, motionPrepTimeoutMs);
+  LAT_MARK("6");
+}
+
+static void motionPrepPollOnce() {
+  if (!motionPrepActive()) return;
+
+  if (motionPrepStep == 0) LAT_MARK("4");
+
+  bool ok = false;
+  switch (motionPrepKind) {
+    case MOT_PREP_MOVE:
+      switch (motionPrepStep) {
+        case 0:
+          ok = setMoveSpeed(motionPrepSpeed);
+          if (ok) motionPrepStep = 1;
+          break;
+        case 1:
+          ok = write32(REG_P6_002, (int32_t)PR1_ABSOLUTE_DEF);
+          if (ok) motionPrepStep = 2;
+          break;
+        case 2:
+          ok = write32(REG_P6_003, motionPrepTargetPuu);
+          if (ok) motionPrepStep = 3;
+          break;
+        case 3:
+          LAT_MARK("5");
+          ok = write16(REG_P5_007, 1);
+          if (ok) motionPrepComplete(1);
+          break;
+        default:
+          motionPrepAbort("Prep MOVE paso invalido");
+          return;
+      }
+      if (!ok) motionPrepAbort("Fallo Modbus preparando MOVE");
+      break;
+
+    case MOT_PREP_HOME: {
+      const uint16_t homingMethod = motionPrepForward ? 0x0029 : 0x002A;
+      const int32_t speed01rpm = (int32_t)lroundf(motionPrepSpeed * 10.0f);
+      switch (motionPrepStep) {
+        case 0:
+          ok = write16(REG_P1_087, motionPrepTorque);
+          if (ok) motionPrepStep = 1;
+          break;
+        case 1:
+          ok = write16(REG_P1_088, motionPrepTimeMs);
+          if (ok) motionPrepStep = 2;
+          break;
+        case 2:
+          ok = write16(REG_P5_004, homingMethod);
+          if (ok) motionPrepStep = 3;
+          break;
+        case 3:
+          ok = write32(REG_P5_005, speed01rpm);
+          if (ok) motionPrepStep = 4;
+          break;
+        case 4:
+          ok = write32(REG_P5_006, speed01rpm);
+          if (ok) motionPrepStep = 5;
+          break;
+        case 5:
+          ok = write32(REG_P6_000, 0);
+          if (ok) motionPrepStep = 6;
+          break;
+        case 6:
+          ok = write32(REG_P6_001, 0);
+          if (ok) motionPrepStep = 7;
+          break;
+        case 7:
+          LAT_MARK("5");
+          ok = write16(REG_P5_007, 0);
+          if (ok) motionPrepComplete(0);
+          break;
+        default:
+          motionPrepAbort("Prep HOME paso invalido");
+          return;
+      }
+      if (!ok) motionPrepAbort("Fallo Modbus preparando HOME", MOT_ERR_ACTUATOR_HOME);
+      break;
+    }
+
+    default:
+      motionPrepAbort("Prep desconocida");
+      break;
+  }
+}
+
 bool waitPrComplete(uint16_t command,
                     uint32_t timeoutMs,
                     String& detail,
                     int32_t* outPos) {
   motionJobBegin(command, timeoutMs);
 
-  while (motionJobActive) {
+  while (motionJobActive || motionPrepActive()) {
+    motionPrepPollOnce();
     if (pollMotionOnce()) break;
     server.handleClient();
     updateEncoderMotion(millis());
@@ -794,53 +948,45 @@ bool communicationTest(String& detail) {
 // =============================================================================
 
 static bool asdaStartHome(bool forward, String& err) {
-  if (busyMotion) {
+  if (motionIsOccupied()) {
     err = "Ocupado en movimiento";
     return false;
   }
 
-  const uint16_t torque = DEFAULT_HOME_TORQUE_PCT;
-  const uint16_t timeMs = DEFAULT_HOME_TIME_MS;
-  const float speed = DEFAULT_HOME_SPEED_RPM;
-  const uint32_t timeoutMs = calcTravelTimeoutMs(HOME_MAX_TRAVEL_MM, speed);
+  motionPrepForward = forward;
+  motionPrepTorque = DEFAULT_HOME_TORQUE_PCT;
+  motionPrepTimeMs = DEFAULT_HOME_TIME_MS;
+  motionPrepSpeed = DEFAULT_HOME_SPEED_RPM;
+  motionPrepTimeoutMs =
+      calcTravelTimeoutMs(HOME_MAX_TRAVEL_MM, motionPrepSpeed);
 
   busyMotion = true;
   clearMotionAlarm();
-  if (!homeTorque(forward, torque, timeMs, speed)) {
-    busyMotion = false;
-    err = "No se pudo disparar homing";
-    raiseMotionAlarm(err, MOT_ERR_ACTUATOR_HOME);
-    return false;
-  }
-  motionJobBegin(0, timeoutMs);
+  motionPrepKind = MOT_PREP_HOME;
+  motionPrepStep = 0;
+  LAT_MARK("3");
+  asdaTcpPushStateIfChanged();
+  err = "HOME aceptado";
   return true;
 }
 
 static bool asdaStartMove(int32_t position, float speed, String& err) {
-  if (busyMotion) {
+  if (motionIsOccupied()) {
     err = "Ocupado en movimiento";
     return false;
   }
 
-  speed = clampMoveRpm(speed);
-
-  int32_t curPuu = cachedPosOk ? cachedPosPuu : 0;
-  if (read32(REG_P5_016, curPuu)) {
-    cachedPosPuu = curPuu;
-    cachedPosOk = true;
-  }
-  const float distMm =
-      fabsf(puuToMm(position, false) - puuToMm(curPuu, false));
-  const uint32_t timeoutMs = calcTravelTimeoutMs(distMm, speed);
+  motionPrepTargetPuu = position;
+  motionPrepSpeed = clampMoveRpm(speed);
+  motionPrepTimeoutMs = calcMoveTimeoutMs(position, motionPrepSpeed);
 
   busyMotion = true;
   clearMotionAlarm();
-  if (!moveAbsolute(position, speed)) {
-    busyMotion = false;
-    err = "No se pudo disparar MOVE";
-    return false;
-  }
-  motionJobBegin(1, timeoutMs);
+  motionPrepKind = MOT_PREP_MOVE;
+  motionPrepStep = 0;
+  LAT_MARK("3");
+  asdaTcpPushStateIfChanged();
+  err = "MOVE aceptado";
   return true;
 }
 
@@ -848,6 +994,8 @@ static bool asdaExecStop(String& err) {
   const bool ok = stopMotion();
   motionCancelled = true;
   motionJobActive = false;
+  motionPrepKind = MOT_PREP_NONE;
+  motionPrepStep = 0;
   busyMotion = false;
   clearMotionAlarm();
   asdaTcpStopPending = true;
@@ -856,7 +1004,7 @@ static bool asdaExecStop(String& err) {
 }
 
 static bool asdaExecOn(String& err) {
-  if (busyMotion) {
+  if (motionIsOccupied()) {
     err = "Ocupado en movimiento";
     return false;
   }
@@ -866,7 +1014,7 @@ static bool asdaExecOn(String& err) {
 }
 
 static bool asdaExecOff(String& err) {
-  if (busyMotion) {
+  if (motionIsOccupied()) {
     err = "Ocupado en movimiento";
     return false;
   }
@@ -876,7 +1024,7 @@ static bool asdaExecOff(String& err) {
 }
 
 static bool asdaExecResume(String& err) {
-  if (busyMotion || motionJobActive) {
+  if (motionIsOccupied()) {
     err = "Todavia en movimiento";
     return false;
   }
@@ -887,7 +1035,7 @@ static bool asdaExecResume(String& err) {
 }
 
 static bool asdaExecResetError(String& err) {
-  if (busyMotion || motionJobActive) {
+  if (motionIsOccupied()) {
     err = "No se puede resetear error en movimiento";
     raiseMotionAlarm(err, MOT_ERR_RESET_WHILE_MOVING);
     return false;
@@ -907,7 +1055,7 @@ static void asdaRefreshLiveStatus(uint16_t& trigger,
   okT = cachedTriggerOk;
   okP = cachedPosOk;
 
-  const bool needLive = !busyMotion && !motionJobActive;
+  const bool needLive = !motionIsOccupied();
   const uint32_t now = millis();
   if (needLive && (lastLiveStatusMs == 0 || (now - lastLiveStatusMs) >= STATUS_LIVE_MIN_MS)) {
     lastLiveStatusMs = now;
@@ -925,7 +1073,7 @@ static void asdaRefreshLiveStatus(uint16_t& trigger,
       cachedPosPuu = p;
       cachedPosOk = true;
     }
-  } else if (busyMotion || motionJobActive) {
+  } else if (motionIsOccupied()) {
     trigger = cachedP5007;
     pos = cachedPosPuu;
     okT = cachedTriggerOk;
@@ -1387,10 +1535,12 @@ static bool motionExecSet0(String& err) {
 static bool motionExecResetErrors(String& err) {
   feedResetRuntime();
 
-  if (busyMotion || motionJobActive) {
+  if (motionIsOccupied()) {
     stopMotion();
     motionCancelled = true;
     motionJobActive = false;
+    motionPrepKind = MOT_PREP_NONE;
+    motionPrepStep = 0;
     busyMotion = false;
   }
   clearMotionAlarm();
@@ -1611,7 +1761,7 @@ static bool decAsdaPrDone(uint16_t trigger, uint16_t jobCmd) {
 }
 
 // Ocupado / disponibilidad
-static bool decBusyMotion() { return busyMotion || motionJobActive; }
+static bool decBusyMotion() { return motionIsOccupied(); }
 
 static bool decFeedBusy() { return feedPhaseIsActive(); }
 
@@ -1894,7 +2044,7 @@ void handleTest() {
 }
 
 void handleOn() {
-  if (busyMotion) {
+  if (motionIsOccupied()) {
     sendJson(409, errJson("Ocupado en movimiento"));
     return;
   }
@@ -1903,7 +2053,7 @@ void handleOn() {
 }
 
 void handleOff() {
-  if (busyMotion) {
+  if (motionIsOccupied()) {
     sendJson(409, errJson("Ocupado en movimiento"));
     return;
   }
@@ -1915,13 +2065,15 @@ void handleStop() {
   bool ok = stopMotion();
   motionCancelled = true;
   motionJobActive = false;
+  motionPrepKind = MOT_PREP_NONE;
+  motionPrepStep = 0;
   busyMotion = false;
   clearMotionAlarm();
   sendJson(ok ? 200 : 500, ok ? okJson("STOP enviado") : errJson("Fallo STOP"));
 }
 
 void handleHome() {
-  if (busyMotion) {
+  if (motionIsOccupied()) {
     sendJson(409, errJson("Ocupado en movimiento"));
     return;
   }
@@ -1932,6 +2084,23 @@ void handleHome() {
   bool forward = (dir == "F");
   if (dir != "F" && dir != "R") {
     sendJson(400, errJson("direction debe ser F o R"));
+    return;
+  }
+
+  const bool blocking = jsonWantsWait(body);
+  if (!blocking) {
+    String err;
+    if (!asdaStartHome(forward, err)) {
+      sendJson(500, errJson(err));
+      return;
+    }
+    char buf[240];
+    snprintf(buf, sizeof(buf),
+             "{\"ok\":true,\"accepted\":true,\"busy\":true,\"direction\":\"%s\","
+             "\"timeoutMs\":%lu}",
+             forward ? "F" : "R",
+             (unsigned long)motionPrepTimeoutMs);
+    sendJson(202, String(buf));
     return;
   }
 
@@ -1949,18 +2118,6 @@ void handleHome() {
   if (!homeTorque(forward, torque, timeMs, speed)) {
     busyMotion = false;
     sendJson(500, errJson("No se pudo disparar homing"));
-    return;
-  }
-
-  const bool blocking = jsonWantsWait(body);
-  if (!blocking) {
-    motionJobBegin(0, timeoutMs);
-    char buf[240];
-    snprintf(buf, sizeof(buf),
-             "{\"ok\":true,\"accepted\":true,\"busy\":true,\"direction\":\"%s\","
-             "\"timeoutMs\":%lu}",
-             forward ? "F" : "R", (unsigned long)timeoutMs);
-    sendJson(202, String(buf));
     return;
   }
 
@@ -1987,7 +2144,7 @@ void handleConfigGet() {
 }
 
 void handleConfigPost() {
-  if (busyMotion) {
+  if (motionIsOccupied()) {
     sendJson(409, errJson("Ocupado en movimiento"));
     return;
   }
@@ -2045,7 +2202,7 @@ void handleConfigPost() {
 }
 
 void handleMove() {
-  if (busyMotion) {
+  if (motionIsOccupied()) {
     sendJson(409, errJson("Ocupado en movimiento"));
     return;
   }
@@ -2073,6 +2230,26 @@ void handleMove() {
                   : cfgMoveRpm;
   speed = clampMoveRpm(speed);
 
+  const bool blocking = jsonWantsWait(body);
+  if (!blocking) {
+    String err;
+    if (!asdaStartMove(position, speed, err)) {
+      sendJson(500, errJson(err));
+      return;
+    }
+    const float distMm = fabsf(
+        puuToMm(position, factory) -
+        puuToMm(cachedPosOk ? cachedPosPuu : 0, factory));
+    char buf[320];
+    snprintf(buf, sizeof(buf),
+             "{\"ok\":true,\"accepted\":true,\"busy\":true,\"targetPuu\":%ld,"
+             "\"targetMm\":%.2f,\"distMm\":%.2f,\"timeoutMs\":%lu}",
+             (long)position, hasMm ? cmdMm : puuToMm(position, factory),
+             distMm, (unsigned long)motionPrepTimeoutMs);
+    sendJson(202, String(buf));
+    return;
+  }
+
   int32_t curPuu = cachedPosOk ? cachedPosPuu : 0;
   if (read32(REG_P5_016, curPuu)) {
     cachedPosPuu = curPuu;
@@ -2091,19 +2268,6 @@ void handleMove() {
   if (!moveAbsolute(position, speed)) {
     busyMotion = false;
     sendJson(500, errJson("No se pudo disparar MOVE"));
-    return;
-  }
-
-  const bool blocking = jsonWantsWait(body);
-  if (!blocking) {
-    motionJobBegin(1, timeoutMs);
-    char buf[320];
-    snprintf(buf, sizeof(buf),
-             "{\"ok\":true,\"accepted\":true,\"busy\":true,\"targetPuu\":%ld,"
-             "\"targetMm\":%.2f,\"distMm\":%.2f,\"timeoutMs\":%lu}",
-             (long)position, hasMm ? cmdMm : puuToMm(position, factory),
-             distMm, (unsigned long)timeoutMs);
-    sendJson(202, String(buf));
     return;
   }
 
@@ -2556,6 +2720,7 @@ static uint8_t asdaTcpResolveCmdByte(const char* line) {
 
 static void asdaTcpOnLine(const char* line) {
   if (!strstr(line, "\"type\":\"command\"")) return;
+  LAT_MARK("2");
 
   const String cmd = asdaTcpJStr(line, "command");
   if (cmd == "ping") {
@@ -2629,6 +2794,9 @@ static void asdaTcpOnClientAccepted() {
   asdaTcpRxLen = 0;
   asdaTcpLastStateByte = 0;
   asdaTcpNeedInit = true;
+#if MOT_IO_SENSOR_EVENTS
+  motionTcpNotifyIoStatus = true;  // sync inicial laser/safety al HMI
+#endif
   asdaTcpTx(String("{\"ver\":") + MOTION_PROTO_VER
             + ",\"type\":\"hello\",\"role\":\"motion\"}");
   Serial.printf("[ASDA-TCP] On desde %s\n",
@@ -2654,18 +2822,22 @@ static bool asdaTcpAcceptIncoming() {
 
 static void asdaTcpEnsureServices() {
   if (asdaTcpServicesUp || WiFi.status() != WL_CONNECTED) return;
+  const IPAddress ip = WiFi.localIP();
+  if (ip == IPAddress(0, 0, 0, 0)) return;
   asdaTcpServer.end();
   delay(20);
   asdaTcpServer.begin();
   asdaTcpServer.setNoDelay(true);
   asdaTcpServicesUp = true;
   Serial.printf("[ASDA-TCP] Servicios On %s:%u\n",
-                WiFi.localIP().toString().c_str(), (unsigned)MOTION_TCP_PORT);
+                ip.toString().c_str(), (unsigned)MOTION_TCP_PORT);
 }
 
 static void asdaTcpStopServices() {
-  if (asdaTcpClient.connected()) asdaTcpClient.stop();
+  // Invalidar siempre el socket (también zombies con connected()==false).
+  if (asdaTcpClient) asdaTcpClient.stop();
   asdaTcpWasConnected = false;
+  asdaTcpRxLen = 0;
   if (!asdaTcpServicesUp) return;
   asdaTcpServer.end();
   asdaTcpServicesUp = false;
@@ -2734,7 +2906,7 @@ static void motionTcpPollFeedEvents() {
   }
 }
 
-// Láseres / safety exhaust — encolan TX detalle (MOT_IO_SENSOR_EVENTS)
+// Láseres / safety exhaust — Set = detalle EXXX; niveles = status push (C1)
 static void LaserR() {
   motionTcpOnDetailError(MOT_ERR_LASER_R, "LaserR");
 }
@@ -2746,7 +2918,7 @@ static void Exhaust() {
 }
 
 static bool motionSensorActiveLaser(uint8_t pin) {
-  return digitalRead(pin) == LOW;  // INPUT_PULLUP: activo en LOW
+  return digitalRead(pin) == LOW;  // activo en LOW (NPN/OC + pull-up)
 }
 
 static bool motionSensorActiveSafety() {
@@ -2755,6 +2927,19 @@ static bool motionSensorActiveSafety() {
 #else
   return digitalRead(PIN_SAFETY_EXHAUST) == LOW;
 #endif
+}
+
+static void motionTcpTxIoSensorStatus() {
+  if (!asdaTcpLinkOk()) return;
+  char buf[200];
+  snprintf(buf, sizeof(buf),
+           "{\"ver\":%u,\"type\":\"status\",\"actuator\":\"motion\","
+           "\"laserR\":%s,\"laserL\":%s,\"safetyExhaust\":%s}",
+           (unsigned)MOTION_PROTO_VER,
+           ioLaserRActive ? "true" : "false",
+           ioLaserLActive ? "true" : "false",
+           ioSafetyActive ? "true" : "false");
+  asdaTcpTx(String(buf));
 }
 
 static void motionPollIoSensors() {
@@ -2769,7 +2954,8 @@ static void motionPollIoSensors() {
     lastLaserR = rLaserR;
     ioLaserRActive = rLaserR;
 #if MOT_IO_SENSOR_EVENTS
-    if (rLaserR) { motionTcpNotifyLaserR = true; LaserR(); }
+    motionTcpNotifyIoStatus = true;
+    if (rLaserR) LaserR();  // Set E004 — Res de error lo hace Main
 #endif
   }
 
@@ -2779,7 +2965,8 @@ static void motionPollIoSensors() {
     lastLaserL = rLaserL;
     ioLaserLActive = rLaserL;
 #if MOT_IO_SENSOR_EVENTS
-    if (rLaserL) { motionTcpNotifyLaserL = true; LaserL(); }
+    motionTcpNotifyIoStatus = true;
+    if (rLaserL) LaserL();  // Set E005
 #endif
   }
 
@@ -2789,7 +2976,8 @@ static void motionPollIoSensors() {
     lastSafety = rSafety;
     ioSafetyActive = rSafety;
 #if MOT_IO_SENSOR_EVENTS
-    if (rSafety) { motionTcpNotifySafety = true; Exhaust(); }
+    motionTcpNotifyIoStatus = true;
+    if (rSafety) Exhaust();
 #endif
   }
 }
@@ -2799,18 +2987,9 @@ static void motionTcpPollIoSensorEvents() {
   return;
 #else
   if (!asdaTcpLinkOk()) return;
-  if (motionTcpNotifyLaserR) {
-    motionTcpNotifyLaserR = false;
-    motionTcpTxEvent("laser", MOT_ERR_LASER_R, "LaserR");
-  }
-  if (motionTcpNotifyLaserL) {
-    motionTcpNotifyLaserL = false;
-    motionTcpTxEvent("laser", MOT_ERR_LASER_L, "LaserL");
-  }
-  if (motionTcpNotifySafety) {
-    motionTcpNotifySafety = false;
-    motionTcpTxEvent("safety", MOT_ERR_EXHAUST, "Exhaust");
-  }
+  if (!motionTcpNotifyIoStatus) return;
+  motionTcpNotifyIoStatus = false;
+  motionTcpTxIoSensorStatus();
 #endif
 }
 
@@ -2865,9 +3044,18 @@ static void serviceAsdaTcp() {
 }
 
 // =============================================================================
-// WIFI
+// WIFI — reconexión no bloqueante (millis / estados; sin delay en loop)
 // =============================================================================
-bool connectWifi() {
+static bool wifiStaWasConnected = false;
+static uint32_t wifiConnectStartedMs = 0;
+static uint32_t wifiLastKickMs = 0;
+
+static void wifiKickConnect(bool isRetry) {
+  if (isRetry) {
+    // Sin delay: el loop debe seguir atendiendo ASDA/encoder/CAN/TCP teardown.
+    WiFi.disconnect(false);
+  }
+
   WiFi.mode(WIFI_STA);
   WiFi.setHostname("motion");
   WiFi.setSleep(false);
@@ -2876,25 +3064,54 @@ bool connectWifi() {
     Serial.println("WiFi.config() fallo (IP estatica)");
   }
 
-  Serial.printf("Conectando a WiFi '%s'...\n", WIFI_SSID);
+  const uint32_t now = millis();
+  wifiConnectStartedMs = now;
+  wifiLastKickMs = now;
   WiFi.begin(WIFI_SSID, WIFI_PASS);
 
-  uint32_t start = millis();
-  while (WiFi.status() != WL_CONNECTED && (millis() - start) < 30000) {
-    delay(250);
-    Serial.print(".");
-  }
-  Serial.println();
+  if (isRetry)
+    Serial.println("[WiFi] Reintentando STA...");
+  else
+    Serial.printf("Conectando a WiFi '%s'...\n", WIFI_SSID);
+}
 
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("ERROR: no se pudo conectar al WiFi");
-    return false;
+static void serviceWifi() {
+  const wl_status_t st = WiFi.status();
+
+  if (st == WL_CONNECTED) {
+    if (!wifiStaWasConnected) {
+      wifiStaWasConnected = true;
+      wifiConnectStartedMs = 0;
+      Serial.printf("WiFi OK  IP=%s  RSSI=%d dBm\n",
+                    WiFi.localIP().toString().c_str(),
+                    WiFi.RSSI());
+    }
+    return;
   }
 
-  Serial.printf("WiFi OK  IP=%s  RSSI=%d dBm\n",
-                WiFi.localIP().toString().c_str(),
-                WiFi.RSSI());
-  return true;
+  // STA caído: invalidar TCP de inmediato; luego rearmar WiFi sin bloquear.
+  if (wifiStaWasConnected) {
+    wifiStaWasConnected = false;
+    asdaTcpStopServices();
+    wifiConnectStartedMs = 0;
+    wifiLastKickMs = 0;  // permitir reintento inmediato
+    Serial.println("WiFi perdido — reconectando...");
+  }
+
+  const uint32_t now = millis();
+  if (wifiLastKickMs != 0 && (now - wifiLastKickMs) < WIFI_RETRY_INTERVAL_MS)
+    return;
+
+  const bool attemptExpired =
+      wifiConnectStartedMs != 0 &&
+      (now - wifiConnectStartedMs) >= WIFI_CONNECT_TIMEOUT_MS;
+  const bool hardFail =
+      (st == WL_NO_SSID_AVAIL || st == WL_CONNECT_FAILED || st == WL_CONNECTION_LOST);
+  const bool idle =
+      (wifiConnectStartedMs == 0);
+
+  if (idle || attemptExpired || hardFail)
+    wifiKickConnect(/*isRetry=*/true);
 }
 
 // =============================================================================
@@ -2908,7 +3125,11 @@ void setup() {
   clearServoRx();
 
   pinMode(LRX_LaserR, INPUT_PULLUP);
-  pinMode(LRX_LaserL, INPUT_PULLUP);
+  // GPIO 34–39: sin pull-up interno en ESP32 (INPUT_PULLUP no aplica).
+  if (LRX_LaserL >= 34 && LRX_LaserL <= 39)
+    pinMode(LRX_LaserL, INPUT);
+  else
+    pinMode(LRX_LaserL, INPUT_PULLUP);
   pinMode(PIN_E_STOP, INPUT_PULLUP);
 
   Serial.println();
@@ -2935,10 +3156,9 @@ void setup() {
 
   overviewStart(100.0f, OV_EXTRA_MM_DEFAULT, OV_TOL_MM_DEFAULT, true, true);
 
-  if (!connectWifi()) {
-    Serial.println("Reintentando WiFi en loop...");
-  }
-
+  wifiKickConnect(/*isRetry=*/false);
+  if (WiFi.status() != WL_CONNECTED)
+    Serial.println("WiFi pendiente — reconexion no bloqueante en loop...");
   asdaTcpEnsureServices();
 
   server.on("/", HTTP_GET, handleRoot);
@@ -2986,17 +3206,11 @@ void setup() {
 }
 
 void loop() {
-  if (WiFi.status() != WL_CONNECTED) {
-    static uint32_t lastTry = 0;
-    if (millis() - lastTry > 5000) {
-      lastTry = millis();
-      Serial.println("WiFi perdido — reconectando...");
-      connectWifi();
-    }
-  }
+  serviceWifi();
   server.handleClient();
   motionPollIoSensors();
   serviceAsdaTcp();
+  motionPrepPollOnce();
   if (motionJobActive)
     pollMotionOnce();
   updateEncoderMotion(millis());

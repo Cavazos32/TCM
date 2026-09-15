@@ -52,7 +52,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
   logs,
   onClearLogs,
 }) => {
-  const { t } = useApp();
+  const { t, debugMode } = useApp();
   const [offsetInput, setOffsetInput] = useState(String(machineState.offsetMm ?? 0));
 
   useEffect(() => {
@@ -81,10 +81,12 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
   return (
     <div className="space-y-4">
       <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-2.5 text-slate-800 dark:text-slate-200 shadow-2xs flex flex-wrap items-center justify-between gap-3 transition-colors">
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2.5 min-w-0">
           <div
-            className={`h-2.5 w-2.5 rounded-full ${
-              machineState.isRunning
+            className={`h-2.5 w-2.5 shrink-0 rounded-full ${
+              machineState.fault
+                ? 'bg-red-500'
+                : machineState.isRunning
                 ? 'bg-emerald-500 animate-pulse'
                 : machineState.isPaused
                 ? 'bg-amber-500'
@@ -93,9 +95,20 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                 : 'bg-slate-400'
             }`}
           />
-          <span className="text-sm font-semibold text-slate-900 dark:text-white tracking-tight">
-            {machineState.statusText || t('state_ready')}
+          <span
+            className={`text-sm font-semibold tracking-tight ${
+              machineState.fault
+                ? 'text-red-700 dark:text-red-300'
+                : 'text-slate-900 dark:text-white'
+            }`}
+          >
+            {machineState.fault || machineState.statusText || t('state_ready')}
           </span>
+          {machineState.faultClass ? (
+            <span className="rounded border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/50 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-red-700 dark:text-red-300">
+              {machineState.faultClass}
+            </span>
+          ) : null}
           {machineState.cycleCompleted && (
             <span className="text-xs font-mono text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 px-2 py-0.5 rounded">
               {t('cycle_complete')}
@@ -253,29 +266,31 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
 
         <div className="mt-4 flex flex-wrap items-center gap-2 pt-1">
           {/* Safety exhaust — MOT_ERR_EXHAUST 0x4F (indicador IO, no comando) */}
-          <button
-            id="btn-safety-exhaust"
-            type="button"
-            disabled
-            title={t('safety_exhaust_hint')}
-            className={`flex items-center justify-center gap-1.5 rounded-lg border px-3.5 py-2 text-xs font-bold transition shadow-2xs cursor-default ${
-              machineState.safetyExhaust
-                ? 'border-red-400 dark:border-red-700 bg-red-100 dark:bg-red-950/60 text-red-800 dark:text-red-200 animate-pulse'
-                : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 opacity-80'
-            }`}
-          >
-            <AlertTriangle
-              className={`h-3.5 w-3.5 ${
+          {debugMode && (
+            <button
+              id="btn-safety-exhaust"
+              type="button"
+              disabled
+              title={t('safety_exhaust_hint')}
+              className={`flex items-center justify-center gap-1.5 rounded-lg border px-3.5 py-2 text-xs font-bold transition shadow-2xs cursor-default ${
                 machineState.safetyExhaust
-                  ? 'text-red-600 dark:text-red-300'
-                  : 'text-slate-400'
+                  ? 'border-red-400 dark:border-red-700 bg-red-100 dark:bg-red-950/60 text-red-800 dark:text-red-200 animate-pulse'
+                  : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 opacity-80'
               }`}
-            />
-            <span>{t('safety_exhaust')}</span>
-            <span className="font-mono text-[10px] opacity-80">0x4F</span>
-          </button>
+            >
+              <AlertTriangle
+                className={`h-3.5 w-3.5 ${
+                  machineState.safetyExhaust
+                    ? 'text-red-600 dark:text-red-300'
+                    : 'text-slate-400'
+                }`}
+              />
+              <span>{t('safety_exhaust')}</span>
+              <span className="font-mono text-[10px] opacity-80">0x4F</span>
+            </button>
+          )}
 
-          {onToggleTrialMode && (
+          {debugMode && onToggleTrialMode && (
             <button
               id="btn-trial-mode-maquina"
               type="button"

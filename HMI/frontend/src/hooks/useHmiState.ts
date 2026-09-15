@@ -2,6 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { BackendSnapshot } from '../api/backendTypes';
 import * as api from '../api/hmiApi';
 import {
+  mapAndonConnection,
+  mapAndonState,
+  mapAppConfig,
   mapCycleConfig,
   mapMachineState,
   mapMotionState,
@@ -12,6 +15,8 @@ import {
   valveByteFromId,
 } from '../api/mappers';
 import type {
+  AndonState,
+  ConnectionState,
   CycleConfig,
   LogEntry,
   MachineState,
@@ -30,6 +35,9 @@ export interface HmiViewState {
   motionState: MotionState;
   plcState: PlcState;
   preFeederState: PreFeederState;
+  andonState: AndonState;
+  andonConn: ConnectionState;
+  andonBuzzerMute: boolean;
   cycleConfig: CycleConfig;
   cycleStep: number;
   cycleActive: boolean;
@@ -96,6 +104,16 @@ export function useHmiState() {
       sensorsL: [],
       sensorsR: [],
     },
+    andonState: {
+      connection: { connected: false, ip: '10.10.32.60', port: 8769 },
+      green: false,
+      yellow: false,
+      red: false,
+      buzzer: false,
+      manual: false,
+    },
+    andonConn: { connected: false, ip: '10.10.32.60', port: 8769 },
+    andonBuzzerMute: false,
     cycleConfig: {} as CycleConfig,
     cycleStep: 0,
     cycleActive: false,
@@ -134,6 +152,9 @@ export function useHmiState() {
       motionState: mapMotionState(snap),
       plcState: plc,
       preFeederState: mapPreFeederState(snap),
+      andonState: mapAndonState(snap),
+      andonConn: mapAndonConnection(snap),
+      andonBuzzerMute: mapAppConfig(snap).andonBuzzerMute,
       cycleConfig: mapCycleConfig(snap.cycle.config),
       cycleStep: snap.cycle.step,
       cycleActive: snap.cycle.active,
@@ -241,7 +262,7 @@ export function useHmiState() {
     const err = snap?.error;
     if (err?.active && err.needsConfirm && !err.confirmed) {
       const ok = window.confirm(
-        `${err.ui}\n\nClase ${err.class}: stop inmediato. Confirmar para Reset + homing general?`
+        `${err.ui}\n\n¿Confirmar reset y homing general?`
       );
       if (!ok) return;
       try {
@@ -382,7 +403,10 @@ export function useHmiState() {
 
     const extra: Record<string, unknown> = { byte, on: newOn };
     if (valveId === 'blower' && newOn) {
-      extra.durationSec = Number(snap.plc.blowerSec ?? 2);
+      const sec = Number(
+        snapRef.current?.plc?.blowerSec ?? snap.plc.blowerSec ?? 2
+      );
+      extra.durationSec = Number.isFinite(sec) ? Math.max(0.2, sec) : 2;
     }
     if (snap.plc.valves[String(byte)]) {
       snap.plc.valves[String(byte)] = {
@@ -417,7 +441,16 @@ export function useHmiState() {
   }, []);
 
   const setBlowerSec = useCallback((sec: number) => {
-    api.plcAction('set_blower_sec', { blowerSec: sec }).catch(() => {});
+    const v = Math.max(0.2, Math.min(300, Number(sec)));
+    if (!Number.isFinite(v)) return;
+    if (snapRef.current?.plc) {
+      snapRef.current.plc.blowerSec = v;
+    }
+    setView((prev) => ({
+      ...prev,
+      plcState: { ...prev.plcState, blowerSec: v },
+    }));
+    api.plcAction('set_blower_sec', { blowerSec: v }).catch(() => {});
   }, []);
 
   const plcReset = useCallback(() => {
@@ -452,9 +485,40 @@ export function useHmiState() {
     api.prefeederAction('trigger_l').catch(() => {});
   }, []);
 
-  const clearLogs = useCallback((target: 'main' | 'motion' | 'plc' | 'prefeeder' | 'all') => {
+  const andonSetOut = useCallback((out: 'green' | 'yellow' | 'red' | 'buzzer', on: boolean) => {
+    api.andonAction('set_out', { out, on }).catch(() => {});
+  }, []);
+
+  const andonAllOff = useCallback(() => {
+    api.andonAction('all_off').catch(() => {});
+  }, []);
+
+  const andonResumeAuto = useCallback(() => {
+    api.andonAction('resume_auto').catch(() => {});
+  }, []);
+
+  const andonMachineState = useCallback((byte: number) => {
+    api.andonAction('state', { byte }).catch(() => {});
+  }, []);
+
+  const clearLogs = useCallback((target: 'main' | 'motion' | 'plc' | 'prefeeder' | 'andon' | 'all') => {
     setView((prev) => ({ ...prev, logs: [] }));
     api.clearLog(target).catch(() => {});
+  }, []);
+
+  const setAndonBuzzerMute = useCallback(async (mute: boolean) => {
+    setView((prev) => ({ ...prev, andonBuzzerMute: mute }));
+    try {
+      const res = await api.setAppConfig({ andonBuzzerMute: mute });
+      if (res?.config) {
+        setView((prev) => ({
+          ...prev,
+          andonBuzzerMute: !!res.config.andonBuzzerMute,
+        }));
+      }
+    } catch {
+      // ignore
+    }
   }, []);
 
   const filterLogs = useCallback(
@@ -511,7 +575,12 @@ export function useHmiState() {
     pfMaterialist,
     pfTriggerR,
     pfTriggerL,
+    andonSetOut,
+    andonAllOff,
+    andonResumeAuto,
+    andonMachineState,
     clearLogs,
+    setAndonBuzzerMute,
     filterLogs,
     parseLogs,
   };

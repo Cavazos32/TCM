@@ -65,13 +65,14 @@ En el esclavo PLC, cada comando de válvula (`on` / `off`) genera **un pulso** e
 El enclavado lo hace el PLC neumático (KEEP: Set / Res).  
 - Querer **ON** (Set) → un pulso (solo si el estado lógico cambia a on).  
 - Querer **OFF** (Res) → otro pulso (solo si cambia a off).  
-- **Boot / Reset / All Off** = todas OFF (incluido holder). El holder lo activa rutina o manual.  
+- **Boot / All Off** = pulsos OFF de cada válvula lógica ON (holder incluido). El holder lo activa rutina o manual.  
+- **Reset PLC (`0x1E`):** apagar blower (nivel), **idle de todos los GPIO** de válvula (sin dejar señales activas), limpiar estado lógico a OFF **sin** pulsos Set/Res, y luego **solo** el pulso de Reset. Prohibido pulsar válvulas tras el reset: el KEEP ya quedó en OFF y un pulso las reactivaría.  
 - Ancho de pulso: `VALVE_PULSE_MS` (100 ms) para que el KEEP lea bien.  
 No pulsar si el estado lógico ya coincide (un pulso de más invertiría el KEEP).  
 El estado lógico (JSON/status/UI) refleja la posición pretendida; el pin físico solo es impulso.  
 HMI/ciclo siguen enviando `on: true|false` como hasta ahora.
 
-**Excepción Blower:** no es KEEP. El pin queda **ON (nivel)** durante `durationSec` (ajustable en UI PLC) y luego **OFF** automático.
+**Excepción Blower:** no es KEEP. El pin queda **ON (nivel)** durante `durationSec` (ajustable en UI PLC; el esclavo debe respetar ese valor, no un default fijo si viene en el comando) y luego **OFF** automático.
 
 ---
 
@@ -197,6 +198,25 @@ Orden resumido:
 Andon refleja **estado de máquina** (`0x40`–`0x49`), no el listado EXXX.  
 Un sensor propio de Andon (p. ej. presión) puede reportar EXXX a Main; la torre sigue lo que Main mande como estado.
 
+Mapeo torre (Excel Opcodes · columna Andon):
+
+| Byte | Estado | Torre |
+|------|--------|-------|
+| `0x40` | Init | Green |
+| `0x41` | Start | N/A (no cambia) |
+| `0x42` | Stop | Red |
+| `0x43` | Reset | N/A |
+| `0x44` | Idle | Green |
+| `0x45` | Busy | Green |
+| `0x46` | Error | Red + Buzzer |
+| `0x47` | FinishParts | Green + Buzzer |
+| `0x48` | ReturnStop | N/A |
+| `0x49` | Materialist | Yellow + Buzzer |
+
+**Mute buzzer:** preferencia de HMI (Configuración → Debug). Se envía a Andon por TCP; no cambia el color de torre.
+
+**Enlace:** Andon TCP `:8769` (no compartir puerto con PreFeeder `:8768`). HMI arranca el cliente Andon por defecto (`ANDON_ENABLE=0` lo apaga).
+
 ---
 
 ## 6. Documentación y GPIO
@@ -256,7 +276,7 @@ Al cerrar un cambio normativo: listar qué archivos se actualizaron para cumplir
 | Cómo se dice qué falló | EXXX (mismo en Main y HTML local del módulo) |
 | Quién aplica C1/C2/C3 | Solo Main |
 | Cómo se activa/limpia | Flip-flop Set / Res — no polling |
-| PLC válvulas | Pulso ON / pulso OFF — sin enclavado de GPIO |
+| PLC válvulas | Pulso ON / pulso OFF — sin enclavado de GPIO; Reset 0x1E sin re-pulsar |
 | Cómo se sale de un fallo | Secuencia fija C1 / C2 / C3 |
 | De dónde salen códigos | Excel + GPIO doc |
 | Debug | Solo si se pide |

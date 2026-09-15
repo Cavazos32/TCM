@@ -1,5 +1,5 @@
 import React from 'react';
-import { LayoutDashboard, Repeat, Move, CircuitBoard, Layers } from 'lucide-react';
+import { LayoutDashboard, Repeat, Move, CircuitBoard, Layers, Lightbulb } from 'lucide-react';
 import { TabType, ConnectionState } from '../types';
 import { useApp } from '../context/AppContext';
 
@@ -9,6 +9,7 @@ interface NavigationProps {
   motionConn: ConnectionState;
   plcConn: ConnectionState;
   preFeederConn: ConnectionState;
+  andonConn: ConnectionState;
   hasErrors?: {
     motion?: boolean;
     plc?: boolean;
@@ -22,11 +23,12 @@ export const Navigation: React.FC<NavigationProps> = ({
   motionConn,
   plcConn,
   preFeederConn,
+  andonConn,
   hasErrors,
 }) => {
-  const { t } = useApp();
+  const { t, debugMode } = useApp();
 
-  const tabs: { id: TabType; label: string; icon: React.ReactNode; isConnected?: boolean; hasError?: boolean }[] = [
+  const allTabs: { id: TabType; label: string; icon: React.ReactNode; isConnected?: boolean; hasError?: boolean; debugOnly?: boolean }[] = [
     {
       id: 'maquina',
       label: t('tab_maquina'),
@@ -36,6 +38,7 @@ export const Navigation: React.FC<NavigationProps> = ({
       id: 'cycle',
       label: t('tab_cycle'),
       icon: <Repeat className="h-4 w-4" />,
+      debugOnly: true,
     },
     {
       id: 'motion',
@@ -43,6 +46,7 @@ export const Navigation: React.FC<NavigationProps> = ({
       icon: <Move className="h-4 w-4" />,
       isConnected: motionConn.connected,
       hasError: hasErrors?.motion,
+      debugOnly: true,
     },
     {
       id: 'plc',
@@ -50,6 +54,7 @@ export const Navigation: React.FC<NavigationProps> = ({
       icon: <CircuitBoard className="h-4 w-4" />,
       isConnected: plcConn.connected,
       hasError: hasErrors?.plc,
+      debugOnly: true,
     },
     {
       id: 'prefeeder',
@@ -57,8 +62,18 @@ export const Navigation: React.FC<NavigationProps> = ({
       icon: <Layers className="h-4 w-4" />,
       isConnected: preFeederConn.connected,
       hasError: hasErrors?.prefeeder,
+      debugOnly: true,
+    },
+    {
+      id: 'andon',
+      label: t('tab_andon'),
+      icon: <Lightbulb className="h-4 w-4" />,
+      isConnected: andonConn.connected,
+      debugOnly: true,
     },
   ];
+
+  const tabs = allTabs.filter((tab) => debugMode || !tab.debugOnly);
 
   return (
     <nav className="flex items-center gap-2 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-2 sm:px-6 shadow-2xs transition-colors">
@@ -77,15 +92,10 @@ export const Navigation: React.FC<NavigationProps> = ({
                   : 'bg-white dark:bg-slate-800/80 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 hover:text-slate-900 dark:hover:text-white border border-slate-200/80 dark:border-slate-700'
               }`}
             >
-              {/* Tab Icon */}
               <span className={isActive ? 'text-white dark:text-slate-900' : 'text-slate-500 dark:text-slate-400 group-hover:text-slate-900 dark:group-hover:text-white'}>
                 {tab.icon}
               </span>
-
-              {/* Tab Label */}
               <span className="font-semibold">{tab.label}</span>
-
-              {/* Status Dot for Subsystems */}
               {tab.isConnected !== undefined && (
                 <span
                   title={tab.isConnected ? t('node_connected') : t('node_disconnected')}
@@ -105,4 +115,3 @@ export const Navigation: React.FC<NavigationProps> = ({
     </nav>
   );
 };
-

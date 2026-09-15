@@ -9,15 +9,16 @@
 # Estados MACH_* informan sin detalle. EXXX = identidad del fallo (solo HMI).
 
 # --- Estados máquina / Andon RX (no EXXX) ---
+# Torre Excel: Green / Red / N/A / Red+Buzzer / Green+Buzzer / Yellow+Buzzer
 MACH_INIT = 0x40        # InitState · Green
-MACH_START = 0x41       # StartCycle
+MACH_START = 0x41       # StartCycle · N/A (torre no cambia)
 MACH_STOP = 0x42        # StopCycle · Red
-MACH_RESET = 0x43       # ResetCycle
+MACH_RESET = 0x43       # ResetCycle · N/A
 MACH_IDLE = 0x44        # IdleState · Green
 MACH_BUSY = 0x45        # BusyState · Green
 MACH_ERROR = 0x46       # ErrorState · Red + Buzzer
 MACH_FINISH = 0x47      # FinishParts / LotCompleate · Green + Buzzer
-MACH_RETURN = 0x48      # ReturnState
+MACH_RETURN = 0x48      # ReturnStop · N/A
 MACH_MATERIALIST = 0x49 # Materialist · Yellow + Buzzer
 
 # Andon propio: TX only (E064) — pin FRL → torreta + aviso HMI

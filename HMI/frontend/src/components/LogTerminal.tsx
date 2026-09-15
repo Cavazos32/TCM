@@ -7,7 +7,7 @@ interface LogTerminalProps {
   title: string;
   logs: LogEntry[];
   onClear: () => void;
-  filterModule?: 'MAQUINA' | 'MOTION' | 'PLC' | 'PREFEEDER' | 'ALL';
+  filterModule?: 'MAQUINA' | 'MOTION' | 'PLC' | 'PREFEEDER' | 'ANDON' | 'ALL';
 }
 
 export const LogTerminal: React.FC<LogTerminalProps> = ({

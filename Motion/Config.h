@@ -18,9 +18,14 @@ static const IPAddress STA_DNS(10, 10, 32, 72);
 
 constexpr uint16_t MOTION_TCP_PORT = 8767;
 constexpr uint8_t  MOTION_PROTO_VER = 1;
+// Tiempo máximo de un intento STA (no bloquea el loop; solo marca reintento).
 constexpr unsigned long WIFI_CONNECT_TIMEOUT_MS = 30000;
+// Intervalo mínimo entre WiFi.begin() de reintento (millis, no delay).
+constexpr unsigned long WIFI_RETRY_INTERVAL_MS = 5000;
 
 // --- Sensores Láser (Keyence LR-X) — MOT_ERR_LASER_* ---
+// R: GPIO32 (pull-up interno OK). L: GPIO34 input-only ESP32 — sin pull-up
+// interno; hace falta pull-up externo ~10k a 3.3V si el Keyence es NPN/OC.
 constexpr uint8_t PIN_LRX_LASER_R  = 32;
 constexpr uint8_t PIN_LRX_LASER_L  = 34;
 
@@ -32,12 +37,17 @@ constexpr uint8_t PIN_SAFETY_EXHAUST = PIN_E_STOP;
 #define PIN_ESTOP_ACTIVE_HIGH 1
 #endif
 
-// Eventos sensor → maestro. 0 = declarado, sin TX activo aún.
+// Eventos sensor → maestro (Set detalle + status push niveles). 1 = activo.
 #ifndef MOT_IO_SENSOR_EVENTS
-#define MOT_IO_SENSOR_EVENTS 0
+#define MOT_IO_SENSOR_EVENTS 1
 #endif
 
 constexpr unsigned long MOT_SENSOR_DEBOUNCE_MS = 150;
+
+// Instrumentación de latencia MOVE/TCP/Modbus (Serial). 0 = desactivado.
+#ifndef MOT_LATENCY_DEBUG
+#define MOT_LATENCY_DEBUG 0
+#endif
 
 // --- Interfaz Ethernet (SPI - Bus HSPI sin conflictos) ---
 constexpr uint8_t PIN_ETH_CLK      = 14;  // CLK / SCK (HSPI)

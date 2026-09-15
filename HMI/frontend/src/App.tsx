@@ -7,12 +7,14 @@ import { CycleTab } from './components/CycleTab';
 import { MotionTab } from './components/MotionTab';
 import { PlcTab } from './components/PlcTab';
 import { PreFeederTab } from './components/PreFeederTab';
+import { AndonTab } from './components/AndonTab';
 import { SettingsDrawer } from './components/SettingsDrawer';
 import { AppProvider, useApp } from './context/AppContext';
 import { useHmiState } from './hooks/useHmiState';
 
 function AppMain() {
-  const { isSettingsOpen, setIsSettingsOpen, showLogs } = useApp();
+  const { isSettingsOpen, setIsSettingsOpen, showLogs, debugMode } = useApp();
+  const logsVisible = debugMode && showLogs;
   const [currentTab, setCurrentTab] = useState<TabType>('maquina');
   const [reconnecting, setReconnecting] = useState(false);
   const hmi = useHmiState();
@@ -29,11 +31,29 @@ function AppMain() {
 
   const handleTabChange = useCallback(
     (tab: TabType) => {
+      if (!debugMode && tab !== 'maquina') return;
       setCurrentTab(tab);
       hmi.onTabChange(tab);
     },
-    [hmi]
+    [hmi, debugMode]
   );
+
+  const handleDebugModeDisable = useCallback(() => {
+    if (view.machineState.trialMode) {
+      void hmi.setCycleTrialMode(false);
+    }
+    if (currentTab !== 'maquina') {
+      setCurrentTab('maquina');
+      hmi.onTabChange('maquina');
+    }
+  }, [currentTab, hmi, view.machineState.trialMode]);
+
+  useEffect(() => {
+    if (!debugMode && currentTab !== 'maquina') {
+      setCurrentTab('maquina');
+      hmi.onTabChange('maquina');
+    }
+  }, [debugMode, currentTab, hmi]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -46,10 +66,11 @@ function AppMain() {
       }
 
       if (e.key === '1') handleTabChange('maquina');
-      else if (e.key === '2') handleTabChange('cycle');
-      else if (e.key === '3') handleTabChange('motion');
-      else if (e.key === '4') handleTabChange('plc');
-      else if (e.key === '5') handleTabChange('prefeeder');
+      else if (debugMode && e.key === '2') handleTabChange('cycle');
+      else if (debugMode && e.key === '3') handleTabChange('motion');
+      else if (debugMode && e.key === '4') handleTabChange('plc');
+      else if (debugMode && e.key === '5') handleTabChange('prefeeder');
+      else if (debugMode && e.key === '6') handleTabChange('andon');
       else if (e.code === 'Space') {
         e.preventDefault();
         if (currentTab === 'maquina') {
@@ -68,11 +89,11 @@ function AppMain() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentTab, view.machineState.isRunning, isSettingsOpen, setIsSettingsOpen, hmi, handleTabChange]);
+  }, [currentTab, view.machineState.isRunning, isSettingsOpen, setIsSettingsOpen, hmi, handleTabChange, debugMode]);
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans flex flex-col antialiased selection:bg-slate-800 dark:selection:bg-slate-200 selection:text-white dark:selection:text-slate-900 transition-colors">
-      <Header machineState={view.machineState} onOpenSettings={() => setIsSettingsOpen(true)} />
+      <Header onOpenSettings={() => setIsSettingsOpen(true)} />
 
       <Navigation
         currentTab={currentTab}
@@ -80,6 +101,7 @@ function AppMain() {
         motionConn={view.motionState.connection}
         plcConn={view.plcState.connection}
         preFeederConn={view.preFeederState.connection}
+        andonConn={view.andonConn}
         hasErrors={{
           motion: view.motionState.hasError,
         }}
@@ -102,15 +124,15 @@ function AppMain() {
             onResume={hmi.resume}
             onPause={hmi.pauseCycle}
             onReset={hmi.resetCycleCmd}
-            onGotoCycle={() => handleTabChange('cycle')}
-            onToggleTrialMode={hmi.setCycleTrialMode}
-            showLogs={showLogs}
-            logs={showLogs ? hmi.filterLogs('ALL') : []}
+            onGotoCycle={debugMode ? () => handleTabChange('cycle') : undefined}
+            onToggleTrialMode={debugMode ? hmi.setCycleTrialMode : undefined}
+            showLogs={logsVisible}
+            logs={logsVisible ? hmi.filterLogs('ALL') : []}
             onClearLogs={() => hmi.clearLogs('all')}
           />
         )}
 
-        {currentTab === 'cycle' && (
+        {debugMode && currentTab === 'cycle' && (
           <CycleTab
             machineState={view.machineState}
             cycleConfig={view.cycleConfig}
@@ -129,7 +151,7 @@ function AppMain() {
           />
         )}
 
-        {currentTab === 'motion' && (
+        {debugMode && currentTab === 'motion' && (
           <MotionTab
             motionState={view.motionState}
             onUpdateTargetPos={(pos) => hmi.setMmRpm(pos, view.motionState.rpm)}
@@ -151,13 +173,13 @@ function AppMain() {
             onReloadFeedOffset={() => {
               void hmi.reloadFeedOffset();
             }}
-            showLogs={showLogs}
-            logs={showLogs ? hmi.filterLogs('MOTION') : []}
+            showLogs={logsVisible}
+            logs={logsVisible ? hmi.filterLogs('MOTION') : []}
             onClearLogs={() => hmi.clearLogs('motion')}
           />
         )}
 
-        {currentTab === 'plc' && (
+        {debugMode && currentTab === 'plc' && (
           <PlcTab
             plcState={view.plcState}
             onToggleValve={hmi.toggleValve}
@@ -165,13 +187,13 @@ function AppMain() {
             onBlowerSecChange={hmi.setBlowerSec}
             onResetPlc={hmi.plcReset}
             onAllOff={hmi.plcAllOff}
-            showLogs={showLogs}
-            logs={showLogs ? hmi.filterLogs('PLC') : []}
+            showLogs={logsVisible}
+            logs={logsVisible ? hmi.filterLogs('PLC') : []}
             onClearLogs={() => hmi.clearLogs('plc')}
           />
         )}
 
-        {currentTab === 'prefeeder' && (
+        {debugMode && currentTab === 'prefeeder' && (
           <PreFeederTab
             preFeederState={view.preFeederState}
             onStart={hmi.pfStart}
@@ -180,9 +202,22 @@ function AppMain() {
             onMaterialist={hmi.pfMaterialist}
             onTriggerR={hmi.pfTriggerR}
             onTriggerL={hmi.pfTriggerL}
-            showLogs={showLogs}
-            logs={showLogs ? hmi.filterLogs('PREFEEDER') : []}
+            showLogs={logsVisible}
+            logs={logsVisible ? hmi.filterLogs('PREFEEDER') : []}
             onClearLogs={() => hmi.clearLogs('prefeeder')}
+          />
+        )}
+
+        {debugMode && currentTab === 'andon' && (
+          <AndonTab
+            andonState={view.andonState}
+            onSetOut={hmi.andonSetOut}
+            onAllOff={hmi.andonAllOff}
+            onResumeAuto={hmi.andonResumeAuto}
+            onMachineState={hmi.andonMachineState}
+            showLogs={logsVisible}
+            logs={logsVisible ? hmi.filterLogs('ANDON') : []}
+            onClearLogs={() => hmi.clearLogs('andon')}
           />
         )}
       </main>
@@ -193,9 +228,13 @@ function AppMain() {
         motionConn={view.motionState.connection}
         plcConn={view.plcState.connection}
         preFeederConn={view.preFeederState.connection}
+        andonConn={view.andonConn}
+        andonBuzzerMute={view.andonBuzzerMute}
+        onAndonBuzzerMute={hmi.setAndonBuzzerMute}
         connected={view.connected}
         onReconnectNetwork={handleReconnectNetwork}
         reconnecting={reconnecting}
+        onDebugModeDisable={handleDebugModeDisable}
       />
     </div>
   );

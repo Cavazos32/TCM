@@ -98,6 +98,47 @@ export function reloadCycleConfigFromDisk() {
   return post<{ ok: boolean; config: CycleConfig }>('/api/cycle/config/reload', {});
 }
 
+export function getAppConfig() {
+  return api<{ ok: boolean; config: { andonBuzzerMute: boolean } }>('/api/app/config');
+}
+
+export function setAppConfig(config: { andonBuzzerMute?: boolean }) {
+  return post<{ ok: boolean; config: { andonBuzzerMute: boolean } }>(
+    '/api/app/config',
+    config as Record<string, unknown>
+  );
+}
+
+export function unlockDebugMode(password: string) {
+  return fetch('/api/debug/unlock', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password }),
+  }).then(async (res) => {
+    if (!res.ok) {
+      return {
+        ok: false as const,
+        error: 'server_unavailable' as const,
+        status: res.status,
+      };
+    }
+    try {
+      const data = (await res.json()) as { ok?: boolean; error?: string | null };
+      return {
+        ok: !!data.ok,
+        error: data.ok ? null : ((data.error as string) || 'invalid_password'),
+        status: res.status,
+      };
+    } catch {
+      return {
+        ok: false as const,
+        error: 'server_unavailable' as const,
+        status: res.status,
+      };
+    }
+  });
+}
+
 export function motionAction(action: string, extra: Record<string, unknown> = {}) {
   return post('/api/motion', { action, ...extra });
 }
@@ -110,7 +151,16 @@ export function prefeederAction(action: string) {
   return post('/api/prefeeder', { action });
 }
 
-export function clearLog(target: 'main' | 'motion' | 'plc' | 'prefeeder' | 'all') {
+export function andonAction(
+  action: string,
+  extra: Record<string, unknown> = {}
+) {
+  return post<{ ok: boolean; error?: string }>('/api/andon', { action, ...extra });
+}
+
+export function clearLog(
+  target: 'main' | 'motion' | 'plc' | 'prefeeder' | 'andon' | 'all'
+) {
   return post('/api/log/clear', { target });
 }
 

@@ -1,5 +1,7 @@
 import type { BackendSnapshot } from './backendTypes';
 import type {
+  AndonState,
+  ConnectionState,
   CycleConfig,
   LogEntry,
   MachineState,
@@ -78,6 +80,7 @@ export function mergeAllLogs(snap: BackendSnapshot): LogEntry[] {
     ...parseLogs(snap.logs.motion, 'MOTION'),
     ...parseLogs(snap.logs.plc, 'PLC'),
     ...parseLogs(snap.logs.prefeeder, 'PREFEEDER'),
+    ...parseLogs(snap.logs.andon ?? [], 'ANDON'),
   ].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
 }
 
@@ -228,6 +231,34 @@ export function mapPreFeederState(snap: BackendSnapshot): PreFeederState {
     statusText: pf.status?.text ?? '',
     sensorsL: buildSensors(snap, 'L'),
     sensorsR: buildSensors(snap, 'R'),
+  };
+}
+
+export function mapAndonConnection(snap: BackendSnapshot): ConnectionState {
+  const link = snap.andonLink;
+  return {
+    connected: !!link?.connected,
+    ip: link?.host ?? '10.10.32.60',
+    port: link?.port ?? 8769,
+  };
+}
+
+export function mapAndonState(snap: BackendSnapshot): AndonState {
+  const a = snap.andon;
+  const conn = mapAndonConnection(snap);
+  return {
+    connection: conn,
+    green: !!a?.green,
+    yellow: !!a?.yellow,
+    red: !!a?.red,
+    buzzer: !!a?.buzzer,
+    manual: !!a?.manual,
+  };
+}
+
+export function mapAppConfig(snap: BackendSnapshot): { andonBuzzerMute: boolean } {
+  return {
+    andonBuzzerMute: !!snap.appConfig?.andonBuzzerMute,
   };
 }
 

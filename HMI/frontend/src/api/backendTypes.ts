@@ -139,6 +139,18 @@ export interface BackendSnapshot {
   motionLink: BackendLink;
   plcLink: BackendLink;
   pfLink: BackendLink;
+  andonLink?: BackendLink;
+  appConfig?: {
+    andonBuzzerMute: boolean;
+  };
+  andon?: {
+    connected: boolean;
+    green: boolean;
+    yellow: boolean;
+    red: boolean;
+    buzzer: boolean;
+    manual: boolean;
+  };
   motion: BackendMotion;
   plc: BackendPlc;
   prefeeder: BackendPreFeeder;
@@ -147,5 +159,6 @@ export interface BackendSnapshot {
     motion: string[];
     plc: string[];
     prefeeder: string[];
+    andon?: string[];
   };
 }

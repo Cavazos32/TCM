@@ -1,7 +1,7 @@
 """Cliente TCP Andon — envía bytes de estado máquina (0x40–0x49).
 
-Andon firmware: TCP pendiente (Config.h marca :8768, mismo puerto que PF).
-Por defecto HMI usa :8769 para no chocar con PreFeeder Master :8768.
+Firmware: TCP :8769, hello role=andon, ping→pong.
+Mute buzzer: command buzzerMute (Debug HMI).
 Si Andon no está, send es no-op silencioso.
 """
 
@@ -25,11 +25,33 @@ class AndonClient(ModuleTcpClient):
         super().__init__(DEFAULT_HOST, DEFAULT_PORT, on_message, on_connection)
 
     def _send_probe(self) -> bool:
-        # Sin comando poll dedicado; el enlace basta.
-        return True
+        return self.send_command(command="ping")
 
     def send_machine_byte(self, byte: int) -> bool:
         """HMI → Andon: estado máquina (torre)."""
         if not self.connected:
             return False
         return self.send_command(byte=int(byte) & 0xFF)
+
+    def set_buzzer_mute(self, mute: bool) -> bool:
+        """HMI Debug → Andon: silenciar buzzer."""
+        if not self.connected:
+            return False
+        return self.send_command(command="buzzerMute", mute=bool(mute))
+
+    def set_output(self, out: str, on: bool) -> bool:
+        """Prueba manual: green|yellow|red|buzzer."""
+        if not self.connected:
+            return False
+        return self.send_command(command="setOut", out=str(out), on=bool(on))
+
+    def all_off(self) -> bool:
+        if not self.connected:
+            return False
+        return self.send_command(command="allOff")
+
+    def resume_auto(self) -> bool:
+        """Sale de modo manual y reaplica último estado máquina."""
+        if not self.connected:
+            return False
+        return self.send_command(command="resumeAuto")

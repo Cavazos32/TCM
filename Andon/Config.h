@@ -4,7 +4,7 @@
 #include <WiFi.h>
 
 // Andon — MCU salidas torre/luz + buzzer + presión FRL.
-// Esclavo TCP :8768 (pendiente). IP fija .60.
+// Esclavo TCP :8769 (no chocar con PreFeeder :8768). IP fija .60.
 // Pines: Doc/gpio_list_updated.md (fuente de verdad).
 
 static const char* WIFI_SSID = "R&D_TCM";
@@ -13,7 +13,7 @@ static const IPAddress STA_IP(10, 10, 32, 60);
 static const IPAddress STA_GW(10, 10, 32, 72);
 static const IPAddress STA_MASK(255, 255, 255, 0);
 
-constexpr uint16_t ANDON_TCP_PORT = 8768;
+constexpr uint16_t ANDON_TCP_PORT = 8769;
 constexpr uint8_t ANDON_PROTO_VER = 1;
 constexpr unsigned long WIFI_CONNECT_TIMEOUT_MS = 30000;
 

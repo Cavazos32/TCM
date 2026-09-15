@@ -26,7 +26,9 @@ Al cerrar el cambio: indicar qué archivos se alinearon.
 - Flip-flop **Set / Res**: no polling de sensores ni de “¿sigues en error?”.
 - Heartbeat TCP solo valida enlace; no sustituye eventos de aplicación.
 - Opcode = contrato (Excel / Opcodes). No inventar bytes sueltos.
-- PLC válvulas: pulso ON/OFF (KEEP); no enclavado en GPIO ESP. Excepción: Blower (nivel + duration).
+- PLC válvulas: pulso ON/OFF (KEEP); no enclavado en GPIO ESP. Excepción: Blower (nivel + durationSec del comando).
+- Reset PLC `0x1E`: idle GPIO + lógica OFF sin pulsos de válvula; solo pulso Reset (no re-pulsar tras reset).
+- Andon: solo estado máquina `0x40–0x49` (no EXXX); TCP `:8769`; mute buzzer desde HMI Debug.
 
 ## Estados y errores
 

@@ -131,6 +131,12 @@ def ensure_frontend_dist() -> bool:
 def _broadcast_sse() -> None:
     """Empuja el snapshot más reciente. Si la cola está llena, descarta lo viejo
     y conserva el cliente — no cortar el SSE (el ciclo notifica muchas veces/s)."""
+    try:
+        from latency_debug import mark as lat_mark
+
+        lat_mark("10", source="sse")
+    except ImportError:
+        pass
     data = json.dumps(get_state().snapshot(), separators=(",", ":"))
     for q in list(_sse_queues):
         try:
@@ -333,6 +339,26 @@ def api_cycle_config_reload():
     return jsonify({"ok": True, "config": cfg})
 
 
+@app.get("/api/app/config")
+def api_app_config_get():
+    return jsonify({"ok": True, "config": get_state().get_app_config()})
+
+
+@app.post("/api/app/config")
+def api_app_config_set():
+    body = request.get_json(silent=True) or {}
+    cfg = get_state().set_app_config(body)
+    return jsonify({"ok": True, "config": cfg})
+
+
+@app.post("/api/debug/unlock")
+def api_debug_unlock():
+    body = request.get_json(silent=True) or {}
+    password = str(body.get("password", ""))
+    ok = get_state().check_debug_password(password)
+    return jsonify({"ok": ok, "error": None if ok else "invalid_password"})
+
+
 @app.post("/api/motion")
 def api_motion():
     body = request.get_json(silent=True) or {}
@@ -352,6 +378,13 @@ def api_pf():
     body = request.get_json(silent=True) or {}
     action = body.get("action", "")
     return jsonify(get_state().cmd_pf(action))
+
+
+@app.post("/api/andon")
+def api_andon():
+    body = request.get_json(silent=True) or {}
+    action = body.pop("action", "")
+    return jsonify(get_state().cmd_andon(action, **body))
 
 
 @app.post("/api/log/clear")

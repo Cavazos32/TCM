@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   X,
   Sun,
@@ -10,6 +10,12 @@ import {
   Check,
   Terminal,
   RefreshCw,
+  Bug,
+  VolumeX,
+  Volume2,
+  Lock,
+  Unlock,
+  LogOut,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { ConnectionState } from '../types';
@@ -20,9 +26,13 @@ interface SettingsDrawerProps {
   motionConn: ConnectionState;
   plcConn: ConnectionState;
   preFeederConn: ConnectionState;
+  andonConn: ConnectionState;
+  andonBuzzerMute: boolean;
+  onAndonBuzzerMute: (mute: boolean) => void;
   connected?: boolean;
   onReconnectNetwork?: () => void;
   reconnecting?: boolean;
+  onDebugModeDisable?: () => void;
 }
 
 export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
@@ -31,11 +41,31 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
   motionConn,
   plcConn,
   preFeederConn,
+  andonConn,
+  andonBuzzerMute,
+  onAndonBuzzerMute,
   connected = true,
   onReconnectNetwork,
   reconnecting = false,
+  onDebugModeDisable,
 }) => {
-  const { language, setLanguage, isDarkMode, setIsDarkMode, showLogs, setShowLogs, t } = useApp();
+  const {
+    language,
+    setLanguage,
+    isDarkMode,
+    setIsDarkMode,
+    showLogs,
+    setShowLogs,
+    debugMode,
+    enableDebugMode,
+    disableDebugMode,
+    t,
+  } = useApp();
+
+  const [showPasswordPrompt, setShowPasswordPrompt] = useState(false);
+  const [password, setPassword] = useState('');
+  const [passwordError, setPasswordError] = useState<'invalid' | 'server' | null>(null);
+  const [unlocking, setUnlocking] = useState(false);
 
   if (!isOpen) return null;
 
@@ -43,7 +73,38 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
     { label: 'Motion ASDA B3', conn: motionConn },
     { label: 'PLC Válvulas', conn: plcConn },
     { label: 'PreFeeder Feed', conn: preFeederConn },
+    { label: 'Andon Torre', conn: andonConn },
   ];
+
+  const handleEnterDebug = () => {
+    setShowPasswordPrompt(true);
+    setPassword('');
+    setPasswordError(null);
+  };
+
+  const handleExitDebug = () => {
+    disableDebugMode();
+    onDebugModeDisable?.();
+    setShowPasswordPrompt(false);
+    setPassword('');
+    setPasswordError(null);
+  };
+
+  const handleUnlock = async () => {
+    setUnlocking(true);
+    setPasswordError(null);
+    try {
+      const result = await enableDebugMode(password);
+      if (result === 'ok') {
+        setShowPasswordPrompt(false);
+        setPassword('');
+      } else {
+        setPasswordError(result);
+      }
+    } finally {
+      setUnlocking(false);
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end animate-fade-in">
@@ -145,28 +206,173 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
 
           <div className="space-y-3">
             <div className="flex items-center gap-2">
-              <Terminal className="h-4 w-4 text-teal-500" />
+              <Bug className="h-4 w-4 text-orange-500" />
               <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
-                {t('logs_visibility_title')}
+                {t('debug_title')}
               </h3>
             </div>
             <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
-              {t('logs_visibility_desc')}
+              {t('debug_desc')}
             </p>
-            <button
-              type="button"
-              onClick={() => setShowLogs(!showLogs)}
-              className={`flex w-full items-center justify-between rounded-xl border p-3.5 text-left transition shadow-2xs ${
-                showLogs
-                  ? 'border-teal-500 bg-teal-50 dark:bg-teal-950/30 ring-2 ring-teal-500/20'
-                  : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/50'
-              }`}
-            >
-              <span className="text-xs font-bold">
-                {showLogs ? t('logs_visible') : t('logs_hidden')}
-              </span>
-              {showLogs && <Check className="h-4 w-4 text-teal-600" />}
-            </button>
+
+            {!debugMode ? (
+              <button
+                type="button"
+                id="btn-debug-mode"
+                onClick={handleEnterDebug}
+                className="flex w-full items-center justify-between rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/50 p-3.5 text-left transition shadow-2xs"
+              >
+                <div className="flex items-center gap-2.5">
+                  <Lock className="h-4 w-4 text-slate-500" />
+                  <div>
+                    <div className="text-xs font-bold">{t('debug_mode_title')}</div>
+                    <div className="text-[10px] text-slate-500 dark:text-slate-400">
+                      {t('debug_mode_off')}
+                    </div>
+                  </div>
+                </div>
+              </button>
+            ) : (
+              <div className="rounded-xl border border-orange-500 bg-orange-50 dark:bg-orange-950/30 ring-2 ring-orange-500/20 p-3.5 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <Unlock className="h-4 w-4 text-orange-600" />
+                    <div>
+                      <div className="text-xs font-bold">{t('debug_mode_title')}</div>
+                      <div className="text-[10px] text-slate-500 dark:text-slate-400">
+                        {t('debug_mode_on')}
+                      </div>
+                    </div>
+                  </div>
+                  <Check className="h-4 w-4 text-orange-600" />
+                </div>
+                <button
+                  type="button"
+                  id="btn-debug-exit"
+                  onClick={handleExitDebug}
+                  className="flex w-full items-center justify-center gap-2 rounded-lg border border-orange-300 dark:border-orange-800 bg-white dark:bg-slate-900 px-3 py-2.5 text-xs font-bold text-orange-800 dark:text-orange-200 hover:bg-orange-100 dark:hover:bg-orange-950/50 transition"
+                >
+                  <LogOut className="h-3.5 w-3.5" />
+                  {t('debug_mode_exit')}
+                </button>
+              </div>
+            )}
+
+            {showPasswordPrompt && !debugMode && (
+              <div className="rounded-xl border border-orange-200 dark:border-orange-900/50 bg-orange-50/80 dark:bg-orange-950/20 p-3.5 space-y-3">
+                <div>
+                  <div className="text-xs font-bold text-slate-800 dark:text-slate-100">
+                    {t('debug_mode_password_title')}
+                  </div>
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+                    {t('debug_mode_password_hint')}
+                  </p>
+                </div>
+                <input
+                  type="password"
+                  id="input-debug-password"
+                  autoFocus
+                  value={password}
+                  onChange={(e) => {
+                    setPassword(e.target.value);
+                    setPasswordError(null);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') void handleUnlock();
+                    if (e.key === 'Escape') {
+                      setShowPasswordPrompt(false);
+                      setPassword('');
+                      setPasswordError(null);
+                    }
+                  }}
+                  placeholder={t('debug_mode_password_placeholder')}
+                  className={`w-full rounded-lg border px-3 py-2 text-xs font-mono bg-white dark:bg-slate-900 ${
+                    passwordError
+                      ? 'border-red-400 focus:ring-red-400'
+                      : 'border-slate-300 dark:border-slate-700'
+                  }`}
+                />
+                {passwordError && (
+                  <p className="text-[10px] font-semibold text-red-600 dark:text-red-400">
+                    {passwordError === 'server'
+                      ? t('debug_mode_server_error')
+                      : t('debug_mode_wrong_password')}
+                  </p>
+                )}
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowPasswordPrompt(false);
+                      setPassword('');
+                      setPasswordError(null);
+                    }}
+                    className="flex-1 rounded-lg border border-slate-300 dark:border-slate-700 px-3 py-2 text-xs font-bold text-slate-600 dark:text-slate-300"
+                  >
+                    {t('debug_mode_cancel')}
+                  </button>
+                  <button
+                    type="button"
+                    id="btn-debug-unlock"
+                    disabled={unlocking || !password}
+                    onClick={() => void handleUnlock()}
+                    className="flex-1 rounded-lg bg-orange-600 hover:bg-orange-700 disabled:opacity-40 px-3 py-2 text-xs font-bold text-white"
+                  >
+                    {t('debug_mode_unlock')}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {debugMode && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setShowLogs(!showLogs)}
+                  className={`flex w-full items-center justify-between rounded-xl border p-3.5 text-left transition shadow-2xs ${
+                    showLogs
+                      ? 'border-teal-500 bg-teal-50 dark:bg-teal-950/30 ring-2 ring-teal-500/20'
+                      : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/50'
+                  }`}
+                >
+                  <div className="flex items-center gap-2.5">
+                    <Terminal className="h-4 w-4 text-teal-600" />
+                    <div>
+                      <div className="text-xs font-bold">{t('logs_visibility_title')}</div>
+                      <div className="text-[10px] text-slate-500 dark:text-slate-400">
+                        {showLogs ? t('logs_visible') : t('logs_hidden')}
+                      </div>
+                    </div>
+                  </div>
+                  {showLogs && <Check className="h-4 w-4 text-teal-600" />}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => onAndonBuzzerMute(!andonBuzzerMute)}
+                  className={`flex w-full items-center justify-between rounded-xl border p-3.5 text-left transition shadow-2xs ${
+                    andonBuzzerMute
+                      ? 'border-amber-500 bg-amber-50 dark:bg-amber-950/30 ring-2 ring-amber-500/20'
+                      : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/50'
+                  }`}
+                >
+                  <div className="flex items-center gap-2.5">
+                    {andonBuzzerMute ? (
+                      <VolumeX className="h-4 w-4 text-amber-600" />
+                    ) : (
+                      <Volume2 className="h-4 w-4 text-slate-500" />
+                    )}
+                    <div>
+                      <div className="text-xs font-bold">{t('andon_buzzer_mute_title')}</div>
+                      <div className="text-[10px] text-slate-500 dark:text-slate-400">
+                        {andonBuzzerMute ? t('andon_buzzer_muted') : t('andon_buzzer_on')}
+                      </div>
+                    </div>
+                  </div>
+                  {andonBuzzerMute && <Check className="h-4 w-4 text-amber-600" />}
+                </button>
+              </>
+            )}
           </div>
 
           <hr className="border-slate-200 dark:border-slate-800" />

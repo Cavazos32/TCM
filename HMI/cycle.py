@@ -475,7 +475,6 @@ class CycleRunner:
                 except Exception:
                     pass
             self._set_state(TX_ERROR, ui)
-            self._host.cycle_log(f"Policy {err_class} stop_all · {ui}")
             return {"ok": True, "action": action}
         if action == "link_down":
             # Solo abortar ciclo local; no mandar stop por TCP al nodo caído.
@@ -484,7 +483,6 @@ class CycleRunner:
             self._stop.set()
             self._pause.clear()
             self._set_state(TX_ERROR, ui)
-            self._host.cycle_log(f"Policy {err_class} link_down · {ui}")
             self._host.cycle_notify()
             return {"ok": True, "action": action}
         if action == "pause":
@@ -492,13 +490,11 @@ class CycleRunner:
             if self.is_active():
                 self._pause.set()
             self._set_state(TX_ERROR, ui)
-            self._host.cycle_log(f"Policy {err_class} pause · {ui}")
             self._host.cycle_notify()
             return {"ok": True, "action": action}
         if action == "finish_step":
             self._c3_stop_after_step = True
             self._set_state(TX_ERROR, ui)
-            self._host.cycle_log(f"Policy {err_class} finish_step · {ui}")
             self._host.cycle_notify()
             return {"ok": True, "action": action}
         self._set_state(TX_ERROR, ui)
@@ -526,7 +522,7 @@ class CycleRunner:
         if self._c3_stop_after_step:
             self._c3_stop_after_step = False
             self._pause.set()
-            self._host.cycle_log("C3: paso terminado — pausa para Resume/Reset")
+            self._host.cycle_log("Paso terminado — pausa para Resume/Reset")
             self._host.cycle_notify()
             return True
         meta = STEP_BY_KEY[key]

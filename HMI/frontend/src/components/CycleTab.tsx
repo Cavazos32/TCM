@@ -396,8 +396,16 @@ export const CycleTab: React.FC<CycleTabProps> = ({
 
       {/* Controles de ciclo en vivo */}
       <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-3 shadow-2xs">
-        <span className="text-xs font-semibold text-slate-600 dark:text-slate-400 mr-2">
-          {cycleActive
+        <span
+          className={`text-xs font-semibold mr-2 ${
+            machineState.fault
+              ? 'text-red-700 dark:text-red-300'
+              : 'text-slate-600 dark:text-slate-400'
+          }`}
+        >
+          {machineState.fault
+            ? machineState.fault
+            : cycleActive
             ? `${t('cycle_step_status').replace('{step}', String(cycleStep))}${machineState.cycleStepLabel ? ` · ${machineState.cycleStepLabel}` : ''}`
             : machineState.statusText || t('state_ready')}
         </span>

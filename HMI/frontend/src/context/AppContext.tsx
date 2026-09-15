@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { translations, Language, TranslationKey } from '../i18n/translations';
+import { unlockDebugMode as apiUnlockDebug } from '../api/hmiApi';
 
 interface AppContextType {
   language: Language;
@@ -9,12 +10,17 @@ interface AppContextType {
   toggleDarkMode: () => void;
   showLogs: boolean;
   setShowLogs: (show: boolean) => void;
+  debugMode: boolean;
+  enableDebugMode: (password: string) => Promise<'ok' | 'invalid' | 'server'>;
+  disableDebugMode: () => void;
   isSettingsOpen: boolean;
   setIsSettingsOpen: (open: boolean) => void;
   t: (key: TranslationKey, params?: Record<string, string | number>) => string;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
+
+const DEBUG_MODE_KEY = 'tcm_hmi_debug_mode';
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [language, setLanguageState] = useState<Language>(() => {
@@ -42,13 +48,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const [showLogs, setShowLogsState] = useState<boolean>(() => {
     try {
+      // Solo aplica si ya hay sesión debug; producción nunca muestra logs
+      if (sessionStorage.getItem(DEBUG_MODE_KEY) !== 'true') return false;
       const saved = localStorage.getItem('tcm_hmi_show_logs');
-      if (saved === 'false') return false;
       if (saved === 'true') return true;
     } catch {
       // fallback
     }
-    return true;
+    return false;
+  });
+
+  const [debugMode, setDebugModeState] = useState<boolean>(() => {
+    try {
+      return sessionStorage.getItem(DEBUG_MODE_KEY) === 'true';
+    } catch {
+      return false;
+    }
   });
 
   useEffect(() => {
@@ -80,6 +95,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [showLogs]);
 
+  useEffect(() => {
+    try {
+      if (debugMode) sessionStorage.setItem(DEBUG_MODE_KEY, 'true');
+      else {
+        sessionStorage.removeItem(DEBUG_MODE_KEY);
+        setShowLogsState(false);
+      }
+    } catch {
+      // ignore
+    }
+  }, [debugMode]);
+
   const setLanguage = (lang: Language) => {
     setLanguageState(lang);
   };
@@ -93,7 +120,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const setShowLogs = (show: boolean) => {
-    setShowLogsState(show);
+    // Logs solo en debug mode
+    setShowLogsState(debugMode ? show : false);
+  };
+
+  const enableDebugMode = async (
+    password: string
+  ): Promise<'ok' | 'invalid' | 'server'> => {
+    try {
+      const res = await apiUnlockDebug(password);
+      if (res.error === 'server_unavailable') return 'server';
+      if (res.ok) {
+        setDebugModeState(true);
+        return 'ok';
+      }
+      return 'invalid';
+    } catch {
+      return 'server';
+    }
+  };
+
+  const disableDebugMode = () => {
+    setShowLogsState(false);
+    setDebugModeState(false);
   };
 
   const t = (key: TranslationKey, params?: Record<string, string | number>): string => {
@@ -116,6 +165,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         toggleDarkMode,
         showLogs,
         setShowLogs,
+        debugMode,
+        enableDebugMode,
+        disableDebugMode,
         isSettingsOpen,
         setIsSettingsOpen,
         t,

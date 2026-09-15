@@ -3,9 +3,11 @@
 //
 // RESUMEN:
 //   · Lee 6 entradas (pinzas, sujetador, cortador, manguera A/B, bandeja) con debounce.
-//   · Válvulas por impulso (cutter R/L, grippers, holder, encoder, reset):
+//   · Válvulas por impulso (cutter R/L, grippers, holder, encoder):
 //     comando on = un pulso; off = otro pulso. El GPIO no queda enclavado.
-//   · Blower: nivel ON durante durationSec (HMI), luego OFF automático.
+//   · Reset 0x1E: idle GPIO + lógica OFF sin pulsos de válvula; solo pulso Reset
+//     (pulsar válvulas tras reset reactivaría el KEEP neumático).
+//   · Blower: nivel ON durante durationSec del comando (HMI), luego OFF automático.
 //   · Compatible con protocolo sensor_tubecut (snapshot/alert/poll).
 //   · Status extendido para PLCA_Master (válvulas lógicas en JSON type=status).
 //
@@ -130,6 +132,9 @@ static void logSensorMask(uint8_t mask)
 // ============================================================
 // SECCION 03 — Válvulas (pulso ON / pulso OFF, sin enclavado)
 // ============================================================
+static void blowerStop();
+static void plcDoHardwareReset();
+
 static void valveWritePin(uint8_t pin, bool on)
 {
 #if VALVE_ACTIVE_HIGH
@@ -153,7 +158,13 @@ static void valveIdleAll()
 static void valvePulsePin(uint8_t pin)
 {
   valveWritePin(pin, true);
-  delay(VALVE_PULSE_MS);
+  const unsigned long t0 = millis();
+  while ((millis() - t0) < VALVE_PULSE_MS) {
+    // No bloquear el timeout del blower con delay() a secas.
+    if (blowerTimedActive && (millis() - blowerStartMs) >= blowerHoldMs)
+      blowerStop();
+    yield();
+  }
   valveWritePin(pin, false);
 }
 
@@ -239,8 +250,7 @@ static bool setPlcOutputByName(const String& outName, bool state)
   else if (n == "BLOWER")
     changed = blowerSet(state, BLOWER_DEFAULT_SEC * 1000UL);
   else if (n == "RESET") {
-    valvePulsePin(PIN_OUT_RESET);
-    stReset = false;
+    plcDoHardwareReset();
     changed = true;
   }
   else return false;
@@ -248,7 +258,7 @@ static bool setPlcOutputByName(const String& outName, bool state)
   return true;
 }
 
-// HOME / All Off: todas las válvulas OFF (holder incluido; lo activa rutina/manual).
+// HOME / All Off (sin reset hardware): pulsos OFF por cada válvula lógica ON.
 static void plcGoHomePulse()
 {
   valveSetPulse(stCutterR,  PIN_OUT_CUTTER_R, false);
@@ -258,6 +268,23 @@ static void plcGoHomePulse()
   blowerStop();
   valveSetPulse(stHolder,   PIN_OUT_HOLDER,   false);
   stReset = false;
+  logValveLogical();
+}
+
+// Reset PLC 0x1E: quitar señales activas, alinear lógica a OFF sin pulsos KEEP,
+// luego solo el pulso de Reset. Pulsar válvulas tras el reset reactivaría el KEEP.
+static void plcDoHardwareReset()
+{
+  blowerStop();
+  valveIdleAll();
+  stCutterR = false;
+  stCutterL = false;
+  stGrippers = false;
+  stHolder = false;
+  stEncoder = false;
+  stReset = false;
+  syncCuttersFlag();
+  valvePulsePin(PIN_OUT_RESET);
   logValveLogical();
 }
 
@@ -562,13 +589,26 @@ static unsigned long blowerParseDurationMs(const char* line)
     String n = String("\"") + key + "\":";
     int i = s.indexOf(n);
     if (i < 0) return -1.0f;
-    return s.substring(i + n.length()).toFloat();
+    String rest = s.substring(i + n.length());
+    rest.trim();
+    return rest.toFloat();
   };
   float sec = readNum("durationSec");
+  if (sec < 0) sec = readNum("blowerSec");
   if (sec < 0) sec = readNum("sec");
-  if (sec > 0) return (unsigned long)(sec * 1000.0f + 0.5f);
-  float ms = readNum("durationMs");
-  if (ms > 0) return (unsigned long)(ms + 0.5f);
+  if (sec > 0) {
+    unsigned long ms = (unsigned long)(sec * 1000.0f + 0.5f);
+    if (ms < BLOWER_MIN_MS) ms = BLOWER_MIN_MS;
+    if (ms > BLOWER_MAX_MS) ms = BLOWER_MAX_MS;
+    return ms;
+  }
+  float msVal = readNum("durationMs");
+  if (msVal > 0) {
+    unsigned long ms = (unsigned long)(msVal + 0.5f);
+    if (ms < BLOWER_MIN_MS) ms = BLOWER_MIN_MS;
+    if (ms > BLOWER_MAX_MS) ms = BLOWER_MAX_MS;
+    return ms;
+  }
   return BLOWER_DEFAULT_SEC * 1000UL;
 }
 
@@ -656,8 +696,7 @@ static bool plcTcpDoByte(uint8_t cmdByte, const char* line)
       ok = true;
       break;
     case PLC_CMD_RESET:
-      valvePulsePin(PIN_OUT_RESET);
-      plcGoHomePulse();
+      plcDoHardwareReset();
       ok = true;
       break;
     default:
