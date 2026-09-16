@@ -1,6 +1,7 @@
 """Debug Trails — modo de prueba separado del ciclo de producción.
 
 Stage 1: Servo Feeder + Encoder OM.
+Al Start: Holder + Encoder (PLC) ON; no se liberan hasta fin de lote/Stop.
 Secuencia por lado: Set0 → Feed → All OK (LengthOK) → Cut → Wait → Next.
 No introduce tolerancias ni criterios extra; la medición es la OM real (GetMeasured).
 """
@@ -14,6 +15,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal, Protocol
 
+from error_catalog import format_ui
+from motion import TX_LENGTH_NG_L, TX_LENGTH_NG_R
+
 SideSel = Literal["R", "L", "Both"]
 SideOne = Literal["R", "L"]
 
@@ -26,17 +30,25 @@ class TrailsHost(Protocol):
     def cycle_is_active(self) -> bool: ...
     def clear_motion_wait_flags(self) -> None: ...
     def wait_feed_length_ok_for(
-        self, sides: list[SideOne], timeout_s: float
+        self,
+        sides: list[SideOne],
+        timeout_s: float,
+        *,
+        abort_event: threading.Event | None = None,
     ) -> dict[SideOne, str]: ...
+    def feed_fault_for(self, side: SideOne) -> str: ...
     def cmd_motion_enc_set0_r(self) -> bool: ...
     def cmd_motion_enc_set0_l(self) -> bool: ...
     def cmd_motion_feed_r(self) -> bool: ...
     def cmd_motion_feed_l(self) -> bool: ...
+    def cmd_motion_stop(self) -> bool: ...
     def cmd_motion_enc_measure_r(self) -> bool: ...
     def cmd_motion_enc_measure_l(self) -> bool: ...
     def wait_encoder_mm(self, side: SideOne, timeout_s: float) -> float | None: ...
     def cmd_plc_cutter_r(self, on: bool) -> bool: ...
     def cmd_plc_cutter_l(self, on: bool) -> bool: ...
+    def cmd_plc_holder(self, on: bool) -> bool: ...
+    def cmd_plc_encoder(self, on: bool) -> bool: ...
     def feed_wait_timeout_s(self) -> float: ...
     def cutter_pulse_ms(self) -> int: ...
     def set_debug_trails_active(self, on: bool) -> None: ...
@@ -184,9 +196,23 @@ class DebugTrailsRunner:
                 return {"ok": True, "trails": self.snapshot()}
         self._stop.set()
         self._host.cycle_log("Debug Trails STOP solicitado")
+        # Cortar feed físico + liberar waits de LengthOK (no solo cutters).
+        try:
+            self._host.cmd_motion_stop()
+        except Exception:
+            pass
+        try:
+            self._host.clear_motion_wait_flags()
+        except Exception:
+            pass
         try:
             self._host.cmd_plc_cutter_r(False)
             self._host.cmd_plc_cutter_l(False)
+        except Exception:
+            pass
+        try:
+            self._host.cmd_plc_holder(False)
+            self._host.cmd_plc_encoder(False)
         except Exception:
             pass
         self._host.cycle_notify()
@@ -264,6 +290,11 @@ class DebugTrailsRunner:
             self._host.cmd_plc_cutter_l(False)
         except Exception:
             pass
+        try:
+            self._host.cmd_plc_holder(False)
+            self._host.cmd_plc_encoder(False)
+        except Exception:
+            pass
         self._host.cycle_log(
             f"Debug Trails Stage1 FIN {'OK' if ok else 'STOP'}"
             + (f" — {fault}" if fault else "")
@@ -297,6 +328,15 @@ class DebugTrailsRunner:
             if not self._host.cmd_motion_enc_measure_l():
                 return None
         return self._host.wait_encoder_mm(side, timeout_s=2.0)
+
+    def _ng_error_text(self, side: SideOne, mm: float | None) -> str:
+        # Dar tiempo a que llegue el detalle (láser E004/E005) tras LengthNG.
+        time.sleep(0.12)
+        fault = (self._host.feed_fault_for(side) or "").strip()
+        if fault:
+            return fault
+        # Sin detalle aún: LengthNG del lado (E002 L / E003 R).
+        return format_ui(TX_LENGTH_NG_R if side == "R" else TX_LENGTH_NG_L)
 
     def _run_one_side_feed(self, side: SideOne, test_num: int) -> TrailRecord:
         ts = _iso_now()
@@ -347,9 +387,11 @@ class DebugTrailsRunner:
 
         self._set_phase(f"wait_ok_{side}", test_num)
         timeout = self._host.feed_wait_timeout_s()
-        results = self._host.wait_feed_length_ok_for([side], timeout)
+        results = self._host.wait_feed_length_ok_for(
+            [side], timeout, abort_event=self._stop
+        )
         side_res = results.get(side, "timeout")
-        if self._should_abort():
+        if self._should_abort() or side_res == "aborted":
             mm = self._measure_side(side)
             return TrailRecord(
                 test_num=test_num,
@@ -365,7 +407,7 @@ class DebugTrailsRunner:
         mm = self._measure_side(side)
         if side_res != "ok":
             err = (
-                "LengthNG (All OK no recibido)"
+                self._ng_error_text(side, mm)
                 if side_res == "ng"
                 else "Timeout esperando LengthOK"
             )
@@ -493,14 +535,16 @@ class DebugTrailsRunner:
 
         self._set_phase("wait_ok_both", test_num)
         timeout = self._host.feed_wait_timeout_s()
-        results = self._host.wait_feed_length_ok_for(armed, timeout)
+        results = self._host.wait_feed_length_ok_for(
+            armed, timeout, abort_event=self._stop
+        )
         aborted = self._should_abort()
 
         for s in armed:
             self._set_phase(f"measure_{s}", test_num)
             mm = self._measure_side(s)
             side_res = results.get(s, "timeout")
-            if aborted:
+            if aborted or side_res == "aborted":
                 records.append(
                     TrailRecord(
                         test_num=test_num,
@@ -515,7 +559,7 @@ class DebugTrailsRunner:
                 continue
             if side_res != "ok":
                 err = (
-                    "LengthNG (All OK no recibido)"
+                    self._ng_error_text(s, mm)
                     if side_res == "ng"
                     else "Timeout esperando LengthOK"
                 )
@@ -559,8 +603,22 @@ class DebugTrailsRunner:
                 )
         return records
 
+    def _arm_holder_encoder(self) -> bool:
+        """Holder + Encoder ON al Start; se liberan solo al fin del lote/Stop."""
+        ok_h = self._host.cmd_plc_holder(True)
+        ok_e = self._host.cmd_plc_encoder(True)
+        self._host.cycle_log(
+            f"Debug Trails: Holder={'ON' if ok_h else 'FAIL'} "
+            f"Encoder={'ON' if ok_e else 'FAIL'} (hasta fin de lote)"
+        )
+        return ok_h and ok_e
+
     def _run_stage1(self, side: SideSel, num_tests: int, wait_s: float) -> None:
         try:
+            self._set_phase("arm_holder_encoder", 0)
+            if not self._arm_holder_encoder():
+                self._finish(False, "Holder/Encoder ON falló")
+                return
             for i in range(1, num_tests + 1):
                 if self._should_abort():
                     self._finish(False, "Stop")

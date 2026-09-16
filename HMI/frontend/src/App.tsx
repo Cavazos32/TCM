@@ -223,14 +223,17 @@ function AppMain() {
           />
         )}
 
-        {debugMode && currentTab === 'debug-trails' && (
-          <DebugTrailsTab
-            trails={view.debugTrails}
-            onStart={hmi.startDebugTrails}
-            onStop={hmi.stopDebugTrails}
-            onClear={hmi.clearDebugTrails}
-            onExport={hmi.exportDebugTrails}
-          />
+        {/* Mantener montado en debug: side/numTests/wait no deben resetear al cambiar de pestaña */}
+        {debugMode && (
+          <div className={currentTab === 'debug-trails' ? undefined : 'hidden'} aria-hidden={currentTab !== 'debug-trails'}>
+            <DebugTrailsTab
+              trails={view.debugTrails}
+              onStart={hmi.startDebugTrails}
+              onStop={hmi.stopDebugTrails}
+              onClear={hmi.clearDebugTrails}
+              onExport={hmi.exportDebugTrails}
+            />
+          </div>
         )}
       </main>
 

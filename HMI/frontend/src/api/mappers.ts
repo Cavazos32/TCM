@@ -238,7 +238,7 @@ export function mapAndonConnection(snap: BackendSnapshot): ConnectionState {
   const link = snap.andonLink;
   return {
     connected: !!link?.connected,
-    ip: link?.host ?? '10.10.32.60',
+    ip: link?.host ?? '10.10.32.61',
     port: link?.port ?? 8769,
   };
 }

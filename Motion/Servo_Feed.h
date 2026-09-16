@@ -23,8 +23,8 @@ float feedOmGetOffsetMm();
 bool feedOmIsSettled();
 float feedOmOfficialFromRaw(float mmAbs);
 
-// Laser en ventana Feed VALIDATE*: ON = material OK; OFF = E004/E005.
-// ioLaser*Active = sensor OFF (sin material). Fuera de ventana no genera EXXX.
+// Laser en ventana Feed VALIDATE*: Active/ON = material OK; OFF = E004/E005.
+// ioLaser*Active = sensor ON (material presente). Fuera de ventana no genera EXXX.
 bool feedLaserMaterialPresent(bool sideR);
 
 // —— CAN servos ——

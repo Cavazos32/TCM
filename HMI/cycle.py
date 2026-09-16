@@ -35,19 +35,19 @@ CONFIG_PATH = HMI_ROOT / "config" / "cycle_config.json"
 # kind=parallel SOLO en: arranque prefetch (background) y join/handoff.
 # El resto es secuencia principal (action|wait) — no implica “todo a la vez”.
 FLOW_STEPS: list[dict[str, Any]] = [
-    {"id": 1, "key": "holder_on", "label": "Holder ON (solo 1ª pieza)", "kind": "action"},
+    {"id": 1, "key": "holder_on", "label": "Holder+Encoder ON (solo 1ª pieza)", "kind": "action"},
     {"id": 2, "key": "wait_holder_on", "label": "Delay Holder ON", "kind": "wait", "delayKey": "holderOnMs"},
     {"id": 3, "key": "feed", "label": "Alimentación (feed / handoff)", "kind": "action"},
     {"id": 4, "key": "offset", "label": "Offset alimentación (Motion, paso lógico)", "kind": "action"},
     {"id": 5, "key": "grippers_on", "label": "Pinzas cierran", "kind": "action"},
     {"id": 6, "key": "wait_grippers_on", "label": "Delay tras cerrar pinzas", "kind": "wait", "delayKey": "grippersOnMs"},
     {"id": 7, "key": "enc_set0", "label": "Encoder Set0 (OM)", "kind": "action"},
-    {"id": 8, "key": "holder_off", "label": "Holder abre", "kind": "action"},
-    {"id": 9, "key": "wait_holder_open", "label": "Delay tras abrir holder", "kind": "wait", "delayKey": "holderOpenMs"},
+    {"id": 8, "key": "holder_off", "label": "Holder+Encoder se mantienen ON", "kind": "action"},
+    {"id": 9, "key": "wait_holder_open", "label": "Delay (holder se mantiene)", "kind": "wait", "delayKey": "holderOpenMs"},
     {"id": 10, "key": "lineal_fwd", "label": "Lineal FWD → posición de corte", "kind": "action"},
     {"id": 11, "key": "wait_linear_done", "label": "Delay antes del corte", "kind": "wait", "delayKey": "linearDoneMs"},
-    {"id": 12, "key": "holder_precut", "label": "Holder cierra (pre-corte)", "kind": "action"},
-    {"id": 13, "key": "wait_holder_precut", "label": "Delay tras cerrar holder", "kind": "wait", "delayKey": "holderOnMs"},
+    {"id": 12, "key": "holder_precut", "label": "Confirmar Holder+Encoder ON (pre-corte)", "kind": "action"},
+    {"id": 13, "key": "wait_holder_precut", "label": "Delay tras confirmar holder", "kind": "wait", "delayKey": "holderOnMs"},
     {"id": 14, "key": "cutter_on", "label": "Cortador ON (+ All OK PreFeeder)", "kind": "action"},
     {"id": 15, "key": "wait_cutter_pulse", "label": "Delay pulso de corte", "kind": "wait", "delayKey": "cutterPulseMs"},
     {"id": 16, "key": "cutter_off", "label": "Cortador OFF", "kind": "action"},
@@ -199,6 +199,7 @@ class CycleHost(Protocol):
     def cmd_motion_enc_set0_r(self) -> bool: ...
     def cmd_motion_enc_set0_l(self) -> bool: ...
     def cmd_plc_holder(self, on: bool) -> bool: ...
+    def cmd_plc_encoder(self, on: bool) -> bool: ...
     def cmd_plc_gripper(self, on: bool) -> bool: ...
     def cmd_plc_cutters(self, on: bool) -> bool: ...
     def cmd_plc_all_safe(self) -> bool: ...
@@ -667,12 +668,18 @@ class CycleRunner:
     def _effective_mm(self, length_mm: float) -> float:
         cfg = self.get_config()
         return abs(float(length_mm)) + float(cfg.cut_offset_mm)
-    def _prepare_before_cut(self) -> bool:
-        # Igual que CycleFlowCopy prepareBeforeCut: holder ON sin delay extra.
-        # El delay holderOnMs es el paso wait_holder_on (solo 1ª pieza).
-        self._host.cycle_log("prepareBeforeCut: PLC seguro + HOME")
-        self._host.cmd_plc_all_safe()
+    def _arm_holder_encoder(self) -> None:
+        """Holder + Encoder (bandeja) ON desde Start hasta fin de pieza/lote."""
         self._host.cmd_plc_holder(True)
+        self._host.cmd_plc_encoder(True)
+
+    def _prepare_before_cut(self) -> bool:
+        # Start: all_safe (cutters/grippers) y rearmar Holder+Encoder ON.
+        # Permanecen ON el lote; liberación solo en _finish (all_safe).
+        # El delay holderOnMs es el paso wait_holder_on (solo 1ª pieza).
+        self._host.cycle_log("prepareBeforeCut: PLC seguro + Holder/Encoder ON + HOME")
+        self._host.cmd_plc_all_safe()
+        self._arm_holder_encoder()
         self._host.clear_motion_wait_flags()
         if not self._host.cmd_motion_move_zero(self._lot_rpm):
             self._raise_fault("home_cmd")
@@ -730,11 +737,11 @@ class CycleRunner:
                 if self._gate("listo" if rep == 1 else "rep-start"):
                     break
                 self._set_progress(rep, 0, qty)
-                # 1–2 Holder ON + delay (solo 1ª)
+                # 1–2 Holder+Encoder ON + delay (solo 1ª; se mantienen el lote)
                 if rep == 1:
                     if self._enter(rep, qty, "holder_on"):
                         break
-                    self._host.cmd_plc_holder(True)
+                    self._arm_holder_encoder()
                     if self._after_step("holder_on"):
                         break
                     if self._do_wait(rep, qty, "wait_holder_on", "holder_on_ms"):
@@ -772,10 +779,11 @@ class CycleRunner:
                     self._host.cycle_log("Trial: enc_set0 omitido")
                 if self._after_step("enc_set0"):
                     break
-                # 8–11 Holder open + delay + lineal + delay
+                # 8–11 Holder se mantiene ON (no liberar mid-pieza) + lineal + delay
                 if self._enter(rep, qty, "holder_off"):
                     break
-                self._host.cmd_plc_holder(False)
+                self._arm_holder_encoder()
+                self._host.cycle_log("Holder/Encoder: se mantienen ON (sin abrir mid-pieza)")
                 if self._after_step("holder_off"):
                     break
                 if self._do_wait(rep, qty, "wait_holder_open", "holder_open_ms"):
@@ -792,10 +800,10 @@ class CycleRunner:
                     break
                 if self._do_wait(rep, qty, "wait_linear_done", "linear_done_ms"):
                     break
-                # 12–13 Holder pre-corte + delay (mismo holderOnMs que firmware)
+                # 12–13 Confirmar Holder+Encoder ON pre-corte + delay
                 if self._enter(rep, qty, "holder_precut"):
                     break
-                self._host.cmd_plc_holder(True)
+                self._arm_holder_encoder()
                 if self._after_step("holder_precut"):
                     break
                 if self._do_wait(rep, qty, "wait_holder_precut", "holder_on_ms"):

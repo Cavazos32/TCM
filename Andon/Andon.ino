@@ -8,11 +8,14 @@
 static WiFiServer tcpServer(ANDON_TCP_PORT);
 static WiFiClient tcpClient;
 static char tcpRxLine[384];
-static size_t tcpRxLen = 0;
+static uint16_t tcpRxLen = 0;
 static bool tcpServicesUp = false;
 static bool tcpWasConnected = false;
-static bool staWasConnected = false;
-static unsigned long wifiConnectStartedMs = 0;
+
+// WiFi — reconexión no bloqueante (mismo patrón que Motion).
+static bool wifiStaWasConnected = false;
+static uint32_t wifiConnectStartedMs = 0;
+static uint32_t wifiLastKickMs = 0;
 
 static uint8_t lastMachineByte = ANDON_RX_IDLE;
 static bool pressureFaultLatched = false;
@@ -447,77 +450,112 @@ static bool tcpAcceptIncoming()
 static void tcpEnsureServices()
 {
   if (tcpServicesUp || WiFi.status() != WL_CONNECTED) return;
-  IPAddress ip = WiFi.localIP();
+  const IPAddress ip = WiFi.localIP();
   if (ip == IPAddress(0, 0, 0, 0)) return;
   tcpServer.end();
   delay(20);
   tcpServer.begin();
   tcpServer.setNoDelay(true);
   tcpServicesUp = true;
-#if ANDON_DEBUG
-  Serial.printf("[TCP] Servicios On %s:%u\n", ip.toString().c_str(), ANDON_TCP_PORT);
-#endif
+  Serial.printf("[TCP] Servicios On %s:%u\n",
+                ip.toString().c_str(), (unsigned)ANDON_TCP_PORT);
 }
 
 static void tcpStopServices()
 {
-  if (tcpClient.connected()) tcpClient.stop();
+  // Invalidar siempre el socket (también zombies con connected()==false).
+  if (tcpClient) tcpClient.stop();
   tcpWasConnected = false;
+  tcpRxLen = 0;
   if (!tcpServicesUp) return;
   tcpServer.end();
   tcpServicesUp = false;
+  Serial.println("[TCP] Off");
 }
 
-static void wifiLogStatus()
+// =============================================================================
+// WIFI — reconexión no bloqueante (millis / estados; sin delay en loop)
+// Patrón: Motion wifiKickConnect / serviceWifi
+// =============================================================================
+static void wifiKickConnect(bool isRetry)
 {
-  wl_status_t s = WiFi.status();
-  bool on = (s == WL_CONNECTED);
-  if (on == staWasConnected) return;
-  staWasConnected = on;
-  if (on) {
-    wifiConnectStartedMs = 0;
-#if ANDON_DEBUG
-    Serial.printf("[WiFi] On %s\n", WiFi.localIP().toString().c_str());
-#endif
-    tcpEnsureServices();
-  } else {
-    tcpStopServices();
-#if ANDON_DEBUG
-    Serial.println("[WiFi] Off");
-#endif
+  if (isRetry) {
+    // Sin delay: el loop debe seguir atendiendo torreta / presión / TCP teardown.
+    WiFi.disconnect(false);
   }
-}
 
-static bool wifiNeedsRetry()
-{
-  wl_status_t s = WiFi.status();
-  if (s == WL_CONNECTED) return false;
-  if (s == WL_NO_SSID_AVAIL || s == WL_CONNECT_FAILED || s == WL_CONNECTION_LOST) return true;
-  return wifiConnectStartedMs && (millis() - wifiConnectStartedMs > 15000);
-}
-
-static void wifiRetry()
-{
-  tcpStopServices();
-  wifiConnectStartedMs = millis();
-  WiFi.disconnect(true);
-  delay(500);
+  WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
+  WiFi.setHostname("andon");
   WiFi.setSleep(false);
-  WiFi.config(STA_IP, STA_GW, STA_MASK, STA_GW);
+
+  if (!WiFi.config(STA_IP, STA_GW, STA_MASK, STA_DNS)) {
+    Serial.println("WiFi.config() fallo (IP estatica)");
+  }
+
+  const uint32_t now = millis();
+  wifiConnectStartedMs = now;
+  wifiLastKickMs = now;
   WiFi.begin(WIFI_SSID, WIFI_PASS);
+
+  if (isRetry)
+    Serial.println("[WiFi] Reintentando STA...");
+  else
+    Serial.printf("Conectando a WiFi '%s' -> %s...\n",
+                  WIFI_SSID, STA_IP.toString().c_str());
+}
+
+static void serviceWifi()
+{
+  const wl_status_t st = WiFi.status();
+
+  if (st == WL_CONNECTED) {
+    if (!wifiStaWasConnected) {
+      wifiStaWasConnected = true;
+      wifiConnectStartedMs = 0;
+      const IPAddress ip = WiFi.localIP();
+      Serial.printf("WiFi OK  IP=%s  RSSI=%d dBm\n",
+                    ip.toString().c_str(), WiFi.RSSI());
+      if (ip != STA_IP) {
+        Serial.printf("[WiFi] AVISO: IP real %s != fija %s\n",
+                      ip.toString().c_str(), STA_IP.toString().c_str());
+      }
+    }
+    return;
+  }
+
+  // STA caído: invalidar TCP de inmediato; luego rearmar WiFi sin bloquear.
+  if (wifiStaWasConnected) {
+    wifiStaWasConnected = false;
+    tcpStopServices();
+    wifiConnectStartedMs = 0;
+    wifiLastKickMs = 0;  // permitir reintento inmediato
+    Serial.println("WiFi perdido — reconectando...");
+  }
+
+  const uint32_t now = millis();
+  if (wifiLastKickMs != 0 && (now - wifiLastKickMs) < WIFI_RETRY_INTERVAL_MS)
+    return;
+
+  const bool attemptExpired =
+      wifiConnectStartedMs != 0 &&
+      (now - wifiConnectStartedMs) >= WIFI_CONNECT_TIMEOUT_MS;
+  const bool hardFail =
+      (st == WL_NO_SSID_AVAIL || st == WL_CONNECT_FAILED || st == WL_CONNECTION_LOST);
+  const bool idle =
+      (wifiConnectStartedMs == 0);
+
+  if (idle || attemptExpired || hardFail)
+    wifiKickConnect(/*isRetry=*/true);
 }
 
 static void serviceTcp()
 {
-  wifiLogStatus();
-  if (wifiNeedsRetry()) {
-    static unsigned long lastRetryMs = 0;
-    if (millis() - lastRetryMs >= 8000) {
-      lastRetryMs = millis();
-      wifiRetry();
-    }
+  if (WiFi.status() != WL_CONNECTED) {
+    tcpStopServices();
+    return;
   }
+
   tcpEnsureServices();
 
   if (tcpAcceptIncoming())
@@ -525,10 +563,8 @@ static void serviceTcp()
 
   if (!tcpLinkOk()) {
     if (tcpWasConnected) {
-      tcpWasConnected = false;
-#if ANDON_DEBUG
       Serial.println("[TCP] Off");
-#endif
+      tcpWasConnected = false;
     }
     return;
   }
@@ -540,6 +576,8 @@ static void serviceTcp()
 void setup()
 {
   Serial.begin(115200);
+  delay(500);
+
   pinMode(PIN_RED_LED, OUTPUT);
   pinMode(PIN_YELLOW_LED, OUTPUT);
   pinMode(PIN_GREEN_LED, OUTPUT);
@@ -555,24 +593,18 @@ void setup()
   andonTowerAllOff();
   andonApplyMachineByte(ANDON_RX_INIT);
 
-  wifiConnectStartedMs = millis();
-  WiFi.persistent(false);
-  WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);
-  WiFi.setAutoReconnect(true);
-  delay(100);
-  WiFi.config(STA_IP, STA_GW, STA_MASK, STA_GW);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  unsigned long wifiStart = millis();
-  while (WiFi.status() != WL_CONNECTED && (millis() - wifiStart < WIFI_CONNECT_TIMEOUT_MS)) {
-    delay(250);
-  }
-  wifiLogStatus();
+  wifiKickConnect(/*isRetry=*/false);
+  if (WiFi.status() != WL_CONNECTED)
+    Serial.println("WiFi pendiente — reconexion no bloqueante en loop...");
   tcpEnsureServices();
+
+  Serial.printf("Andon TCP en %s:%u\n",
+                STA_IP.toString().c_str(), (unsigned)ANDON_TCP_PORT);
 }
 
 void loop()
 {
+  serviceWifi();
   serviceTcp();
   andonServiceFinishSequence();
   andonServicePressure();

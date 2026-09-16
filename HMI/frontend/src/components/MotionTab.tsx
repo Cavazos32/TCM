@@ -126,24 +126,25 @@ export const MotionTab: React.FC<MotionTabProps> = ({
     );
   };
 
+  // laserR/L true = sensor ON = material presente (OK); false = sin material.
   const laserChip = (
     id: string,
     label: string,
-    active: boolean,
+    materialPresent: boolean,
     opcode: string
   ) => (
     <div
       key={id}
       className={`flex items-center justify-between gap-2 rounded-lg border px-2.5 py-2 ${
-        active
-          ? 'border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40'
-          : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60'
+        materialPresent
+          ? 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60'
+          : 'border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40'
       }`}
     >
       <div className="flex items-center gap-2 min-w-0">
         <span
           className={`h-2 w-2 rounded-full shrink-0 ${
-            active ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'
+            materialPresent ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'
           }`}
         />
         <span className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">
@@ -153,12 +154,12 @@ export const MotionTab: React.FC<MotionTabProps> = ({
       <div className="flex items-center gap-1.5 shrink-0">
         <span
           className={`text-[10px] font-bold font-mono ${
-            active
-              ? 'text-amber-800 dark:text-amber-200'
-              : 'text-emerald-700 dark:text-emerald-300'
+            materialPresent
+              ? 'text-emerald-700 dark:text-emerald-300'
+              : 'text-amber-800 dark:text-amber-200'
           }`}
         >
-          {active ? t('sensor_active') : t('sensor_ok')}
+          {materialPresent ? t('sensor_active') : t('sensor_inactive')}
         </span>
         <span className="rounded bg-slate-100 dark:bg-slate-700 px-1 py-0.5 font-mono text-[10px] text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-600">
           {opcode}

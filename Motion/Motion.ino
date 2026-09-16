@@ -1668,9 +1668,10 @@ float feedOmGetOffsetMmSide(bool sideR)
 
 bool feedLaserMaterialPresent(bool sideR)
 {
-  // GPIO LOW (ioLaser*Active) = sensor OFF = sin material.
-  // GPIO HIGH = sensor ON = material presente (OK en ventana de validación).
-  return sideR ? !ioLaserRActive : !ioLaserLActive;
+  // Keyence NPN/OC + pull-up: GPIO LOW = sensor ON = material presente.
+  // ioLaser*Active (motionSensorActiveLaser) = true → material OK en ventana.
+  // GPIO HIGH / Active=false = sin material → E004/E005 en FSP_VALIDATE*.
+  return sideR ? ioLaserRActive : ioLaserLActive;
 }
 
 bool feedOmReadLiveMm(float* mmSignedOut)

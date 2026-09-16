@@ -12,7 +12,7 @@ from typing import Callable, Optional
 
 from tcp_link import ModuleTcpClient
 
-DEFAULT_HOST = os.environ.get("ANDON_HOST", "10.10.32.60")
+DEFAULT_HOST = os.environ.get("ANDON_HOST", "10.10.32.61")
 DEFAULT_PORT = int(os.environ.get("ANDON_PORT", "8769"))
 
 

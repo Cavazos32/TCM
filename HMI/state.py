@@ -40,6 +40,7 @@ from motion import (
     TX_ERROR,
     TX_EXHAUST,
     TX_IDLE,
+    TX_INIT,
     TX_LASER_L,
     TX_LASER_R,
     TX_LENGTH_NG,
@@ -107,6 +108,9 @@ MODELS_PATH = HMI_ROOT / "config" / "models.json"
 MAX_LOG_LINES = 400
 # No latchear E065–E067 en microcortes WiFi; solo si el enlace sigue caído.
 LINK_DOWN_CONFIRM_SEC = 8.0
+# Arranque ASDA: solo tras Motion listo (TCP + Init/Idle), luego Servo ON → Home.
+MOTION_BOOT_SETTLE_SEC = 2.5
+MOTION_BOOT_READY_STATES = frozenset({TX_INIT, TX_IDLE})
 
 PLC_ERROR_BYTES = frozenset(
     {TX_CUTTER_ERR, TX_GRIPPER_ERR, TX_HOLDER_ERR, TX_ENCODER_ERR}
@@ -299,6 +303,9 @@ class HmiState:
         self._feed_armed_r = False
         self._feed_gen_l = 0
         self._feed_gen_r = 0
+        # Motivo del último LengthNG por lado (láser E004/E005, ventana, etc.)
+        self._feed_fault_l = ""
+        self._feed_fault_r = ""
         self._pf_materialist = False
         # Debug Trails: OM oficial por lado + eventos GetMeasured
         self._enc_mm_r: float | None = None
@@ -313,6 +320,12 @@ class HmiState:
         self._debug_trails = DebugTrailsRunner(self)
         # Histéresis enlace: gen+1 cancela timer pendiente al recuperar.
         self._link_down_gen = {"motion": 0, "plc": 0, "prefeeder": 0}
+        # Prep ASDA solo tras Motion listo (estado Init/Idle), una vez por arranque HMI.
+        self._motion_boot_prep_done = False
+        self._motion_boot_prep_gen = 0
+        self._motion_boot_awaiting_on_ack = False
+        self._motion_boot_armed = False
+        self._motion_boot_worker_launched = False
 
         self._load_models()
         self._started = False
@@ -556,6 +569,8 @@ class HmiState:
         self._feed_ng_r.clear()
         self._feed_armed_l = False
         self._feed_armed_r = False
+        self._feed_fault_l = ""
+        self._feed_fault_r = ""
 
     def clear_motion_reached_flag(self) -> None:
         """Solo Idle/Reached — conserva LengthOK/NG del prefetch en paralelo."""
@@ -576,15 +591,21 @@ class HmiState:
         return self._feed_ok_l.is_set() and self._feed_ok_r.is_set()
 
     def wait_feed_length_ok_for(
-        self, sides: list[str], timeout_s: float
+        self,
+        sides: list[str],
+        timeout_s: float,
+        *,
+        abort_event: threading.Event | None = None,
     ) -> dict[str, str]:
-        """Espera LengthOK/NG solo en los lados pedidos. Valores: ok|ng|timeout."""
+        """Espera LengthOK/NG solo en los lados pedidos. Valores: ok|ng|timeout|aborted."""
         need = {s for s in sides if s in ("R", "L")}
         if not need:
             return {}
         deadline = time.monotonic() + timeout_s
         done: dict[str, str] = {}
         while time.monotonic() < deadline and len(done) < len(need):
+            if abort_event is not None and abort_event.is_set():
+                break
             if "L" in need and "L" not in done:
                 if self._feed_ng_l.is_set():
                     done["L"] = "ng"
@@ -598,10 +619,19 @@ class HmiState:
             if len(done) >= len(need):
                 break
             time.sleep(0.05)
+        aborted = abort_event is not None and abort_event.is_set()
         for s in need:
             if s not in done:
-                done[s] = "timeout"
+                done[s] = "aborted" if aborted else "timeout"
         return done
+
+    def feed_fault_for(self, side: str) -> str:
+        """Motivo LengthNG del último Feed armado (vacío si no hubo detalle)."""
+        if side == "R":
+            return self._feed_fault_r
+        if side == "L":
+            return self._feed_fault_l
+        return ""
 
     def cmd_motion_move_mm(self, mm: float, rpm: float) -> bool:
         mm = abs(float(mm))
@@ -627,6 +657,7 @@ class HmiState:
     def cmd_motion_feed_l(self) -> bool:
         self._feed_ok_l.clear()
         self._feed_ng_l.clear()
+        self._feed_fault_l = ""
         self._feed_gen_l += 1
         self._feed_armed_l = True
         return self._client.cmd_feed_l()
@@ -634,6 +665,7 @@ class HmiState:
     def cmd_motion_feed_r(self) -> bool:
         self._feed_ok_r.clear()
         self._feed_ng_r.clear()
+        self._feed_fault_r = ""
         self._feed_gen_r += 1
         self._feed_armed_r = True
         return self._client.cmd_feed_r()
@@ -663,6 +695,9 @@ class HmiState:
 
     def cmd_plc_holder(self, on: bool) -> bool:
         return self._plc_client.cmd_holder(on)
+
+    def cmd_plc_encoder(self, on: bool) -> bool:
+        return self._plc_client.cmd_encoder(on)
 
     def cmd_plc_gripper(self, on: bool) -> bool:
         return self._plc_client.cmd_gripper(on)
@@ -1439,6 +1474,12 @@ class HmiState:
                     "text": f"Enlace Motion — {DEFAULT_HOST}:{DEFAULT_PORT}",
                     "kind": "ok",
                 }
+                if not self._motion_boot_prep_done:
+                    # Armar; la rutina servo espera Init/Idle de Motion (no solo socket).
+                    self._motion_boot_prep_gen += 1
+                    self._motion_boot_armed = True
+                    self._motion_boot_worker_launched = False
+                    self._motion_boot_awaiting_on_ack = False
             else:
                 self._last_state_byte = None
                 self._stopped_pending_resume = False
@@ -1448,6 +1489,10 @@ class HmiState:
                 self._motion["laserR"] = False
                 self._motion["laserL"] = False
                 self._motion["safetyExhaust"] = False
+                self._motion_boot_prep_gen += 1
+                self._motion_boot_awaiting_on_ack = False
+                self._motion_boot_armed = False
+                self._motion_boot_worker_launched = False
                 self._banner = {
                     "text": f"Reconectando Motion ({DEFAULT_HOST}:{DEFAULT_PORT})…",
                     "kind": "warn",
@@ -1462,6 +1507,77 @@ class HmiState:
             threading.Thread(
                 target=self.refresh_feed_offset, daemon=True
             ).start()
+
+    def _motion_boot_try_launch(self) -> None:
+        """Si Motion ya reportó Init/Idle y la prep está armada, lanza Servo ON/Home."""
+        boot_gen: int | None = None
+        with self._lock:
+            if (
+                self._motion_boot_prep_done
+                or not self._motion_boot_armed
+                or self._motion_boot_worker_launched
+                or not self._motion["connected"]
+            ):
+                return
+            if self._last_state_byte not in MOTION_BOOT_READY_STATES:
+                return
+            self._motion_boot_worker_launched = True
+            boot_gen = self._motion_boot_prep_gen
+        if boot_gen is not None:
+            threading.Thread(
+                target=self._motion_boot_prep_worker,
+                args=(boot_gen,),
+                daemon=True,
+                name="motion-boot-prep",
+            ).start()
+
+    def _motion_boot_prep_worker(self, gen: int) -> None:
+        """Motion ya listo → settle → 0x04 Servo ON; Home va al ack OK."""
+        time.sleep(MOTION_BOOT_SETTLE_SEC)
+        with self._lock:
+            if gen != self._motion_boot_prep_gen or self._motion_boot_prep_done:
+                return
+            if not self._motion["connected"]:
+                return
+            # No mover ASDA si ya hay ciclo/trails (p.ej. reconnect tardío).
+            if self._cycle.is_active() or self._debug_trails_active:
+                self._motion_boot_prep_done = True
+                self._motion_boot_armed = False
+                return
+            _append_log(self._motion_log, "Arranque: Servo ON (0x004)…")
+            self._set_motion_status("Arranque: Servo ON (0x004)…", "info")
+            self._motion_boot_awaiting_on_ack = True
+        self._notify()
+        ok = self._client.cmd_on()
+        if ok:
+            return
+        with self._lock:
+            if gen != self._motion_boot_prep_gen:
+                return
+            self._motion_boot_awaiting_on_ack = False
+            self._motion_boot_worker_launched = False
+            _append_log(self._motion_log, "Arranque: Servo ON no enviado")
+            self._set_motion_status("Arranque: Servo ON no enviado", "error")
+        self._notify()
+
+    def _motion_boot_send_home(self) -> None:
+        """Home (0x01) tras ack OK de Servo ON en prep de arranque."""
+        if not self._client.connected:
+            return
+        with self._lock:
+            self._move_target_mm = 0.0
+            self._move_start_mm = self._last_position_mm
+            self._progress = 0
+            self._motion_boot_armed = False
+            _append_log(self._motion_log, "Arranque: Home (0x001)")
+            self._set_motion_status("Arranque: Home (0x001)", "info")
+        self._notify()
+        ok = self._client.cmd_home("F")
+        if not ok:
+            with self._lock:
+                _append_log(self._motion_log, "Arranque: Home no enviado")
+                self._set_motion_status("Arranque: Home no enviado", "error")
+            self._notify()
 
     def _on_plc_connection(self, connected: bool) -> None:
         with self._lock:
@@ -1642,6 +1758,14 @@ class HmiState:
                 self._progress = 5
         self._set_banner(text, kind)
         self._set_motion_status(text, kind)
+        # Arranque ASDA solo cuando Motion ya reportó Init/Idle (no al abrir socket).
+        if byte_code in MOTION_BOOT_READY_STATES:
+            # Salir del lock del handler vía hilo: try_launch toma el lock de nuevo.
+            threading.Thread(
+                target=self._motion_boot_try_launch,
+                daemon=True,
+                name="motion-boot-try",
+            ).start()
 
     def _handle_motion_message(self, msg: dict) -> bool:
         changed = False
@@ -1714,8 +1838,10 @@ class HmiState:
                     if not self._feed_armed_l:
                         return True  # stale / cross-op
                     self._feed_armed_l = False
+                    self._feed_fault_l = ""
                     self._feed_ok_l.set()
-                    if not self._cycle.is_active() and not self._debug_trails_active:
+                    if not self._cycle.is_active():
+                        # Incluye Debug Trails: no dejar status OK viejo engañando.
                         text = "Feed OK L — longitud en tolerancia (0x014)"
                         self._set_banner(text, "ok")
                         self._set_motion_status(text, "ok")
@@ -1724,16 +1850,23 @@ class HmiState:
                     if not self._feed_armed_l:
                         return True
                     self._feed_armed_l = False
+                    if not self._feed_fault_l:
+                        self._feed_fault_l = format_ui(TX_LENGTH_NG_L)
                     self._feed_ng_l.set()
-                    if not self._debug_trails_active:
+                    if self._debug_trails_active:
+                        text = self._feed_fault_l
+                        self._set_banner(text, "error")
+                        self._set_motion_status(text, "error")
+                    else:
                         self._apply_detail_error(TX_LENGTH_NG_L, source="motion")
                     return True
                 if byte_code == TX_LENGTH_OK_R:
                     if not self._feed_armed_r:
                         return True
                     self._feed_armed_r = False
+                    self._feed_fault_r = ""
                     self._feed_ok_r.set()
-                    if not self._cycle.is_active() and not self._debug_trails_active:
+                    if not self._cycle.is_active():
                         text = "Feed OK R — longitud en tolerancia (0x04A)"
                         self._set_banner(text, "ok")
                         self._set_motion_status(text, "ok")
@@ -1742,20 +1875,36 @@ class HmiState:
                     if not self._feed_armed_r:
                         return True
                     self._feed_armed_r = False
+                    if not self._feed_fault_r:
+                        self._feed_fault_r = format_ui(TX_LENGTH_NG_R)
                     self._feed_ng_r.set()
-                    if not self._debug_trails_active:
+                    if self._debug_trails_active:
+                        text = self._feed_fault_r
+                        self._set_banner(text, "error")
+                        self._set_motion_status(text, "error")
+                    else:
                         self._apply_detail_error(TX_LENGTH_NG_R, source="motion")
                     return True
                 if byte_code in MOTION_DETAIL_ERROR_BYTES:
+                    # laserR/L = material presente; E004/E005 = sin material → False.
                     if byte_code == TX_LASER_R:
-                        self._motion["laserR"] = True
+                        self._motion["laserR"] = False
                     elif byte_code == TX_LASER_L:
-                        self._motion["laserL"] = True
+                        self._motion["laserL"] = False
                     elif byte_code == TX_EXHAUST:
                         self._motion["safetyExhaust"] = True
                     if self._debug_trails_active and byte_code != TX_EXHAUST:
-                        # Trails registra el fallo; no latchea política C1/C2/C3 de producción.
+                        # Trails: guardar detalle (láser…) sin política C1/C2/C3.
                         # Exhaust sí se propaga (seguridad).
+                        ui = format_ui(byte_code)
+                        if byte_code == TX_LASER_L:
+                            self._feed_fault_l = ui
+                            self._set_motion_status(ui, "error")
+                        elif byte_code == TX_LASER_R:
+                            self._feed_fault_r = ui
+                            self._set_motion_status(ui, "error")
+                        else:
+                            self._set_motion_status(ui, "error")
                         return True
                     self._apply_detail_error(byte_code, source="motion")
                     return True
@@ -1795,6 +1944,13 @@ class HmiState:
                     ):
                         self._apply_detail_error(0x61, source="motion")
                         return True
+                    if (
+                        msg.get("actuator") == "asda"
+                        and byte_code == CMD_ON
+                        and self._motion_boot_awaiting_on_ack
+                    ):
+                        # Reintento en el próximo connect si el ON de arranque falló.
+                        self._motion_boot_awaiting_on_ack = False
                     text = detail or "Comando rechazado"
                     _append_log(self._main_log, text)
                     _append_log(self._motion_log, text)
@@ -1809,6 +1965,21 @@ class HmiState:
                     _append_log(self._motion_log, text)
                     self._set_banner(text, "ok")
                     self._set_motion_status(text, "ok")
+                    # Arranque: tras Servo ON OK → Home (0x01), una sola vez.
+                    if (
+                        byte_code == CMD_ON
+                        and self._motion_boot_awaiting_on_ack
+                        and not self._motion_boot_prep_done
+                    ):
+                        self._motion_boot_awaiting_on_ack = False
+                        self._motion_boot_prep_done = True
+                        threading.Thread(
+                            target=self._motion_boot_send_home,
+                            daemon=True,
+                            name="motion-boot-home",
+                        ).start()
+                    elif byte_code == CMD_ON:
+                        self._motion_boot_awaiting_on_ack = False
                     return True
                 return False
             if mtype == "status":

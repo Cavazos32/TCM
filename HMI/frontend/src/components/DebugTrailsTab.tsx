@@ -18,6 +18,20 @@ interface DebugTrailsTabProps {
   onExport: () => void;
 }
 
+function seedSide(trails: DebugTrailsState): DebugTrailsSide {
+  return trails.side === 'R' || trails.side === 'L' || trails.side === 'Both'
+    ? trails.side
+    : 'Both';
+}
+
+function seedNumTests(trails: DebugTrailsState): number {
+  return trails.numTests >= 1 ? trails.numTests : 10;
+}
+
+function seedWaitTimeS(trails: DebugTrailsState): number {
+  return trails.numTests >= 1 ? Math.max(0, trails.waitTimeS) : 1;
+}
+
 export const DebugTrailsTab: React.FC<DebugTrailsTabProps> = ({
   trails,
   onStart,
@@ -26,9 +40,10 @@ export const DebugTrailsTab: React.FC<DebugTrailsTabProps> = ({
   onExport,
 }) => {
   const { t } = useApp();
-  const [side, setSide] = useState<DebugTrailsSide>('Both');
-  const [numTests, setNumTests] = useState(10);
-  const [waitTimeS, setWaitTimeS] = useState(1);
+  // Preferencias locales: no re-sincronizar desde poll (solo semilla al montar / último start del backend).
+  const [side, setSide] = useState<DebugTrailsSide>(() => seedSide(trails));
+  const [numTestsText, setNumTestsText] = useState(() => String(seedNumTests(trails)));
+  const [waitTimeText, setWaitTimeText] = useState(() => String(seedWaitTimeS(trails)));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
@@ -36,15 +51,20 @@ export const DebugTrailsTab: React.FC<DebugTrailsTabProps> = ({
 
   const handleStart = useCallback(async () => {
     setErr('');
+    const n = Math.max(1, Math.floor(Number(numTestsText)) || 1);
+    const w = Math.max(0, Number(waitTimeText));
+    const wait = Number.isFinite(w) ? w : 0;
+    setNumTestsText(String(n));
+    setWaitTimeText(String(wait));
     setBusy(true);
     try {
-      await onStart(side, numTests, waitTimeS);
+      await onStart(side, n, wait);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
-  }, [onStart, side, numTests, waitTimeS]);
+  }, [onStart, side, numTestsText, waitTimeText]);
 
   const handleStop = useCallback(async () => {
     setBusy(true);
@@ -122,8 +142,12 @@ export const DebugTrailsTab: React.FC<DebugTrailsTabProps> = ({
               min={1}
               max={9999}
               disabled={active || busy}
-              value={numTests}
-              onChange={(e) => setNumTests(Math.max(1, Number(e.target.value) || 1))}
+              value={numTestsText}
+              onChange={(e) => setNumTestsText(e.target.value)}
+              onBlur={() => {
+                const n = Math.max(1, Math.floor(Number(numTestsText)) || 1);
+                setNumTestsText(String(n));
+              }}
               className="mt-1 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-sm"
             />
           </label>
@@ -138,8 +162,12 @@ export const DebugTrailsTab: React.FC<DebugTrailsTabProps> = ({
               min={0}
               step={0.1}
               disabled={active || busy}
-              value={waitTimeS}
-              onChange={(e) => setWaitTimeS(Math.max(0, Number(e.target.value) || 0))}
+              value={waitTimeText}
+              onChange={(e) => setWaitTimeText(e.target.value)}
+              onBlur={() => {
+                const w = Math.max(0, Number(waitTimeText));
+                setWaitTimeText(String(Number.isFinite(w) ? w : 0));
+              }}
               className="mt-1 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-sm"
             />
           </label>
