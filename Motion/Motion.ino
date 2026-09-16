@@ -175,6 +175,7 @@ static bool encAnyHwOk() {
 }
 
 static bool encFeedSide(bool& sideROut) {
+  // Legacy fallback (overview / APIs no-side). Feed FSM usa APIs *Side explícitas.
   if (encSide[ENC_IX_L].installed && encSide[ENC_IX_L].pcntOk) {
     sideROut = false;
     return true;
@@ -1352,21 +1353,34 @@ static float omRoundMm(float mm) {
   return neg ? -out : out;
 }
 
-// Valor oficial OM: redondeo primero, luego offset crudo (no se vuelve a redondear).
+// Fuente única de posición: cuentas desde Set0 (zeroRef) → mm.
+// Base (técnico / UI): redondeo 0/0.5/1 sin offset.
+// Procesado (Motion/Feed): base + offset interno (no se re-redondea).
 
-static float omOfficialMm(float rawAbsMm) {
-  return omRoundMm(rawAbsMm) + cfgOmOffsetMm;
+static float omBaseMm(float rawAbsMm) {
+  return omRoundMm(rawAbsMm);
 }
 
-// Resultado final OM: mm del settle redondeado + offset (o <0 si aún no hay settle).
+static float omProcessedMmSide(float rawAbsMm, bool sideR) {
+  const float off = sideR ? cfgOmOffsetMmR : cfgOmOffsetMm;
+  return omBaseMm(rawAbsMm) + off;
+}
+
+// Compat Feed: "official" = valor procesado (base + offset).
+static float omOfficialMm(float rawAbsMm) {
+  return omProcessedMmSide(rawAbsMm, false);
+}
+
+// Settle procesado para Motion/Feed (o <0 si aún no hay settle).
 
 static float encSettleMmRounded(bool sideR) {
   const uint8_t ix = encIxFromSideR(sideR);
   EncSideState& e = encSide[ix];
   if (!e.settled) return -1.0f;
-  const int32_t settledAbs =
-      e.settledCount >= 0 ? e.settledCount : -e.settledCount;
-  return omOfficialMmSide(encCountsToMm(settledAbs), sideR);
+  // Contar desde Set0 (zeroRef); offset solo en el valor procesado.
+  const int32_t settledSide = e.settledCount - e.zeroRef;
+  const int32_t absC = settledSide >= 0 ? settledSide : -settledSide;
+  return omProcessedMmSide(encCountsToMm(absC), sideR);
 }
 
 // =============================================================================
@@ -1456,11 +1470,6 @@ void doEncoderReset() {
   overviewOnEncoderReset();
 }
 
-static float omOfficialMmSide(float rawAbsMm, bool sideR) {
-  const float off = sideR ? cfgOmOffsetMmR : cfgOmOffsetMm;
-  return omRoundMm(rawAbsMm) + off;
-}
-
 static int32_t encCountForSide(bool sideR) {
   const uint8_t ix = encIxFromSideR(sideR);
   return readEncoderCountSide(ix) - encSide[ix].zeroRef;
@@ -1470,17 +1479,32 @@ static float encSideLiveMm(bool sideR) {
   return encCountsToMm(encCountForSide(sideR));
 }
 
+// Lectura base (UI / Set0 / HMI): redondeo sin offset.
+static float encSideBaseMm(bool sideR, bool useSettle) {
+  const uint8_t ix = encIxFromSideR(sideR);
+  EncSideState& e = encSide[ix];
+  if (useSettle && e.settled) {
+    const int32_t settledSide = e.settledCount - e.zeroRef;
+    const int32_t absC = settledSide >= 0 ? settledSide : -settledSide;
+    return omBaseMm(encCountsToMm(absC));
+  }
+  const int32_t c = encCountForSide(sideR);
+  const int32_t absC = c >= 0 ? c : -c;
+  return omBaseMm(encCountsToMm(absC));
+}
+
+// Valor procesado Motion/Feed: base + offset interno.
 static float encSideOfficialMm(bool sideR, bool useSettle) {
   const uint8_t ix = encIxFromSideR(sideR);
   EncSideState& e = encSide[ix];
   if (useSettle && e.settled) {
     const int32_t settledSide = e.settledCount - e.zeroRef;
     const int32_t absC = settledSide >= 0 ? settledSide : -settledSide;
-    return omOfficialMmSide(encCountsToMm(absC), sideR);
+    return omProcessedMmSide(encCountsToMm(absC), sideR);
   }
   const int32_t c = encCountForSide(sideR);
   const int32_t absC = c >= 0 ? c : -c;
-  return omOfficialMmSide(encCountsToMm(absC), sideR);
+  return omProcessedMmSide(encCountsToMm(absC), sideR);
 }
 
 static void motionTcpQueueMeasurePush(bool sideR) {
@@ -1499,7 +1523,8 @@ static bool motionExecGetMeasured(bool sideR, float& mmOfficial, float& mmSigned
   const uint8_t ix = encIxFromSideR(sideR);
   mmSigned = encSideLiveMm(sideR);
   settledOut = encSide[ix].settled;
-  mmOfficial = encSideOfficialMm(sideR, encSide[ix].settled);
+  // HMI / técnico: lectura base (Set0 → 0), sin contaminar con offset interno.
+  mmOfficial = encSideBaseMm(sideR, encSide[ix].settled);
   return true;
 }
 
@@ -1509,7 +1534,17 @@ static bool motionExecSet0Side(bool sideR, String& err) {
     return false;
   }
   const uint8_t ix = encIxFromSideR(sideR);
-  encSide[ix].zeroRef = readEncoderCountSide(ix);
+  const int32_t c = readEncoderCountSide(ix);
+  encSide[ix].zeroRef = c;
+  // Lectura base inmediata a 0 (HTML / HMI). No toca cfgOmOffsetMm*.
+  encSide[ix].settledCount = c;
+  encSide[ix].settled = true;
+  encSide[ix].wasMoving = false;
+  encSide[ix].stopMs = 0;
+  encSide[ix].mmSPeak = 0.0f;
+  encSide[ix].mmS = 0.0f;
+  encSide[ix].rpm = 0.0f;
+  encSide[ix].dir = 0;
   err = sideR ? "Set0 R OK" : "Set0 L OK";
   return true;
 }
@@ -1567,23 +1602,113 @@ static bool motionExecResetAll(String& err) {
 
   feedOmLastMmAbs = 0.0f;
   feedOmLastMmSigned = 0.0f;
-  bool feedR = false;
-  if (encFeedSide(feedR))
-    feedOmLastOfficialMm = encSideOfficialMm(feedR, false);
-  else
-    feedOmLastOfficialMm = cfgOmOffsetMm;
+  // Tras Set0 la lectura visible es 0; el offset interno se conserva aparte.
+  feedOmLastOfficialMm = 0.0f;
   omPhase1Mm = 0.0f;
   err = "Reset Motion OK";
   return true;
 }
 
-// —— Puente OM local para feed_engine (sin HTTP loopback) ——
+// —— Puente OM local para feed (por lado; sin fallback cruzado) ——
 
-static float encSettleMmRoundedFeed() {
-  bool sideR = false;
-  if (!encFeedSide(sideR)) return -1.0f;
-  return encSettleMmRounded(sideR);
+bool feedOmReadLiveMmSide(bool sideR, float* mmSignedOut)
+{
+  if (!encSideHwOk(sideR)) return false;
+  const int32_t count = readEncoderCountSide(encIxFromSideR(sideR));
+  if (mmSignedOut) *mmSignedOut = encCountsToMm(count);
+  return true;
 }
+
+bool feedOmReadOfficialMmSide(bool sideR, float* officialOut, float* mmSignedOut, float* mmAbsOut)
+{
+  if (!encSideHwOk(sideR)) return false;
+  const uint8_t ix = encIxFromSideR(sideR);
+  EncSideState& e = encSide[ix];
+  if (!e.settled) return false;
+  const int32_t settledAbs =
+      e.settledCount >= 0 ? e.settledCount : -e.settledCount;
+  const float mmAbs = encCountsToMm(settledAbs);
+  const float mmSigned = encCountsToMm(e.settledCount);
+  const float official = encSettleMmRounded(sideR);
+  feedOmLastMmAbs = mmAbs;
+  feedOmLastMmSigned = mmSigned;
+  feedOmLastOfficialMm = official;
+  if (officialOut) *officialOut = official;
+  if (mmSignedOut) *mmSignedOut = mmSigned;
+  if (mmAbsOut) *mmAbsOut = mmAbs;
+  return true;
+}
+
+bool feedOmResetSide(bool sideR)
+{
+  if (!encSideHwOk(sideR)) return false;
+  const uint8_t ix = encIxFromSideR(sideR);
+  resetEncoderSide(ix);
+  // Lectura base inmediata a 0 (HTML Set0 / Feed reset). Offset interno intacto.
+  encSide[ix].zeroRef = 0;
+  encSide[ix].settledCount = 0;
+  encSide[ix].settled = true;
+  encSide[ix].wasMoving = false;
+  feedOmLastMmAbs = 0.0f;
+  feedOmLastMmSigned = 0.0f;
+  feedOmLastOfficialMm = 0.0f;
+  return true;
+}
+
+bool feedOmIsSettledSide(bool sideR)
+{
+  if (!encSideHwOk(sideR)) return false;
+  return encSide[encIxFromSideR(sideR)].settled;
+}
+
+float feedOmGetOffsetMmSide(bool sideR)
+{
+  return sideR ? cfgOmOffsetMmR : cfgOmOffsetMm;
+}
+
+bool feedLaserMaterialPresent(bool sideR)
+{
+  // GPIO LOW (ioLaser*Active) = sensor OFF = sin material.
+  // GPIO HIGH = sensor ON = material presente (OK en ventana de validación).
+  return sideR ? !ioLaserRActive : !ioLaserLActive;
+}
+
+bool feedOmReadLiveMm(float* mmSignedOut)
+{
+  bool sideR = false;
+  if (!encFeedSide(sideR)) return false;
+  return feedOmReadLiveMmSide(sideR, mmSignedOut);
+}
+
+bool feedOmReadOfficialMm(float* officialOut, float* mmSignedOut, float* mmAbsOut)
+{
+  bool sideR = false;
+  if (!encFeedSide(sideR)) return false;
+  return feedOmReadOfficialMmSide(sideR, officialOut, mmSignedOut, mmAbsOut);
+}
+
+bool feedOmResetLocal()
+{
+  (void)feedOmResetSide(false);
+  (void)feedOmResetSide(true);
+  overviewOnEncoderReset();
+  omPhase1Mm = 0.0f;
+  return true;
+}
+
+float feedOmGetOffsetMm() {
+  bool sideR = false;
+  if (!encFeedSide(sideR)) return cfgOmOffsetMm;
+  return feedOmGetOffsetMmSide(sideR);
+}
+
+bool feedOmIsSettled() {
+  bool sideR = false;
+  if (!encFeedSide(sideR)) return false;
+  return feedOmIsSettledSide(sideR);
+}
+
+float feedOmOfficialFromRaw(float mmAbs) { return omOfficialMm(mmAbs); }
 
 // =============================================================================
 // ENCODER — JSON de estado dual L + R
@@ -1602,15 +1727,16 @@ static int encoderSideJsonInto(char* out, size_t outSz, bool sideR) {
 
   const uint8_t ix = encIxFromSideR(sideR);
   const EncSideState& ep = encSide[ix];
-  const int32_t count = readEncoderCountSide(ix);
+  // Mismo criterio que HMI/TCP (Set0): contar desde zeroRef, no absoluto HW.
+  const int32_t count = readEncoderCountSide(ix) - ep.zeroRef;
+  const int32_t settledRel = ep.settledCount - ep.zeroRef;
   const uint32_t zCount = ep.zCount;
   const int a = gpio_get_level(ep.pinA);
   const int b = gpio_get_level(ep.pinB);
   const int z = gpio_get_level(ep.pinZ);
 
   const int32_t absC = count >= 0 ? count : -count;
-  const int32_t settledAbs =
-      ep.settledCount >= 0 ? ep.settledCount : -ep.settledCount;
+  const int32_t settledAbs = settledRel >= 0 ? settledRel : -settledRel;
   const int32_t wrapped =
       ((count % (int32_t)ENC_CPR) + (int32_t)ENC_CPR) % (int32_t)ENC_CPR;
   const float angle = (360.0f * (float)wrapped) / (float)ENC_CPR;
@@ -1618,9 +1744,11 @@ static int encoderSideJsonInto(char* out, size_t outSz, bool sideR) {
   const float mm    = encCountsToMm(count);
   const float mmAbs = encCountsToMm(absC);
   const float mmSettleRaw = encCountsToMm(settledAbs);
-  const float mmSettleRound = omRoundMm(mmSettleRaw);
+  const float mmSettleRound = omBaseMm(mmSettleRaw);
   const float off = sideR ? cfgOmOffsetMmR : cfgOmOffsetMm;
-  const float mmSettle = ep.settled ? (mmSettleRound + off) : mmSettleRaw;
+  // mmSettle = lectura visible (base). Offset no contamina el cero operativo.
+  const float mmSettle = ep.settled ? mmSettleRound : mmSettleRaw;
+  const float mmProcessed = ep.settled ? (mmSettleRound + off) : mmSettleRaw;
   const int32_t expectZ = (absC + ENC_CPR / 2) / (int32_t)ENC_CPR;
 
   return snprintf(
@@ -1629,13 +1757,13 @@ static int encoderSideJsonInto(char* out, size_t outSz, bool sideR) {
       "\"rpm\":%.1f,\"mms\":%.1f,\"mmsPeak\":%.1f,\"f\":%.1f,\"d\":%d,"
       "\"z\":%lu,\"a\":%d,\"b\":%d,\"iz\":%d,\"mm\":%.2f,\"mmAbs\":%.2f,"
       "\"settled\":%s,\"cSettle\":%ld,\"mmSettle\":%.2f,"
-      "\"mmSettleRound\":%.2f,\"offsetMm\":%.3f,"
+      "\"mmSettleRound\":%.2f,\"mmProcessed\":%.2f,\"offsetMm\":%.3f,"
       "\"ref100\":%ld,\"cpr\":%u,\"quad\":%u,\"expectZ\":%ld,\"pulleyMm\":%.0f}",
       sideR ? 'R' : 'L',
       (long)count, revs, angle, ep.rpm, ep.mmS, ep.mmSPeak, ep.freqHz,
       (int)ep.dir, (unsigned long)zCount, a, b, z, mm, mmAbs,
-      ep.settled ? "true" : "false", (long)ep.settledCount, mmSettle,
-      ep.settled ? mmSettleRound : mmSettleRaw, off,
+      ep.settled ? "true" : "false", (long)settledRel, mmSettle,
+      ep.settled ? mmSettleRound : mmSettleRaw, mmProcessed, off,
       (long)ENC_COUNTS_PER_100MM, (unsigned)ENC_CPR, (unsigned)ENC_QUAD,
       (long)expectZ, ENC_PULLEY_DIAM_MM);
 }
@@ -1667,67 +1795,15 @@ String encoderStatusJson() {
   return String(buf);
 }
 
+static float encSettleMmRoundedFeed() {
+  bool sideR = false;
+  if (!encFeedSide(sideR)) return -1.0f;
+  return encSettleMmRounded(sideR);
+}
+
 // =============================================================================
-// FEEDER + ENCODER — puente OM local
+// DECISIONES / overview helpers
 // =============================================================================
-bool feedOmReadLiveMm(float* mmSignedOut)
-{
-  bool sideR = false;
-  if (!encFeedSide(sideR)) return false;
-  const int32_t count = readEncoderCountSide(encIxFromSideR(sideR));
-  if (mmSignedOut) *mmSignedOut = encCountsToMm(count);
-  return true;
-}
-
-bool feedOmReadOfficialMm(float* officialOut, float* mmSignedOut, float* mmAbsOut)
-{
-  bool sideR = false;
-  if (!encFeedSide(sideR)) return false;
-  const uint8_t ix = encIxFromSideR(sideR);
-  EncSideState& e = encSide[ix];
-  if (!e.settled) return false;
-  const int32_t settledAbs =
-      e.settledCount >= 0 ? e.settledCount : -e.settledCount;
-  const float mmAbs = encCountsToMm(settledAbs);
-  const float mmSigned = encCountsToMm(e.settledCount);
-  const float official = encSettleMmRounded(sideR);
-  feedOmLastMmAbs = mmAbs;
-  feedOmLastMmSigned = mmSigned;
-  feedOmLastOfficialMm = official;
-  if (officialOut) *officialOut = official;
-  if (mmSignedOut) *mmSignedOut = mmSigned;
-  if (mmAbsOut) *mmAbsOut = mmAbs;
-  return true;
-}
-
-bool feedOmResetLocal()
-{
-  doEncoderReset();
-  feedOmLastMmAbs = 0.0f;
-  feedOmLastMmSigned = 0.0f;
-  bool sideR = false;
-  if (encFeedSide(sideR))
-    feedOmLastOfficialMm = encSideOfficialMm(sideR, false);
-  else
-    feedOmLastOfficialMm = cfgOmOffsetMm;
-  omPhase1Mm = 0.0f;
-  return true;
-}
-
-float feedOmGetOffsetMm() {
-  bool sideR = false;
-  if (!encFeedSide(sideR)) return cfgOmOffsetMm;
-  return sideR ? cfgOmOffsetMmR : cfgOmOffsetMm;
-}
-
-bool feedOmIsSettled() {
-  bool sideR = false;
-  if (!encFeedSide(sideR)) return false;
-  return encSide[encIxFromSideR(sideR)].settled;
-}
-
-float feedOmOfficialFromRaw(float mmAbs) { return omOfficialMm(mmAbs); }
-
 // Tolerancia simetrica |actual - target| <= tol
 static bool decWithinTol(float actual, float target, float tol) {
   return fabsf(actual - target) <= tol;
@@ -2299,17 +2375,26 @@ void handleEncoderGet() {
 
 void handleEncoderPost() {
   String body = server.hasArg("plain") ? server.arg("plain") : "";
-  if (jsonHasKey(body, "offsetMm")) {
-    String side = jsonString(body, "side", "");
-    if (side.length() == 0 && server.hasArg("side"))
-      side = server.arg("side");
-    const float off = clampOmOffsetMm(jsonFloat(body, "offsetMm", 0.0f));
+  String side = jsonString(body, "side", "");
+  if (side.length() == 0 && server.hasArg("side"))
+    side = server.arg("side");
+
+  const bool hasOffBody = jsonHasKey(body, "offsetMm");
+  const bool hasOffQuery = server.hasArg("offsetMm");
+  if (hasOffBody || hasOffQuery) {
+    const float raw = hasOffBody ? jsonFloat(body, "offsetMm", 0.0f)
+                                 : server.arg("offsetMm").toFloat();
+    const float off = clampOmOffsetMm(raw);
     if (side == "R" || side == "r") {
       cfgOmOffsetMmR = off;
       Serial.printf("OM offsetMm R=%.3f (post-round)\n", cfgOmOffsetMmR);
-    } else {
+    } else if (side == "L" || side == "l") {
       cfgOmOffsetMm = off;
       Serial.printf("OM offsetMm L=%.3f (post-round)\n", cfgOmOffsetMm);
+    } else {
+      // Sin side explícito: no adivinar L (evita pisar el lado equivocado).
+      sendJson(400, errJson("Falta side=L|R para offsetMm"));
+      return;
     }
     saveCfg();
   }
@@ -2533,7 +2618,8 @@ static bool feederTcpDoByte(uint8_t cmdByte, const char* line) {
       break;
   }
 
-  if (!ok && err.indexOf("CAN") >= 0) {
+  // Rechazo por servo CAN no listo → detalle E023 (ack ya lleva UI normativa).
+  if (!ok && (err.indexOf("E023") >= 0 || err.indexOf("CAN") >= 0)) {
     motionTcpOnDetailError(MOT_ERR_FEED_CAN_NO_RESP, "FeedCanNoResp");
   }
 
@@ -2906,13 +2992,8 @@ static void motionTcpPollFeedEvents() {
   }
 }
 
-// Láseres / safety exhaust — Set = detalle EXXX; niveles = status push (C1)
-static void LaserR() {
-  motionTcpOnDetailError(MOT_ERR_LASER_R, "LaserR");
-}
-static void LaserL() {
-  motionTcpOnDetailError(MOT_ERR_LASER_L, "LaserL");
-}
+// Safety exhaust — Set = detalle EXXX. Láseres LR-X: E004/E005 solo desde
+// Feed Validator (ventana FSP_VALIDATE*), no por edge fuera de validación.
 static void Exhaust() {
   motionTcpOnDetailError(MOT_ERR_EXHAUST, "Exhaust");
 }
@@ -2948,6 +3029,8 @@ static void motionPollIoSensors() {
   static uint32_t tLaserR = 0, tLaserL = 0, tSafety = 0;
   const uint32_t now = millis();
 
+  // LR-X: solo actualizar nivel + status push. E004/E005 no se disparan por
+  // cambio de señal fuera de ventana; Feed Validator decide en FSP_VALIDATE*.
   const bool rLaserR = motionSensorActiveLaser(LRX_LaserR);
   if (rLaserR != rawLaserR) { rawLaserR = rLaserR; tLaserR = now; }
   else if ((now - tLaserR) >= MOT_SENSOR_DEBOUNCE_MS && rLaserR != lastLaserR) {
@@ -2955,7 +3038,6 @@ static void motionPollIoSensors() {
     ioLaserRActive = rLaserR;
 #if MOT_IO_SENSOR_EVENTS
     motionTcpNotifyIoStatus = true;
-    if (rLaserR) LaserR();  // Set E004 — Res de error lo hace Main
 #endif
   }
 
@@ -2966,7 +3048,6 @@ static void motionPollIoSensors() {
     ioLaserLActive = rLaserL;
 #if MOT_IO_SENSOR_EVENTS
     motionTcpNotifyIoStatus = true;
-    if (rLaserL) LaserL();  // Set E005
 #endif
   }
 

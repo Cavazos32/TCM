@@ -640,7 +640,8 @@
           <p class="enc-foot">
             Polea ø50 mm · 2000 c/rev · 100 mm = 1273 cuentas.
             Poner a cero → pasar pieza → al parar se actualizan todos los valores (settle).
-            Offset se suma <b>después</b> del redondeo 0/0.5/1 (no se re-redondea).
+            La lectura visible y Set0 usan la base (redondeo 0/0.5/1);
+            el offset es corrección interna de Motion/Feed y <b>no</b> altera el cero operativo.
           </p>
         </section>
       </div>
@@ -678,7 +679,13 @@
           </div>
         </div>
         <div class="feed-shared-row">
+          <label>Approach % <input type="number" id="approachPct" min="50" max="95" step="1" value="80" style="width:5rem"></label>
+          <span class="feed-stats" id="approachMmHint">→ 44.0 mm de 55</span>
+          <label>Comp. vel % <input type="number" id="moveSpeedPct" min="10" max="100" step="1" value="50" style="width:5rem"></label>
           <button type="button" class="btn2" id="btnFeedSave">Guardar config</button>
+          <button type="button" class="btn2" id="btnFeedReset">Reset Feed + OM</button>
+          <button type="button" class="btn2" id="btnZeroL">Set0 L</button>
+          <button type="button" class="btn2" id="btnZeroR">Set0 R</button>
         </div>
         <p class="feed-viz-label" id="feedVizLabel">Perfil velocidad · L</p>
         <canvas class="feed-canvas" id="canvasFeed" width="640" height="110"></canvas>
@@ -1199,12 +1206,35 @@
     }
 
     function feedCfgQuery() {
-      return '/getFeedTestConfig?solidMm=' + encodeURIComponent($('solidL').value)
+      return 'solidMm=' + encodeURIComponent($('solidL').value)
         + '&solidMmR=' + encodeURIComponent($('solidR').value)
         + '&velocityMmSL=' + encodeURIComponent($('velL').value)
         + '&velocityMmSR=' + encodeURIComponent($('velR').value)
         + '&decRampMsL=' + encodeURIComponent($('decMsL').value)
-        + '&decRampMsR=' + encodeURIComponent($('decMsR').value);
+        + '&decRampMsR=' + encodeURIComponent($('decMsR').value)
+        + '&approachPct=' + encodeURIComponent(($('approachPct') && $('approachPct').value) || '80')
+        + '&moveSpeedPct=' + encodeURIComponent(($('moveSpeedPct') && $('moveSpeedPct').value) || '50');
+    }
+
+    function feedApplyCfg(d) {
+      if (!d) return;
+      if (d.solidMm != null) $('solidL').value = d.solidMm;
+      if (d.solidMmR != null) $('solidR').value = d.solidMmR;
+      if (d.velocityMmSL != null) $('velL').value = d.velocityMmSL;
+      if (d.velocityMmSR != null) $('velR').value = d.velocityMmSR;
+      if (d.decRampMsL != null) $('decMsL').value = d.decRampMsL;
+      if (d.decRampMsR != null) $('decMsR').value = d.decRampMsR;
+      if (d.approachPct != null && $('approachPct')) $('approachPct').value = d.approachPct;
+      if (d.moveSpeedPct != null && $('moveSpeedPct')) $('moveSpeedPct').value = d.moveSpeedPct;
+      if ($('approachMmHint')) {
+        const ap = d.approachMm != null ? d.approachMm : (55 * Number(($('approachPct') || { value: 80 }).value) / 100);
+        $('approachMmHint').textContent = '→ ' + Number(ap).toFixed(1) + ' mm de 55';
+      }
+      feedPlans.planL = d.planL;
+      feedPlans.planR = d.planR;
+      feedPlans.vL = parseFloat(d.velocityMmSL);
+      feedPlans.vR = parseFloat(d.velocityMmSR);
+      feedDrawActive();
     }
 
     function feedDrawPlan(canvasId, statsId, plan, vMm) {
@@ -1250,20 +1280,19 @@
       feedDrawActive();
     }
 
-    function feedRefreshProfile() {
-      fetch(feedCfgQuery()).then(r => r.json()).then(d => {
-        feedPlans.planL = d.planL;
-        feedPlans.planR = d.planR;
-        feedPlans.vL = parseFloat(d.velocityMmSL);
-        feedPlans.vR = parseFloat(d.velocityMmSR);
-        $('solidL').value = d.solidMm;
-        $('solidR').value = d.solidMmR;
-        $('velL').value = d.velocityMmSL;
-        $('velR').value = d.velocityMmSR;
-        $('decMsL').value = d.decRampMsL;
-        $('decMsR').value = d.decRampMsR;
-        feedDrawActive();
-      }).catch(() => feedShowMsg('Error cargando perfil', 'bad'));
+    // fromDisk=true: NVS/runtime. false: preview con formulario.
+    function feedRefreshProfile(fromDisk) {
+      const url = fromDisk ? '/getFeedTestConfig' : ('/getFeedTestConfig?' + feedCfgQuery());
+      fetch(url).then(r => r.json()).then(feedApplyCfg)
+        .catch(() => feedShowMsg('Error cargando perfil', 'bad'));
+    }
+
+    function feedUpdateApproachHint() {
+      const el = $('approachPct');
+      if (!el || !$('approachMmHint')) return;
+      const pct = Number(el.value);
+      if (!isFinite(pct)) return;
+      $('approachMmHint').textContent = '→ ' + (55 * pct / 100).toFixed(1) + ' mm de 55';
     }
 
     function feedPollCan() {
@@ -1298,7 +1327,9 @@
         + '&velocityMmS=' + encodeURIComponent($('velL').value)
         + '&velocityMmSR=' + encodeURIComponent($('velR').value)
         + '&decRampMsL=' + encodeURIComponent($('decMsL').value)
-        + '&decRampMsR=' + encodeURIComponent($('decMsR').value);
+        + '&decRampMsR=' + encodeURIComponent($('decMsR').value)
+        + '&approachPct=' + encodeURIComponent(($('approachPct') && $('approachPct').value) || '80')
+        + '&moveSpeedPct=' + encodeURIComponent(($('moveSpeedPct') && $('moveSpeedPct').value) || '50');
       fetch(q).then(r => r.json()).then(d => {
         if (!d.ok) { feedShowMsg(d.error || 'Fallo', 'bad'); return; }
         feedShowMsg('Moviendo servos ' + side + '…', 'wait');
@@ -1325,7 +1356,7 @@
 
     function startFeedPoll() {
       stopFeedPoll();
-      feedRefreshProfile();
+      feedRefreshProfile(true);
       feedLoadCal();
       feedPollTick();
       feedTimer = setInterval(feedPollTick, 800);
@@ -1337,9 +1368,32 @@
 
     function initFeedUi() {
       $('btnFeedSave').onclick = () => {
-        fetch('/setFeedTestConfig?' + feedCfgQuery().split('?')[1])
+        fetch('/setFeedTestConfig?' + feedCfgQuery())
           .then(r => r.json())
-          .then(() => { feedShowMsg('Guardado', 'ok'); feedRefreshProfile(); });
+          .then(d => {
+            if (d && d.error) { feedShowMsg(d.error, 'bad'); return; }
+            feedShowMsg('Guardado', 'ok');
+            feedApplyCfg(d);
+          })
+          .catch(() => feedShowMsg('Error guardando', 'bad'));
+      };
+      const btnReset = $('btnFeedReset');
+      if (btnReset) btnReset.onclick = () => {
+        feedShowMsg('Reset Feed + OM…', 'wait');
+        fetch('/api/feed/reset').then(r => r.json()).then(s => {
+          feedShowMsg(s.feedReset ? 'Reset OK · OM en 0' : (s.error || 'Reset falló'), s.feedReset ? 'ok' : 'bad');
+          feedPollCan();
+        }).catch(() => feedShowMsg('Error red', 'bad'));
+      };
+      const zL = $('btnZeroL');
+      if (zL) zL.onclick = () => {
+        fetch('/api/feed/encoder/zero?side=L').then(r => r.json())
+          .then(d => feedShowMsg(d.ok ? 'Set0 L OK' : 'Set0 L falló', d.ok ? 'ok' : 'bad'));
+      };
+      const zR = $('btnZeroR');
+      if (zR) zR.onclick = () => {
+        fetch('/api/feed/encoder/zero?side=R').then(r => r.json())
+          .then(d => feedShowMsg(d.ok ? 'Set0 R OK' : 'Set0 R falló', d.ok ? 'ok' : 'bad'));
       };
       $('btnTestL').onclick = () => feedRunTest('L');
       $('btnTestR').onclick = () => feedRunTest('R');
@@ -1359,9 +1413,11 @@
         fetch('/setFeedOffset?offsetMmB=' + encodeURIComponent($('offR').value))
           .then(() => feedShowMsg('Offset R OK', 'ok'));
       };
-      ['solidL', 'solidR', 'velL', 'velR', 'decMsL', 'decMsR'].forEach(id => {
-        $(id).addEventListener('change', feedRefreshProfile);
+      ['solidL', 'solidR', 'velL', 'velR', 'decMsL', 'decMsR', 'approachPct', 'moveSpeedPct'].forEach(id => {
+        const el = $(id);
+        if (el) el.addEventListener('change', () => feedRefreshProfile(false));
       });
+      if ($('approachPct')) $('approachPct').addEventListener('input', feedUpdateApproachHint);
       $('feedSwL').onclick = () => feedSetViewSide('L');
       $('feedSwR').onclick = () => feedSetViewSide('R');
     }

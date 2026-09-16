@@ -8,6 +8,7 @@ import { MotionTab } from './components/MotionTab';
 import { PlcTab } from './components/PlcTab';
 import { PreFeederTab } from './components/PreFeederTab';
 import { AndonTab } from './components/AndonTab';
+import { DebugTrailsTab } from './components/DebugTrailsTab';
 import { SettingsDrawer } from './components/SettingsDrawer';
 import { AppProvider, useApp } from './context/AppContext';
 import { useHmiState } from './hooks/useHmiState';
@@ -71,6 +72,7 @@ function AppMain() {
       else if (debugMode && e.key === '4') handleTabChange('plc');
       else if (debugMode && e.key === '5') handleTabChange('prefeeder');
       else if (debugMode && e.key === '6') handleTabChange('andon');
+      else if (debugMode && e.key === '7') handleTabChange('debug-trails');
       else if (e.code === 'Space') {
         e.preventDefault();
         if (currentTab === 'maquina') {
@@ -218,6 +220,16 @@ function AppMain() {
             showLogs={logsVisible}
             logs={logsVisible ? hmi.filterLogs('ANDON') : []}
             onClearLogs={() => hmi.clearLogs('andon')}
+          />
+        )}
+
+        {debugMode && currentTab === 'debug-trails' && (
+          <DebugTrailsTab
+            trails={view.debugTrails}
+            onStart={hmi.startDebugTrails}
+            onStop={hmi.stopDebugTrails}
+            onClear={hmi.clearDebugTrails}
+            onExport={hmi.exportDebugTrails}
           />
         )}
       </main>

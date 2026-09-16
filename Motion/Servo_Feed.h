@@ -6,13 +6,26 @@
 
 String jsonEscape(const String& in);
 
-// —— OM local (implementado en Motion.ino) ——
+// —— OM local por lado (implementado en Motion.ino) ——
+// Feed L → OM-L; Feed R → OM-R. Sin fallback cruzado.
+bool feedOmReadOfficialMmSide(bool sideR, float* officialOut,
+                              float* mmSignedOut = nullptr, float* mmAbsOut = nullptr);
+bool feedOmReadLiveMmSide(bool sideR, float* mmSignedOut);
+bool feedOmResetSide(bool sideR);
+bool feedOmIsSettledSide(bool sideR);
+float feedOmGetOffsetMmSide(bool sideR);
+
+// Compat: lee el lado indicado por el último feed activo / L si hay HW
 bool feedOmReadOfficialMm(float* officialOut, float* mmSignedOut = nullptr, float* mmAbsOut = nullptr);
 bool feedOmReadLiveMm(float* mmSignedOut);
 bool feedOmResetLocal();
 float feedOmGetOffsetMm();
 bool feedOmIsSettled();
 float feedOmOfficialFromRaw(float mmAbs);
+
+// Laser en ventana Feed VALIDATE*: ON = material OK; OFF = E004/E005.
+// ioLaser*Active = sensor OFF (sin material). Fuera de ventana no genera EXXX.
+bool feedLaserMaterialPresent(bool sideR);
 
 // —— CAN servos ——
 extern bool canInitialized;
@@ -40,6 +53,8 @@ extern volatile uint32_t feedSsFastPpR;
 extern volatile uint16_t feedDecRampMsL;
 extern volatile uint16_t feedDecRampMsR;
 extern volatile bool feedSkipEncoderConfirm;
+extern volatile float feedApproachPct;
+extern volatile float feedMoveSpeedPct;
 extern FeedTestReq feedTestReq;
 extern bool feedCalibrationTest;
 extern char feedFaultReason[FEED_FAULT_REASON_MAX];
@@ -56,6 +71,7 @@ void feedLoop();
 void feedRegisterHttpRoutes(WebServer& server);
 
 bool feedPhaseIsActive();
+bool feedSideIsActive(bool sideR);
 bool feedThisCycleSucceeded();
 bool runFeedCycle(bool skipEncoderConfirm, int8_t onlySide = -1);
 
@@ -69,6 +85,8 @@ float clampFeedTargetMm(float mm);
 uint16_t clampFeedRampMs(uint32_t ms);
 float clampFeedOffsetMm(float mm);
 float clampFeedCalCountsPerMm(float spm);
+float clampFeedApproachPct(float pct);
+float clampFeedMoveSpeedPct(float pct);
 String feedStatusJson();
 
 bool feedQueueTest(const FeedTestReq& req, String& err);

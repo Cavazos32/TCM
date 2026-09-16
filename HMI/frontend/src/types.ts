@@ -1,4 +1,30 @@
-export type TabType = 'maquina' | 'cycle' | 'motion' | 'plc' | 'prefeeder' | 'andon';
+export type TabType = 'maquina' | 'cycle' | 'motion' | 'plc' | 'prefeeder' | 'andon' | 'debug-trails';
+
+export type DebugTrailsSide = 'R' | 'L' | 'Both';
+
+export interface DebugTrailsRecord {
+  testNum: number;
+  side: 'R' | 'L';
+  measureMm: number | null;
+  status: string;
+  error: string;
+  timestamp: string;
+  phase: string;
+}
+
+export interface DebugTrailsState {
+  active: boolean;
+  stage: string;
+  side: DebugTrailsSide;
+  numTests: number;
+  waitTimeS: number;
+  currentTest: number;
+  phase: string;
+  lastOk: boolean;
+  fault: string;
+  records: DebugTrailsRecord[];
+  recordCount: number;
+}
 
 export interface CycleConfig {
   holderOnMs: number;

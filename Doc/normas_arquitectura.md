@@ -198,7 +198,7 @@ Orden resumido:
 Andon refleja **estado de máquina** (`0x40`–`0x49`), no el listado EXXX.  
 Un sensor propio de Andon (p. ej. presión) puede reportar EXXX a Main; la torre sigue lo que Main mande como estado.
 
-Mapeo torre (Excel Opcodes · columna Andon):
+Mapeo torre (estado máquina → luces / buzzer):
 
 | Byte | Estado | Torre |
 |------|--------|-------|
@@ -207,11 +207,13 @@ Mapeo torre (Excel Opcodes · columna Andon):
 | `0x42` | Stop | Red |
 | `0x43` | Reset | N/A |
 | `0x44` | Idle | Green |
-| `0x45` | Busy | Green |
-| `0x46` | Error | Red + Buzzer |
-| `0x47` | FinishParts | Green + Buzzer |
-| `0x48` | ReturnStop | N/A |
+| `0x45` | Busy | Green (máquina trabajando) |
+| `0x46` | Error | Red + Buzzer (**prioridad** sobre estados normales) |
+| `0x47` | FinishParts | Secuencia temporal R→Y→G + Buzzer (no permanente; luego Idle/Green) |
+| `0x48` | Pause | Yellow (sin buzzer; distinto de Materialist) |
 | `0x49` | Materialist | Yellow + Buzzer |
+
+Estados mutuamente coherentes: al aplicar un byte la torre apaga el resto de salidas y deja solo la combinación definida. Buzzer solo en Error, Finish (durante la secuencia) y Materialist.
 
 **Mute buzzer:** preferencia de HMI (Configuración → Debug). Se envía a Andon por TCP; no cambia el color de torre.
 
@@ -260,10 +262,74 @@ Cada norma vigente debe reflejarse en los **archivos necesarios**, no solo en es
 | Política C1/C2/C3 y Set/Res | HMI/Main (`error_policy`, ciclo, catálogo) |
 | GPIO / I-O | `Doc/gpio_list_updated.md` (+ Excel I-O) y firmware del módulo |
 | Comportamiento de esclavo | `.ino` / headers del módulo afectado |
+| Communication Core (M5) | `.cursor/rules/tcm-communication.mdc` + resumen en `.cursor/rules/tcm-arquitectura.mdc` |
 | Resumen para el agente | `.cursor/rules/tcm-arquitectura.mdc` (si cambia una prohibición dura) |
 
 Prohibido: documentar una norma nueva o cambiada y dejar código, Excel o UI local en el comportamiento anterior.  
 Al cerrar un cambio normativo: listar qué archivos se actualizaron para cumplirla.
+
+### Regla M5 — Communication Core protegido
+
+La comunicación que ya funciona es un **subsistema protegido**. No es intocable: solo se modifica si existe **relación causal demostrada** con el problema a resolver.
+
+**Problema a evitar:** fallo de rutina / Motion / PreFeeder / PLC → corrección de dominio → regresión accidental de TCP/WiFi/reconnect/heartbeat/loop.
+
+Coherente con **M3** (norma primero) y **M4** (alinear archivos). Resumen operativo para el agente: `.cursor/rules/tcm-communication.mdc`.
+
+#### M5.1 — Componentes protegidos (implementación real)
+
+| Ámbito | Archivos / piezas |
+|--------|-------------------|
+| HMI TCP | `HMI/tcp_link.py`, `ModuleTcpClient` (vía `HMI/state.py`): threads RX (`_rx_loop`) y reconnect/heartbeat (`_bg_loop`); locks `_io_lock` / `_conn_lock` / `_connect_gate`; `_session` y callbacks diferidos; `connect` / `reconnect` / `disconnect` / `_drop_link`; heartbeat; timeouts (`RX_TIMEOUT_SEC`, `RX_JOIN_TIMEOUT_SEC`, etc.) |
+| Motion | `Motion/Motion.ino`: `serviceWifi()`, `wifiKickConnect()`, `serviceAsdaTcp()`, `asdaTcpEnsureServices()`, `asdaTcpStopServices()`, `asdaTcpAcceptIncoming()`, `asdaTcpRxDrain()`, `asdaTcpPollEvents()`, protocolo ASDA TCP, orden de `loop()` |
+| PreFeeder Master | `PF/PreFeeder_Master/PreFeeder_Master.ino`: `masterServiceWiFi()`, `masterServiceTcpHmi()`, `pfTcpEnsureServices()`, `pfTcpStopServices()`, `pfTcpAcceptIncoming()`, `pfTcpRxDrain()`, `pfServiceSide` / L–R (`pfTryConnect`, `pfWatchLink`, `pfKeepalive`), protocolo PF |
+
+**No** convertir los waits de `HMI/cycle.py` (`CycleRunner`) en polling TCP ni mover la rutina al hilo de comunicación.
+
+#### M5.2 — Loop / ciclo de servicio (zona crítica)
+
+En `Motion/Motion.ino` y `PF/PreFeeder_Master/PreFeeder_Master.ino`, toda función llamada desde `loop()` es sensible a latencia.
+
+Patrón: **service → trabajo corto → regresar → siguiente service**.  
+Prohibido en el camino del `loop()`: `delay` / `while` / `for` que esperen condición externa; esperas de movimiento, sensor, TCP, WiFi, Modbus largo, reconnect bloqueante o retry prolongado que impidan re-entrar a los demás services.
+
+WiFi Motion ya es no bloqueante (`serviceWifi` / `wifiKickConnect`); no revertir a `while` de conexión ni `delay` en reconexión.
+
+#### M5.3 — Operaciones no bloqueantes (Motion)
+
+Preservar preparación incremental: `motionPrepPollOnce()` + `motionPrepKind` / `motionPrepStep` / `motionJobActive`.  
+No reemplazar por esperas del tipo `waitUntilMotionFinished()` dentro del `loop()`. Nuevas operaciones de movimiento, encoder o feeder = pasos/estados no bloqueantes.
+
+`server.handleClient()` comparte el mismo `loop()` que `serviceAsdaTcp()` y el resto: handlers HTTP de larga duración afectan TCP/WiFi/ciclo. Considerarlos en análisis de latencia; no introducir handlers nuevos con esperas físicas largas.
+
+#### M5.4 — Diferenciar comunicación de ejecución
+
+| Clase | Criterio | Actuar sobre |
+|-------|----------|--------------|
+| **A. Link failure** | Socket realmente caído | TCP, WiFi, reconnect, heartbeat, lifecycle |
+| **B. Transport OK / command failure** | Comando llegó; no se procesó bien | opcode, parser, handler, estado, aceptación |
+| **C. Command OK / execution failure** | Comando procesado; mecanismo falló | dominio Motion/PLC/PF, encoder, sensores, rutina |
+
+En **B** y **C** no modificar el Communication Core solo por el síntoma. Cadena: ¿salió? → ¿llegó? → ¿recibido? → ¿interpretado? → ¿lógica? → ¿actuador?
+
+#### M5.5 — Communication Impact Check
+
+Antes de tocar archivos de tarea de máquina, responder: ¿TCP? ¿WiFi? ¿reconnect? ¿heartbeat? ¿timeout? ¿sockets? ¿protocolo? ¿orden del `loop()`? ¿función desde `loop()`? ¿bloqueante? ¿retrasa `serviceAsdaTcp` / `serviceWifi` / `serviceCANRx` / `feedLoop` / TCP PF?
+
+Si la tarea no es de comunicación y alguna respuesta es sí: **no tocar** la zona protegida; buscar solución en el dominio. Si hay causalidad real, documentar antes:
+
+```text
+COMMUNICATION IMPACT
+Componente protegido: …
+Cambio propuesto: …
+Relación causal: …
+Riesgo: …
+Alternativa sin tocar comunicación: …
+```
+
+#### M5.6 — Sin refactors “de paso”
+
+Prohibido aprovechar correcciones de rutina, Motion, PreFeeder, PLC, encoder, feeder, estados, errores o producción para “limpiar/modernizar/simplificar” arquitectura TCP, WiFi, reconnect, heartbeat, threading, socket lifecycle, protocolos, Core/task o timing sin necesidad causal.
 
 ---
 
@@ -281,5 +347,6 @@ Al cerrar un cambio normativo: listar qué archivos se actualizaron para cumplir
 | De dónde salen códigos | Excel + GPIO doc |
 | Debug | Solo si se pide |
 | Norma nueva/cambiada | Reflejar en todos los archivos necesarios (M4) |
+| Communication Core | Protegido (M5): no tocar sin causalidad; loop no bloqueante; impacto documentado |
 
 Si una decisión no cabe en esta tabla, se actualiza **este documento** antes que el código.

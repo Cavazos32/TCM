@@ -22,7 +22,7 @@ from machine_states import (
     TX_IDLE,
     TX_INIT,
     TX_MATERIALIST,
-    TX_RETURN,
+    TX_PAUSE,
     TX_STOP,
 )
 from error_catalog import format_ui
@@ -366,12 +366,14 @@ class CycleRunner:
         if not self.is_active():
             return {"ok": False, "error": "Sin ciclo activo"}
         self._pause.set()
-        self._host.cycle_log("Cycle Pause")
+        self._enter_pause_andon()
+        self._host.cycle_log("Cycle Pause (0x048)")
         self._host.cycle_notify()
         return {"ok": True}
     def request_resume(self) -> dict[str, Any]:
         if self._pause.is_set():
             self._pause.clear()
+            self._leave_pause_andon()
             self._host.cycle_log("Cycle Resume")
             self._host.cycle_notify()
             return {"ok": True}
@@ -441,8 +443,27 @@ class CycleRunner:
             except Exception:
                 pass
 
+    def _enter_pause_andon(self) -> None:
+        """Pausa operativa → amarillo (0x48). No pisa Error (prioridad)."""
+        with self._lock:
+            if self._state_byte == TX_ERROR:
+                return
+        self._set_state(TX_PAUSE)
+
+    def _leave_pause_andon(self) -> None:
+        """Resume → Busy si el ciclo sigue activo y no hay Error."""
+        with self._lock:
+            if self._state_byte == TX_ERROR:
+                return
+            if not self._active:
+                return
+        self._set_state(TX_BUSY)
+
     def _raise_fault(self, slug_or_code: str, err_class: str = "") -> None:
         """Latchea fallo EXXX vía política HMI (Set flip-flop)."""
+        # Si Motion ya latcheó un EXXX (p.ej. E023 CAN), no pisar con genérico de ciclo.
+        if self._fault:
+            return
         if hasattr(self._host, "apply_detail_error"):
             if self._host.apply_detail_error(slug_or_code):
                 return
@@ -541,11 +562,13 @@ class CycleRunner:
         label = meta.get("label", step_key)
         self._pause.set()
         self._host.cycle_log(f"Paso a paso — listo: {label}")
+        self._enter_pause_andon()
         self._host.cycle_notify()
         while self._pause.is_set():
             if self._should_abort():
                 return True
             time.sleep(0.05)
+        self._leave_pause_andon()
         return False
     def _do_wait(self, rep: int, qty: int, key: str, cfg_attr: str) -> bool:
         """Paso delay independiente. Lee ms frescos de config. True = abortar."""
@@ -575,6 +598,7 @@ class CycleRunner:
                     if self._should_abort():
                         return True
                     time.sleep(0.05)
+                self._leave_pause_andon()
                 continue
             slice_s = min(0.02, remaining)
             t0 = time.monotonic()
@@ -594,16 +618,21 @@ class CycleRunner:
         """Pausa cooperativa tras completar un paso atómico. True = abortar."""
         if self._should_abort():
             return True
+        paused_here = False
         if self._step_by_step_should_pause(step_key):
             meta = STEP_BY_KEY.get(step_key, {})
             label = meta.get("label", step_key)
             self._pause.set()
             self._host.cycle_log(f"Paso a paso — {label}")
+            self._enter_pause_andon()
+            paused_here = True
             self._host.cycle_notify()
         while self._pause.is_set():
             if self._should_abort():
                 return True
             time.sleep(0.05)
+        if paused_here:
+            self._leave_pause_andon()
         return False
     def _gate(self, step_name: str) -> bool:
         """Tras un paso: Pause/Stop. True = salir del lote."""
@@ -941,9 +970,10 @@ class CycleRunner:
         elif not ok:
             self._set_state(TX_ERROR, self._fault or "cycle_failed")
         else:
-            self._set_state(TX_IDLE)
+            self._set_state(TX_FINISH)
             self._host.cycle_log(
                 f"Lote completo — {self._total_reps}/{self._total_reps} piezas"
                 + (f" en {elapsed:.0f}s" if elapsed > 0 else "")
+                + " · FinishParts (0x047)"
             )
         self._host.cycle_notify()

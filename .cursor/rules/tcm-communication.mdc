@@ -1,0 +1,111 @@
+---
+description: Communication Core protegido — no tocar TCP/WiFi/loop sin causalidad demostrada
+alwaysApply: true
+---
+
+# TCM — Communication Core (protegido)
+
+Fuente normativa: `Doc/normas_arquitectura.md` § Communication Core.  
+Complementa `tcm-arquitectura.mdc` (Set/Res, opcodes, C1/C2/C3). **No los reemplaza.**
+
+## Objetivo
+
+Evitar la regresión:
+
+```text
+fallo de rutina / Motion / PF / PLC
+→ “arreglar” tocando TCP/WiFi/heartbeat/reconnect
+→ comunicación que ya funcionaba se degrada
+```
+
+La comunicación **no es intocable**. Solo se modifica si hay **relación causal demostrada** con el problema pedido.
+
+## Componentes protegidos (rutas reales)
+
+### HMI — `HMI/tcp_link.py` + `ModuleTcpClient`
+
+- `ModuleTcpClient` (también usado desde `HMI/state.py`)
+- Threads: `_rx_loop` (RX), `_bg_loop` (reconnect/heartbeat)
+- Locks: `_io_lock`, `_conn_lock`, `_connect_gate` (reconnect serializado)
+- Session/generation: `_session`; callbacks diferidos `_schedule_connection`
+- Ciclo de vida: `connect` / `_connect_locked` / `reconnect` / `disconnect` / `_drop_link`
+- Heartbeat / stale: `HEARTBEAT_INTERVAL_SEC`, `HEARTBEAT_STALE_SEC`, `_send_probe`
+- Timeouts: `RX_TIMEOUT_SEC`, `RX_JOIN_TIMEOUT_SEC`, `CONNECT_TIMEOUT`, `VERIFY_TIMEOUT_SEC`
+- `enable_tcp_keepalive`, `TCP_NODELAY`
+
+**Fuera del core (no reescribir por “arreglar TCP”):** `HMI/cycle.py` / `CycleRunner` corre en su propio thread; sus waits (`motion_wait_timeout_s`, etc.) **no** se convierten en polling TCP ni se mueven al hilo de comunicación.
+
+### Motion — `Motion/Motion.ino`
+
+- WiFi no bloqueante: `serviceWifi()`, `wifiKickConnect()`, `wifiConnectStartedMs`, `wifiLastKickMs`
+- TCP ASDA: `serviceAsdaTcp()`, `asdaTcpEnsureServices()`, `asdaTcpStopServices()`, `asdaTcpAcceptIncoming()`, `asdaTcpRxDrain()`, `asdaTcpPollEvents()`, `asdaTcpOnLine` / protocolo ASDA TCP, `setNoDelay(true)`
+- Prep asíncrona: `motionPrepPollOnce()`, `motionPrepKind`, `motionPrepStep`, `motionJobActive`
+- `loop()`: `serviceWifi` → `server.handleClient` → sensores → `serviceAsdaTcp` → `motionPrepPollOnce` → `pollMotionOnce` → encoder → `serviceCANRx` → `feedLoop`
+
+### PreFeeder Master — `PF/PreFeeder_Master/PreFeeder_Master.ino`
+
+- WiFi: `masterServiceWiFi()`
+- TCP HMI: `masterServiceTcpHmi()`, `pfTcpEnsureServices()`, `pfTcpStopServices()`, `pfTcpAcceptIncoming()`, `pfTcpRxDrain()`, `pfTcpPollStateEvents()`, protocolo PF HMI
+- Lados L/R: `pfServiceSide`, `pfTryConnect`, `pfWatchLink`, `pfKeepalive`, `pfRx`
+- HTTP en el mismo ciclo: `masterServiceHttp()`
+- Orden de `loop()`: HTTP / WiFi / TCP HMI / lado L / HTTP / lado R / status / HTTP
+
+## Clasificación de fallos (antes de tocar nada)
+
+Cadena de diagnóstico:
+
+```text
+¿salió? → ¿llegó? → ¿recibido? → ¿interpretado? → ¿lógica permitió? → ¿actuador ejecutó?
+```
+
+| Clase | Significado | Dónde mirar |
+|-------|-------------|-------------|
+| **A. Link failure** | Socket realmente caído | TCP, WiFi, reconnect, heartbeat, lifecycle |
+| **B. Transport OK / command failure** | Llegó; no se procesó bien | opcode, parser, handler, estado, aceptación |
+| **C. Command OK / execution failure** | Procesado; mecanismo falló | Motion/PLC/PF, encoder, sensores, rutina |
+
+En **B** y **C**: **no** modificar el Communication Core solo por el síntoma.
+
+## Loop = zona crítica
+
+En Motion y PreFeeder Master, toda función llamada desde `loop()` es sensible a latencia.
+
+Patrón obligatorio: **service → trabajo corto → regresar → siguiente service**.
+
+Prohibido introducir en el camino del `loop()` (o en handlers que lo monopolizan):
+
+- `delay` / `while` / `for` que esperen condición externa
+- espera de movimiento físico, sensor, TCP, WiFi, Modbus largo, reconnect bloqueante, retry prolongado
+
+**Motion — prep no bloqueante:** preservar `motionPrepPollOnce()` + pasos; no sustituir por `waitUntilMotionFinished()` (ni equivalente) dentro del `loop()`. Nuevas operaciones de movimiento / encoder / feeder = máquina de estados incremental.
+
+**HTTP en Motion:** `server.handleClient()` comparte el mismo `loop()` que `serviceAsdaTcp()` y el resto. Handlers HTTP de larga duración (p. ej. esperas físicas) afectan TCP y WiFi. Analizar latencia de handlers; no añadir handlers nuevos con esperas físicas largas.
+
+## Communication Impact Check
+
+Antes de cambiar archivos de máquina (rutina, Motion, PF, PLC, encoder, feeder, estados, errores):
+
+1. ¿Toca TCP? 2. ¿WiFi? 3. ¿reconnect? 4. ¿heartbeat? 5. ¿timeout?  
+6. ¿sockets? 7. ¿protocolo/opcodes de enlace? 8. ¿orden del `loop()`?  
+9. ¿función llamada desde `loop()`? 10. ¿operación potencialmente bloqueante?  
+11–14. ¿Puede retrasar `serviceAsdaTcp` / `serviceWifi` / `serviceCANRx` / `feedLoop`?  
+15. ¿Puede retrasar servicios TCP del PreFeeder (`masterServiceTcpHmi` / `pfTcp*` / L/R)?
+
+Si la tarea **no** es de comunicación y alguna respuesta es **sí**: **no tocar** la zona protegida. Buscar solución en el dominio del problema. Si hay dependencia causal real: documentar el bloque **COMMUNICATION IMPACT** antes de modificar.
+
+```text
+COMMUNICATION IMPACT
+Componente protegido: <archivo/función>
+Cambio propuesto: <qué>
+Relación causal: <por qué afecta el problema>
+Riesgo: <qué puede romper>
+Alternativa sin tocar comunicación: <alternativa>
+```
+
+## Prohibido: refactors “de paso”
+
+Corregir rutina / Motion / PF / PLC / encoder / feeder / estados / errores / producción **no** autoriza “limpiar”, “modernizar” o “mejorar” arquitectura TCP, WiFi, reconnect, heartbeat, threading, socket lifecycle, protocolos, Core/task o timing, si no es necesario para el problema pedido.
+
+## Preferencia
+
+Proteger con esta regla y `Doc/normas_arquitectura.md`. No refactorizar el core “para cumplir la norma”.

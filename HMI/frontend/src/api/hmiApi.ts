@@ -6,6 +6,12 @@ async function api<T>(path: string, opts: RequestInit = {}): Promise<T> {
     headers: { 'Content-Type': 'application/json' },
     ...opts,
   });
+  const ct = res.headers.get('content-type') || '';
+  if (!ct.includes('application/json')) {
+    throw new Error(
+      `API ${path}: expected JSON, got ${res.status} ${ct || 'unknown'}`
+    );
+  }
   return res.json() as Promise<T>;
 }
 
@@ -81,6 +87,36 @@ export function setCycleTrialMode(on: boolean) {
     '/api/cycle/trial-mode',
     { on }
   );
+}
+
+export function debugTrailsStart(opts: {
+  side: string;
+  numTests: number;
+  waitTimeS: number;
+}) {
+  return post<{ ok: boolean; trails?: unknown; error?: string }>(
+    '/api/debug-trails/start',
+    {
+      side: opts.side,
+      numTests: opts.numTests,
+      waitTimeS: opts.waitTimeS,
+    }
+  );
+}
+
+export function debugTrailsStop() {
+  return post<{ ok: boolean; trails?: unknown }>('/api/debug-trails/stop', {});
+}
+
+export function debugTrailsClear() {
+  return post<{ ok: boolean; trails?: unknown; error?: string }>(
+    '/api/debug-trails/clear',
+    {}
+  );
+}
+
+export function debugTrailsExportUrl() {
+  return '/api/debug-trails/export.csv';
 }
 
 export function getCycleConfig() {

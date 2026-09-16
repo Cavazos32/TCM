@@ -18,10 +18,14 @@ constexpr uint8_t ANDON_PROTO_VER = 1;
 constexpr unsigned long WIFI_CONNECT_TIMEOUT_MS = 30000;
 
 // --- Salidas torre Andon (reaccionan a bytes Machine/HMI) ---
-constexpr uint8_t PIN_GREEN_LED  = 16;  // 0x40 / 0x44 / 0x45
-constexpr uint8_t PIN_YELLOW_LED = 17;  // 0x49
-constexpr uint8_t PIN_BUZZER     = 25;  // 0x46 / 0x47 / 0x49
-constexpr uint8_t PIN_RED_LED    = 21;  // 0x42 / 0x46
+constexpr uint8_t PIN_GREEN_LED  = 16;  // 0x40 / 0x44 / 0x45 / seq 0x47
+constexpr uint8_t PIN_YELLOW_LED = 17;  // 0x48 Pause / 0x49 Materialist / seq 0x47
+constexpr uint8_t PIN_BUZZER     = 25;  // 0x46 / 0x47 (seq) / 0x49
+constexpr uint8_t PIN_RED_LED    = 21;  // 0x42 / 0x46 / seq 0x47
+
+// Fin de WO (0x47): R→Y→G en secuencia + buzzer; no es estado permanente.
+constexpr uint32_t ANDON_FINISH_STEP_MS = 400;
+constexpr uint8_t  ANDON_FINISH_CYCLES  = 3;
 
 // --- Entrada presión FRL — local: torreta Error + TX 0x50 a HMI (sin RX) ---
 constexpr uint8_t PIN_PRESSURE_FRL = 33;

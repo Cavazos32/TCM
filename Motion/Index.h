@@ -598,7 +598,9 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
       </div>
       <p class="enc-foot">
         Polea ø50 mm · 2000 c/rev · 100 mm = 1273 cuentas.
-        Cada lado tiene Set0 y offset independientes. Offset se suma <b>después</b> del redondeo 0/0.5/1.
+        Cada lado tiene Set0 y offset independientes.
+        La lectura visible y Set0 usan la base (redondeo 0/0.5/1);
+        el offset es corrección interna de Motion/Feed y <b>no</b> altera el cero operativo.
       </p>
     </div>
   </div>
@@ -611,7 +613,8 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
     let encTimer = null;
     let ovTimer = null;
     let lastEncAngDraw = { L: -1, R: -1 };
-    let lastEncSettleC = { L: null, R: null };
+    // Clave settle+mm+offset: si solo cambia offset/Set0, hay que repintar.
+    let lastEncSettleKey = { L: null, R: null };
 
     function encPolar(cx, cy, r, deg) {
       const rad = deg * Math.PI / 180;
@@ -648,7 +651,7 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
 
     function encClearDisplay(side) {
       lastEncAngDraw[side] = -1;
-      lastEncSettleC[side] = null;
+      lastEncSettleKey[side] = null;
       $('enc' + side + 'MmAbs').textContent = '—';
       $('enc' + side + 'Angle').textContent = '—';
       updateEncSweep(side, 0);
@@ -661,11 +664,17 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
       });
     }
 
-    function encApplySettle(side, d) {
+    function encSettleKey(d) {
+      return String(d.cSettle) + '|' + Number(d.mmSettle).toFixed(3) + '|' +
+        Number(d.offsetMm != null ? d.offsetMm : 0).toFixed(3);
+    }
+
+    function encApplySettle(side, d, force) {
       const cpr = d.cpr || 2000;
       const cSettle = d.cSettle;
-      if (cSettle === lastEncSettleC[side]) return;
-      lastEncSettleC[side] = cSettle;
+      const key = encSettleKey(d);
+      if (!force && key === lastEncSettleKey[side]) return;
+      lastEncSettleKey[side] = key;
 
       $('enc' + side + 'MmAbs').textContent = Number(d.mmSettle).toFixed(2) + ' mm';
       $('enc' + side + 'Settle').textContent = Number(d.mmSettle).toFixed(2) + ' mm';
@@ -714,7 +723,7 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
         return;
       }
       if (d.settled) {
-        encApplySettle(side, d);
+        encApplySettle(side, d, !!d._forcePaint);
         return;
       }
       if (Math.abs(Number(d.c)) < 1) encClearDisplay(side);
@@ -980,17 +989,33 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
 
     async function resetEnc(side) {
       try {
-        const q = side ? ('?side=' + side) : '';
-        paintEnc(await api('POST', '/api/encoder/reset' + q));
-      } catch (e) {}
+        if (side) lastEncSettleKey[side] = null;
+        else { lastEncSettleKey.L = null; lastEncSettleKey.R = null; }
+        const q = side ? ('?side=' + encodeURIComponent(side)) : '';
+        const j = await api('POST', '/api/encoder/reset' + q);
+        if (j && j.l) j.l._forcePaint = true;
+        if (j && j.r) j.r._forcePaint = true;
+        paintEnc(j);
+        log(side ? ('Set0 ' + side + ' OK') : 'Set0 L+R OK');
+      } catch (e) {
+        log('Set0 falló: ' + e.message);
+      }
     }
 
     async function saveEncOffset(side) {
       const offsetMm = Number($('enc' + side + 'OffsetMm').value);
       try {
-        const j = await api('POST', '/api/encoder', { side: side, offsetMm: offsetMm });
+        lastEncSettleKey[side] = null;
+        // Query + body: ESP WebServer a veces no entrega JSON en "plain".
+        const q = '?side=' + encodeURIComponent(side) +
+          '&offsetMm=' + encodeURIComponent(String(offsetMm));
+        const j = await api('POST', '/api/encoder' + q, { side: side, offsetMm: offsetMm });
+        if (j && j.l) j.l._forcePaint = true;
+        if (j && j.r) j.r._forcePaint = true;
         paintEnc(j);
-        log('OM offsetMm ' + side + ' → ' + Number(offsetMm).toFixed(3));
+        const got = (side === 'R' ? (j && j.r) : (j && j.l));
+        const saved = got && got.offsetMm != null ? Number(got.offsetMm) : offsetMm;
+        log('OM offsetMm ' + side + ' → ' + saved.toFixed(3));
       } catch (e) {
         log('Error offset OM ' + side + ': ' + e.message);
       }
@@ -1139,7 +1164,12 @@ canvas{width:100%;max-width:640px;height:160px;background:#151b21;border:1px sol
 
   <section>
     <h2>Test feed · L / R</h2>
-    <p style="color:var(--muted);font-size:.82rem;margin:0 0 .75rem">Target + Vel (mm/s) + Dec (ms). Acc fijo 50 ms.</p>
+    <p style="color:var(--muted);font-size:.82rem;margin:0 0 .75rem">Target fijo 55 mm · Approach % (estrategia) · Vel nominal · Comp. vel % (Approach/corr).</p>
+    <div class="feed-side-row">
+      <label>Approach %<input type="number" id="approachPct" min="50" max="95" step="1" value="80"></label>
+      <span class="stats" id="approachMmHint">→ 44.0 mm</span>
+      <label>Comp. vel %<input type="number" id="moveSpeedPct" min="10" max="100" step="1" value="50"></label>
+    </div>
     <div class="feed-side-row">
       <span class="feed-side-tag">L</span>
       <label>Target mm<input type="number" id="solidL" min="0" max="200" step="0.5" value="55"></label>
@@ -1160,6 +1190,9 @@ canvas{width:100%;max-width:640px;height:160px;background:#151b21;border:1px sol
     <p class="stats" id="statsR">—</p>
     <div style="margin-top:.75rem;display:flex;gap:.5rem;flex-wrap:wrap">
       <button type="button" class="btn btn-accent" id="btnSave">Guardar config</button>
+      <button type="button" class="btn" id="btnFeedReset">Reset Feed + OM</button>
+      <button type="button" class="btn" id="btnZeroL">Set0 L</button>
+      <button type="button" class="btn" id="btnZeroR">Set0 R</button>
     </div>
     <div class="msg" id="msg"></div>
   </section>
@@ -1187,12 +1220,29 @@ canvas{width:100%;max-width:640px;height:160px;background:#151b21;border:1px sol
 function $(id){return document.getElementById(id)}
 function showMsg(t,cls){var m=$('msg');m.textContent=t;m.className='msg show '+(cls||'');}
 function cfgQuery(){
-  return '/getFeedTestConfig?solidMm='+encodeURIComponent($('solidL').value)
+  return 'solidMm='+encodeURIComponent($('solidL').value)
     +'&solidMmR='+encodeURIComponent($('solidR').value)
     +'&velocityMmSL='+encodeURIComponent($('velL').value)
     +'&velocityMmSR='+encodeURIComponent($('velR').value)
     +'&decRampMsL='+encodeURIComponent($('decMsL').value)
-    +'&decRampMsR='+encodeURIComponent($('decMsR').value);
+    +'&decRampMsR='+encodeURIComponent($('decMsR').value)
+    +'&approachPct='+encodeURIComponent($('approachPct').value)
+    +'&moveSpeedPct='+encodeURIComponent($('moveSpeedPct').value);
+}
+function applyFeedCfg(d){
+  if(!d)return;
+  if(d.solidMm!=null)$('solidL').value=d.solidMm;
+  if(d.solidMmR!=null)$('solidR').value=d.solidMmR;
+  if(d.velocityMmSL!=null)$('velL').value=d.velocityMmSL;
+  if(d.velocityMmSR!=null)$('velR').value=d.velocityMmSR;
+  if(d.decRampMsL!=null)$('decMsL').value=d.decRampMsL;
+  if(d.decRampMsR!=null)$('decMsR').value=d.decRampMsR;
+  if(d.approachPct!=null)$('approachPct').value=d.approachPct;
+  if(d.moveSpeedPct!=null)$('moveSpeedPct').value=d.moveSpeedPct;
+  var apMm=d.approachMm!=null?d.approachMm:(55*Number($('approachPct').value)/100);
+  $('approachMmHint').textContent='→ '+Number(apMm).toFixed(1)+' mm (target 55)';
+  drawPlan('canvasL','statsL',d.planL,parseFloat(d.solidMm),parseFloat(d.velocityMmSL));
+  drawPlan('canvasR','statsR',d.planR,parseFloat(d.solidMmR),parseFloat(d.velocityMmSR));
 }
 function drawPlan(canvasId,statsId,plan,target,vMm){
   var c=$(canvasId),ctx=c.getContext('2d'),w=c.width,h=c.height;
@@ -1212,14 +1262,16 @@ function drawPlan(canvasId,statsId,plan,target,vMm){
   $(statsId).textContent='V='+vMm.toFixed(0)+' mm/s · acc='+acc.toFixed(0)+' · dec='+dec.toFixed(0)
     +' · dAcc='+dAcc.toFixed(1)+' dDec='+dDec.toFixed(1)+' cruise='+dCr.toFixed(1)+' mm';
 }
-function refreshProfile(){
-  fetch(cfgQuery()).then(r=>r.json()).then(function(d){
-    drawPlan('canvasL','statsL',d.planL,parseFloat(d.solidMm),parseFloat(d.velocityMmSL));
-    drawPlan('canvasR','statsR',d.planR,parseFloat(d.solidMmR),parseFloat(d.velocityMmSR));
-    $('solidL').value=d.solidMm;$('solidR').value=d.solidMmR;
-    $('velL').value=d.velocityMmSL;$('velR').value=d.velocityMmSR;
-    $('decMsL').value=d.decRampMsL;$('decMsR').value=d.decRampMsR;
-  }).catch(function(){showMsg('Error cargando perfil','bad');});
+// fromDisk=true: leer NVS/runtime (sin query). false: preview con valores del formulario.
+function refreshProfile(fromDisk){
+  var url=fromDisk?'/getFeedTestConfig':('/getFeedTestConfig?'+cfgQuery());
+  fetch(url).then(r=>r.json()).then(applyFeedCfg)
+    .catch(function(){showMsg('Error cargando perfil','bad');});
+}
+function updateApproachHint(){
+  var pct=Number($('approachPct').value);
+  if(!isFinite(pct))return;
+  $('approachMmHint').textContent='→ '+(55*pct/100).toFixed(1)+' mm (target 55)';
 }
 function pollCan(){
   fetch('/api/feed/status').then(r=>r.json()).then(function(s){
@@ -1253,7 +1305,9 @@ function runTest(side){
     +'&velocityMmS='+encodeURIComponent($('velL').value)
     +'&velocityMmSR='+encodeURIComponent($('velR').value)
     +'&decRampMsL='+encodeURIComponent($('decMsL').value)
-    +'&decRampMsR='+encodeURIComponent($('decMsR').value);
+    +'&decRampMsR='+encodeURIComponent($('decMsR').value)
+    +'&approachPct='+encodeURIComponent($('approachPct').value)
+    +'&moveSpeedPct='+encodeURIComponent($('moveSpeedPct').value);
   fetch(q).then(r=>r.json()).then(function(d){
     if(!d.ok){showMsg(d.error||'Fallo','bad');return;}
     showMsg('Moviendo servos '+side+'…','wait');
@@ -1266,7 +1320,28 @@ function runTest(side){
   }).catch(function(){showMsg('Error red','bad');});
 }
 $('btnSave').onclick=function(){
-  fetch('/setFeedTestConfig?'+cfgQuery().split('?')[1]).then(r=>r.json()).then(function(){showMsg('Guardado','ok');refreshProfile();});
+  fetch('/setFeedTestConfig?'+cfgQuery()).then(r=>r.json()).then(function(d){
+    if(d&&d.error){showMsg(d.error,'bad');return;}
+    showMsg('Guardado','ok');
+    applyFeedCfg(d);
+  }).catch(function(){showMsg('Error guardando','bad');});
+};
+$('btnFeedReset').onclick=function(){
+  showMsg('Reset Feed + OM…','wait');
+  fetch('/api/feed/reset').then(r=>r.json()).then(function(s){
+    if(s.feedReset){showMsg('Reset OK · OM en 0','ok');pollCan();}
+    else showMsg(s.error||'Reset falló','bad');
+  }).catch(function(){showMsg('Error red','bad');});
+};
+$('btnZeroL').onclick=function(){
+  fetch('/api/feed/encoder/zero?side=L').then(r=>r.json()).then(function(d){
+    showMsg(d.ok?'Set0 L OK':'Set0 L falló',d.ok?'ok':'bad');
+  });
+};
+$('btnZeroR').onclick=function(){
+  fetch('/api/feed/encoder/zero?side=R').then(r=>r.json()).then(function(d){
+    showMsg(d.ok?'Set0 R OK':'Set0 R falló',d.ok?'ok':'bad');
+  });
 };
 $('btnTestL').onclick=function(){runTest('L');};
 $('btnTestR').onclick=function(){runTest('R');};
@@ -1288,10 +1363,11 @@ function loadCal(){
     $('scaleR').textContent='spm R: '+d.countsPerMmR.toFixed(2);
   });
 }
-['solidL','solidR','velL','velR','decMsL','decMsR'].forEach(function(id){
-  $(id).addEventListener('change',refreshProfile);
+['solidL','solidR','velL','velR','decMsL','decMsR','approachPct','moveSpeedPct'].forEach(function(id){
+  $(id).addEventListener('change',function(){refreshProfile(false);});
 });
-refreshProfile();loadCal();pollCan();
+$('approachPct').addEventListener('input',updateApproachHint);
+refreshProfile(true);loadCal();pollCan();
 </script>
 </body>
 </html>)FEEDHTML";

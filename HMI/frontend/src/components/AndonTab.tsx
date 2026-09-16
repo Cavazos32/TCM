@@ -56,9 +56,10 @@ const OUTPUTS: {
 const PRESETS: { byte: number; labelKey: string; hint: string }[] = [
   { byte: 0x44, labelKey: 'andon_preset_idle', hint: 'Green' },
   { byte: 0x45, labelKey: 'andon_preset_busy', hint: 'Green' },
+  { byte: 0x48, labelKey: 'andon_preset_pause', hint: 'Yellow' },
   { byte: 0x42, labelKey: 'andon_preset_stop', hint: 'Red' },
   { byte: 0x46, labelKey: 'andon_preset_error', hint: 'Red + Buzzer' },
-  { byte: 0x47, labelKey: 'andon_preset_finish', hint: 'Green + Buzzer' },
+  { byte: 0x47, labelKey: 'andon_preset_finish', hint: 'R→Y→G + Buzzer' },
   { byte: 0x49, labelKey: 'andon_preset_materialist', hint: 'Yellow + Buzzer' },
 ];
 

@@ -170,6 +170,24 @@ def _no_cache_spa_shell(resp: Response):
     return resp
 
 
+@app.errorhandler(404)
+def _api_json_404(_err):
+    # static_url_path="" hace que rutas /api desconocidas caigan en 404 HTML de Flask;
+    # el frontend hace res.json() y revienta con Unexpected token '<'.
+    if request.path.startswith("/api/"):
+        return jsonify({"ok": False, "error": "not_found", "path": request.path}), 404
+    if DIST_DIR.joinpath("index.html").is_file():
+        return send_from_directory(DIST_DIR, "index.html")
+    return jsonify({"error": "not found"}), 404
+
+
+@app.errorhandler(405)
+def _api_json_405(_err):
+    if request.path.startswith("/api/"):
+        return jsonify({"ok": False, "error": "method_not_allowed", "path": request.path}), 405
+    return jsonify({"error": "method_not_allowed"}), 405
+
+
 @atexit.register
 def _shutdown() -> None:
     try:
@@ -321,6 +339,48 @@ def api_cycle_trial_mode():
     return jsonify(get_state().cmd_cycle_trial_mode(bool(body.get("on", True))))
 
 
+@app.get("/api/debug-trails")
+def api_debug_trails_get():
+    return jsonify({"ok": True, "trails": get_state().get_debug_trails_snapshot()})
+
+
+@app.post("/api/debug-trails/start")
+def api_debug_trails_start():
+    body = request.get_json(silent=True) or {}
+    return jsonify(
+        get_state().cmd_debug_trails_start(
+            side=str(body.get("side", "Both")),
+            num_tests=int(body.get("numTests", body.get("num_tests", 1))),
+            wait_time_s=float(body.get("waitTimeS", body.get("wait_time_s", 1.0))),
+        )
+    )
+
+
+@app.post("/api/debug-trails/stop")
+def api_debug_trails_stop():
+    return jsonify(get_state().cmd_debug_trails_stop())
+
+
+@app.post("/api/debug-trails/clear")
+def api_debug_trails_clear():
+    return jsonify(get_state().cmd_debug_trails_clear())
+
+
+@app.get("/api/debug-trails/export.csv")
+def api_debug_trails_export_csv():
+    from flask import Response
+
+    filename, csv_text = get_state().export_debug_trails_csv()
+    return Response(
+        csv_text,
+        mimetype="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 @app.get("/api/cycle/config")
 def api_cycle_config_get():
     return jsonify({"ok": True, "config": get_state().get_cycle_config()})
@@ -422,6 +482,10 @@ def api_motion_feed_offset_set():
 
 @app.route("/<path:asset_path>")
 def spa_assets(asset_path: str):
+    # Nunca devolver index.html para /api/*: el frontend hace res.json() y falla con
+    # Unexpected token '<' si recibe HTML (404 SPA).
+    if asset_path == "api" or asset_path.startswith("api/"):
+        return jsonify({"ok": False, "error": "not_found", "path": f"/{asset_path}"}), 404
     target = DIST_DIR / asset_path
     if target.is_file():
         return send_from_directory(DIST_DIR, asset_path)

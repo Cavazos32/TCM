@@ -18,6 +18,7 @@ DEFAULT_BLOWER_SEC = 2.0
 DEFAULT_ANDON_BUZZER_MUTE = False
 
 from cycle import CycleRunner, PROGRESS_STEPS
+from debug_trails import DebugTrailsRunner
 from motion import (
     CMD_ENC_MEASURE_L,
     CMD_ENC_MEASURE_R,
@@ -293,11 +294,23 @@ class HmiState:
         self._feed_ok_r = threading.Event()
         self._feed_ng_l = threading.Event()
         self._feed_ng_r = threading.Event()
+        # Armado por lado: ignora LengthOK/NG stale de operaciones anteriores.
+        self._feed_armed_l = False
+        self._feed_armed_r = False
+        self._feed_gen_l = 0
+        self._feed_gen_r = 0
         self._pf_materialist = False
+        # Debug Trails: OM oficial por lado + eventos GetMeasured
+        self._enc_mm_r: float | None = None
+        self._enc_mm_l: float | None = None
+        self._enc_measure_evt_r = threading.Event()
+        self._enc_measure_evt_l = threading.Event()
+        self._debug_trails_active = False
 
         self._error_policy = ErrorPolicy()
         self._cycle = CycleRunner(self)
         self._cycle.set_machine_state_hook(self._broadcast_machine_state)
+        self._debug_trails = DebugTrailsRunner(self)
         # Histéresis enlace: gen+1 cancela timer pendiente al recuperar.
         self._link_down_gen = {"motion": 0, "plc": 0, "prefeeder": 0}
 
@@ -322,6 +335,8 @@ class HmiState:
         self._notify_event.set()
         if self._cycle.is_active():
             self._cycle.request_stop()
+        if self._debug_trails.is_active():
+            self._debug_trails.request_stop()
         self._client.stop_background()
         self._plc_client.stop_background()
         self._pf_client.stop_background()
@@ -378,6 +393,7 @@ class HmiState:
                 "progress": progress,
                 "resumeEnabled": resume,
                 "cycle": cycle_snap,
+                "debugTrails": self._debug_trails.snapshot(),
                 "motionLink": {
                     "connected": self._motion["connected"],
                     "host": DEFAULT_HOST,
@@ -538,6 +554,8 @@ class HmiState:
         self._feed_ok_r.clear()
         self._feed_ng_l.clear()
         self._feed_ng_r.clear()
+        self._feed_armed_l = False
+        self._feed_armed_r = False
 
     def clear_motion_reached_flag(self) -> None:
         """Solo Idle/Reached — conserva LengthOK/NG del prefetch en paralelo."""
@@ -547,7 +565,7 @@ class HmiState:
         return self._motion_idle_or_reached.wait(timeout=timeout_s)
 
     def wait_feed_length_ok(self, timeout_s: float) -> bool:
-        # OK en ambos lados; NG en cualquiera = fallo
+        # OK en ambos lados; NG en cualquiera = fallo. No OK global por un solo lado.
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
             if self._feed_ng_l.is_set() or self._feed_ng_r.is_set():
@@ -556,6 +574,34 @@ class HmiState:
                 return True
             time.sleep(0.05)
         return self._feed_ok_l.is_set() and self._feed_ok_r.is_set()
+
+    def wait_feed_length_ok_for(
+        self, sides: list[str], timeout_s: float
+    ) -> dict[str, str]:
+        """Espera LengthOK/NG solo en los lados pedidos. Valores: ok|ng|timeout."""
+        need = {s for s in sides if s in ("R", "L")}
+        if not need:
+            return {}
+        deadline = time.monotonic() + timeout_s
+        done: dict[str, str] = {}
+        while time.monotonic() < deadline and len(done) < len(need):
+            if "L" in need and "L" not in done:
+                if self._feed_ng_l.is_set():
+                    done["L"] = "ng"
+                elif self._feed_ok_l.is_set():
+                    done["L"] = "ok"
+            if "R" in need and "R" not in done:
+                if self._feed_ng_r.is_set():
+                    done["R"] = "ng"
+                elif self._feed_ok_r.is_set():
+                    done["R"] = "ok"
+            if len(done) >= len(need):
+                break
+            time.sleep(0.05)
+        for s in need:
+            if s not in done:
+                done[s] = "timeout"
+        return done
 
     def cmd_motion_move_mm(self, mm: float, rpm: float) -> bool:
         mm = abs(float(mm))
@@ -579,9 +625,17 @@ class HmiState:
         return self._client.cmd_stop()
 
     def cmd_motion_feed_l(self) -> bool:
+        self._feed_ok_l.clear()
+        self._feed_ng_l.clear()
+        self._feed_gen_l += 1
+        self._feed_armed_l = True
         return self._client.cmd_feed_l()
 
     def cmd_motion_feed_r(self) -> bool:
+        self._feed_ok_r.clear()
+        self._feed_ng_r.clear()
+        self._feed_gen_r += 1
+        self._feed_armed_r = True
         return self._client.cmd_feed_r()
 
     def cmd_motion_enc_set0_r(self) -> bool:
@@ -589,6 +643,23 @@ class HmiState:
 
     def cmd_motion_enc_set0_l(self) -> bool:
         return self._client.cmd_enc_set0_l()
+
+    def cmd_motion_enc_measure_r(self) -> bool:
+        self._enc_measure_evt_r.clear()
+        return self._client.cmd_enc_measure_r()
+
+    def cmd_motion_enc_measure_l(self) -> bool:
+        self._enc_measure_evt_l.clear()
+        return self._client.cmd_enc_measure_l()
+
+    def wait_encoder_mm(self, side: str, timeout_s: float) -> float | None:
+        """Espera GetMeasured (mmOfficial) del lado indicado."""
+        evt = self._enc_measure_evt_r if side == "R" else self._enc_measure_evt_l
+        if not evt.wait(timeout=timeout_s):
+            with self._lock:
+                return self._enc_mm_r if side == "R" else self._enc_mm_l
+        with self._lock:
+            return self._enc_mm_r if side == "R" else self._enc_mm_l
 
     def cmd_plc_holder(self, on: bool) -> bool:
         return self._plc_client.cmd_holder(on)
@@ -601,8 +672,26 @@ class HmiState:
         ok_l = self._plc_client.cmd_cutter_l(on)
         return ok_r and ok_l
 
+    def cmd_plc_cutter_r(self, on: bool) -> bool:
+        return self._plc_client.cmd_cutter_r(on)
+
+    def cmd_plc_cutter_l(self, on: bool) -> bool:
+        return self._plc_client.cmd_cutter_l(on)
+
     def cmd_plc_all_safe(self) -> bool:
         return self._plc_client.cmd_all_off()
+
+    def cycle_is_active(self) -> bool:
+        return self._cycle.is_active()
+
+    def feed_wait_timeout_s(self) -> float:
+        return float(self._cycle.get_config().feed_wait_timeout_s)
+
+    def cutter_pulse_ms(self) -> int:
+        return int(self._cycle.get_config().cutter_pulse_ms)
+
+    def set_debug_trails_active(self, on: bool) -> None:
+        self._debug_trails_active = bool(on)
 
     def cmd_pf_start(self) -> bool:
         return self._pf_client.cmd_start()
@@ -638,6 +727,8 @@ class HmiState:
 
     def cmd_start(self, qty: int | None = None) -> dict:
         """Start máquina (0x040): lote Cycle con mm/qty del modelo."""
+        if self._debug_trails.is_active():
+            return {"ok": False, "error": "Debug Trails activo — detener antes de producir"}
         with self._lock:
             mm, rpm = self._mm, self._rpm
             model = self._models[self._selected_model_idx] if self._models else {}
@@ -647,6 +738,8 @@ class HmiState:
         return self._cycle.request_start(mm, use_qty, rpm)
 
     def cmd_stop(self) -> dict:
+        if self._debug_trails.is_active():
+            return self._debug_trails.request_stop()
         if self._cycle.is_active() or self._cycle.snapshot().get("paused"):
             return self._cycle.request_stop()
         return {"ok": self._manual_motion(lambda: self._client.cmd_stop())}
@@ -853,6 +946,28 @@ class HmiState:
     def cmd_cycle_trial_mode(self, on: bool = True) -> dict:
         return self._cycle.set_trial_mode(on)
 
+    def cmd_debug_trails_start(
+        self,
+        side: str = "Both",
+        num_tests: int = 1,
+        wait_time_s: float = 1.0,
+    ) -> dict:
+        return self._debug_trails.request_start(
+            side=side, num_tests=num_tests, wait_time_s=wait_time_s
+        )
+
+    def cmd_debug_trails_stop(self) -> dict:
+        return self._debug_trails.request_stop()
+
+    def cmd_debug_trails_clear(self) -> dict:
+        return self._debug_trails.clear_records()
+
+    def get_debug_trails_snapshot(self) -> dict:
+        return self._debug_trails.snapshot()
+
+    def export_debug_trails_csv(self) -> tuple[str, str]:
+        return self._debug_trails.export_csv()
+
     def cmd_motion(self, action: str, **kwargs) -> dict:
         handlers = {
             "move": lambda: self._client.cmd_move_mm(
@@ -871,8 +986,8 @@ class HmiState:
             "enc_poll": lambda: self._client.cmd_enc_poll_both(),
             "enc_set0_r": lambda: self._client.cmd_enc_set0_r(),
             "enc_set0_l": lambda: self._client.cmd_enc_set0_l(),
-            "feed_l": lambda: self._client.cmd_feed_l(),
-            "feed_r": lambda: self._client.cmd_feed_r(),
+            "feed_l": lambda: self.cmd_motion_feed_l(),
+            "feed_r": lambda: self.cmd_motion_feed_r(),
             "motion_reset": lambda: self._client.cmd_reset_errors(),
         }
         fn = handlers.get(action)
@@ -1559,6 +1674,7 @@ class HmiState:
                     mm_off = float(msg.get("mmOfficial", 0.0))
                     mm_sig = float(msg.get("mm", 0.0))
                     settled = bool(msg.get("settled", False))
+                    # mmOfficial = lectura base (Set0 → 0); offset OM no contamina la UI.
                     text = f"{mm_off:.2f} mm"
                     if settled:
                         text += f"  (raw {mm_sig:.2f})"
@@ -1566,8 +1682,12 @@ class HmiState:
                         text += "  (moviendo…)"
                     if side == "R":
                         self._motion["enc_r"] = text
+                        self._enc_mm_r = mm_off
+                        self._enc_measure_evt_r.set()
                     else:
                         self._motion["enc_l"] = text
+                        self._enc_mm_l = mm_off
+                        self._enc_measure_evt_l.set()
                     return True
                 if byte_code == TX_REACHED:
                     pos = msg.get("positionPuu")
@@ -1591,26 +1711,40 @@ class HmiState:
                     # Polling periódico del encoder: no spamear log (0x011).
                     return True
                 if byte_code in (TX_LENGTH_OK, TX_LENGTH_OK_L):
+                    if not self._feed_armed_l:
+                        return True  # stale / cross-op
+                    self._feed_armed_l = False
                     self._feed_ok_l.set()
-                    if not self._cycle.is_active():
+                    if not self._cycle.is_active() and not self._debug_trails_active:
                         text = "Feed OK L — longitud en tolerancia (0x014)"
                         self._set_banner(text, "ok")
                         self._set_motion_status(text, "ok")
                     return True
                 if byte_code in (TX_LENGTH_NG, TX_LENGTH_NG_L):
+                    if not self._feed_armed_l:
+                        return True
+                    self._feed_armed_l = False
                     self._feed_ng_l.set()
-                    self._apply_detail_error(TX_LENGTH_NG_L, source="motion")
+                    if not self._debug_trails_active:
+                        self._apply_detail_error(TX_LENGTH_NG_L, source="motion")
                     return True
                 if byte_code == TX_LENGTH_OK_R:
+                    if not self._feed_armed_r:
+                        return True
+                    self._feed_armed_r = False
                     self._feed_ok_r.set()
-                    if not self._cycle.is_active():
+                    if not self._cycle.is_active() and not self._debug_trails_active:
                         text = "Feed OK R — longitud en tolerancia (0x04A)"
                         self._set_banner(text, "ok")
                         self._set_motion_status(text, "ok")
                     return True
                 if byte_code == TX_LENGTH_NG_R:
+                    if not self._feed_armed_r:
+                        return True
+                    self._feed_armed_r = False
                     self._feed_ng_r.set()
-                    self._apply_detail_error(TX_LENGTH_NG_R, source="motion")
+                    if not self._debug_trails_active:
+                        self._apply_detail_error(TX_LENGTH_NG_R, source="motion")
                     return True
                 if byte_code in MOTION_DETAIL_ERROR_BYTES:
                     if byte_code == TX_LASER_R:
@@ -1619,6 +1753,10 @@ class HmiState:
                         self._motion["laserL"] = True
                     elif byte_code == TX_EXHAUST:
                         self._motion["safetyExhaust"] = True
+                    if self._debug_trails_active and byte_code != TX_EXHAUST:
+                        # Trails registra el fallo; no latchea política C1/C2/C3 de producción.
+                        # Exhaust sí se propaga (seguridad).
+                        return True
                     self._apply_detail_error(byte_code, source="motion")
                     return True
                 return False
@@ -1648,6 +1786,15 @@ class HmiState:
                     self._set_motion_status(text, "ok")
                     return True
                 if not ok:
+                    # Feeder CAN no listo → EXXX E023 (0x61), no texto suelto.
+                    detail_l = (detail or "").lower()
+                    if msg.get("actuator") == "feeder" and (
+                        "e023" in detail_l
+                        or "can" in detail_l
+                        or "servo can" in detail_l
+                    ):
+                        self._apply_detail_error(0x61, source="motion")
+                        return True
                     text = detail or "Comando rechazado"
                     _append_log(self._main_log, text)
                     _append_log(self._motion_log, text)

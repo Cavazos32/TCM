@@ -9,17 +9,18 @@
 # Estados MACH_* informan sin detalle. EXXX = identidad del fallo (solo HMI).
 
 # --- Estados máquina / Andon RX (no EXXX) ---
-# Torre Excel: Green / Red / N/A / Red+Buzzer / Green+Buzzer / Yellow+Buzzer
+# Torre: Green / Red / N/A / Red+Buzzer / seq RGB+Buzzer / Yellow / Yellow+Buzzer
 MACH_INIT = 0x40        # InitState · Green
 MACH_START = 0x41       # StartCycle · N/A (torre no cambia)
 MACH_STOP = 0x42        # StopCycle · Red
 MACH_RESET = 0x43       # ResetCycle · N/A
 MACH_IDLE = 0x44        # IdleState · Green
-MACH_BUSY = 0x45        # BusyState · Green
-MACH_ERROR = 0x46       # ErrorState · Red + Buzzer
-MACH_FINISH = 0x47      # FinishParts / LotCompleate · Green + Buzzer
-MACH_RETURN = 0x48      # ReturnStop · N/A
+MACH_BUSY = 0x45        # BusyState · Green (máquina trabajando)
+MACH_ERROR = 0x46       # ErrorState · Red + Buzzer (prioridad)
+MACH_FINISH = 0x47      # FinishParts / LotCompleate · seq R→Y→G + Buzzer (temporal)
+MACH_PAUSE = 0x48       # Pause · Yellow (sin buzzer; distinto de Materialist)
 MACH_MATERIALIST = 0x49 # Materialist · Yellow + Buzzer
+MACH_RETURN = MACH_PAUSE  # alias histórico ReturnStop
 
 # Andon propio: TX only (E064) — pin FRL → torreta + aviso HMI
 ANDON_ERR_PRESSURE = 0x50  # E064 C1 · PressureError
@@ -49,7 +50,8 @@ TX_BUSY = MACH_BUSY
 TX_ERROR = MACH_ERROR
 TX_STOP = MACH_STOP
 TX_FINISH = MACH_FINISH
-TX_RETURN = MACH_RETURN
+TX_PAUSE = MACH_PAUSE
+TX_RETURN = MACH_PAUSE  # alias histórico
 TX_MATERIALIST = MACH_MATERIALIST
 
 STATE_LABELS = {
@@ -59,7 +61,7 @@ STATE_LABELS = {
     TX_ERROR: "Máquina — Error (0x046)",
     TX_STOP: "Máquina — Stop (0x042)",
     TX_FINISH: "Máquina — FinishParts (0x047)",
-    TX_RETURN: "Máquina — ReturnStop (0x048)",
+    TX_PAUSE: "Máquina — Pause (0x048)",
     TX_MATERIALIST: "Máquina — Materialist (0x049)",
 }
 

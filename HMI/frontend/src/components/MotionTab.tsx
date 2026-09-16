@@ -175,7 +175,7 @@ export const MotionTab: React.FC<MotionTabProps> = ({
           <div className="flex items-center gap-2">
             <span
               className={`h-2.5 w-2.5 rounded-full ${
-                !motionState.connection.connected
+                !motionState.connection.connected || motionState.hasError
                   ? 'bg-red-500'
                   : motionState.isMoving
                     ? 'bg-amber-500 animate-ping'
@@ -483,39 +483,8 @@ export const MotionTab: React.FC<MotionTabProps> = ({
               </span>
             </div>
 
+            {/* Orden físico = Encoder/láser: R izq · L der (Feed R→OM-R, Feed L→OM-L) */}
             <div className="mt-3 grid grid-cols-2 gap-3">
-              <div className="flex flex-col gap-2 rounded-lg bg-slate-50 dark:bg-slate-800/60 p-2.5 border border-slate-200 dark:border-slate-700">
-                <button
-                  id="btn-test-can-l"
-                  onClick={onTestCanL}
-                  className={`w-full flex items-center justify-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition active:scale-95 shadow-2xs ${
-                    motionState.feederCanLTesting
-                      ? 'bg-slate-100 dark:bg-slate-800 border-slate-400 text-slate-900 dark:text-white animate-pulse'
-                      : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200'
-                  }`}
-                >
-                  <span>{t('btn_feed_l')}</span>
-                  <span className="rounded bg-slate-100 dark:bg-slate-700 px-1 py-0.2 font-mono text-[10px] text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-600">
-                    0x013
-                  </span>
-                </button>
-                <div className="space-y-1">
-                  <label htmlFor="input-offset-can-l" className="text-[11px] font-semibold text-slate-600 dark:text-slate-400 flex items-center justify-between">
-                    <span>Offset L</span>
-                    <span className="text-[10px] text-slate-400 font-mono">mm</span>
-                  </label>
-                  <input
-                    id="input-offset-can-l"
-                    type="number"
-                    step="0.1"
-                    value={inputOffsetL}
-                    onChange={(e) => handleOffsetLChange(e.target.value)}
-                    placeholder="0.0"
-                    className="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-2.5 py-1 font-mono text-xs font-semibold text-slate-900 dark:text-slate-100 shadow-2xs focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-400"
-                  />
-                </div>
-              </div>
-
               <div className="flex flex-col gap-2 rounded-lg bg-slate-50 dark:bg-slate-800/60 p-2.5 border border-slate-200 dark:border-slate-700">
                 <button
                   id="btn-test-can-r"
@@ -533,7 +502,7 @@ export const MotionTab: React.FC<MotionTabProps> = ({
                 </button>
                 <div className="space-y-1">
                   <label htmlFor="input-offset-can-r" className="text-[11px] font-semibold text-slate-600 dark:text-slate-400 flex items-center justify-between">
-                    <span>Offset R</span>
+                    <span>{t('offset_r')}</span>
                     <span className="text-[10px] text-slate-400 font-mono">mm</span>
                   </label>
                   <input
@@ -542,6 +511,38 @@ export const MotionTab: React.FC<MotionTabProps> = ({
                     step="0.1"
                     value={inputOffsetR}
                     onChange={(e) => handleOffsetRChange(e.target.value)}
+                    placeholder="0.0"
+                    className="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-2.5 py-1 font-mono text-xs font-semibold text-slate-900 dark:text-slate-100 shadow-2xs focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-400"
+                  />
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-2 rounded-lg bg-slate-50 dark:bg-slate-800/60 p-2.5 border border-slate-200 dark:border-slate-700">
+                <button
+                  id="btn-test-can-l"
+                  onClick={onTestCanL}
+                  className={`w-full flex items-center justify-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition active:scale-95 shadow-2xs ${
+                    motionState.feederCanLTesting
+                      ? 'bg-slate-100 dark:bg-slate-800 border-slate-400 text-slate-900 dark:text-white animate-pulse'
+                      : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200'
+                  }`}
+                >
+                  <span>{t('btn_feed_l')}</span>
+                  <span className="rounded bg-slate-100 dark:bg-slate-700 px-1 py-0.2 font-mono text-[10px] text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-600">
+                    0x013
+                  </span>
+                </button>
+                <div className="space-y-1">
+                  <label htmlFor="input-offset-can-l" className="text-[11px] font-semibold text-slate-600 dark:text-slate-400 flex items-center justify-between">
+                    <span>{t('offset_l')}</span>
+                    <span className="text-[10px] text-slate-400 font-mono">mm</span>
+                  </label>
+                  <input
+                    id="input-offset-can-l"
+                    type="number"
+                    step="0.1"
+                    value={inputOffsetL}
+                    onChange={(e) => handleOffsetLChange(e.target.value)}
                     placeholder="0.0"
                     className="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-2.5 py-1 font-mono text-xs font-semibold text-slate-900 dark:text-slate-100 shadow-2xs focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-400"
                   />

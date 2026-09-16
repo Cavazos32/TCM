@@ -30,6 +30,16 @@ Al cerrar el cambio: indicar qué archivos se alinearon.
 - Reset PLC `0x1E`: idle GPIO + lógica OFF sin pulsos de válvula; solo pulso Reset (no re-pulsar tras reset).
 - Andon: solo estado máquina `0x40–0x49` (no EXXX); TCP `:8769`; mute buzzer desde HMI Debug.
 
+## M5 — Communication Core protegido
+
+Detalle operativo: `.cursor/rules/tcm-communication.mdc` (+ `Doc/normas_arquitectura.md` § M5).
+
+- TCP/WiFi/reconnect/heartbeat/sockets/timeouts/protocolo de enlace y orden de `loop()` en Motion / PreFeeder Master / `HMI/tcp_link.py` son **zona protegida**.
+- No tocarlos al corregir rutina, Motion, PF, PLC, encoder o estados **salvo causalidad demostrada** (fallo de enlace real = clase A). En B/C (comando/ejecución) buscar solución en el dominio.
+- `loop()` = service corto y regresar; no `delay`/`while` de espera externa; preservar `motionPrepPollOnce()` asíncrono.
+- Handlers HTTP de Motion comparten latencia con TCP ASDA: no añadir esperas físicas largas ahí.
+- Si un cambio puede afectar comunicación: documentar **COMMUNICATION IMPACT** antes. Prohibido refactor “de paso” del core.
+
 ## Estados y errores
 
 - Estado ≠ EXXX. ErrorState es estado; el detalle es EXXX.

@@ -67,6 +67,30 @@ export interface BackendCycleSnapshot {
   flow: BackendFlowStep[];
 }
 
+export interface BackendDebugTrailsRecord {
+  testNum: number;
+  side: 'R' | 'L';
+  measureMm: number | null;
+  status: string;
+  error: string;
+  timestamp: string;
+  phase: string;
+}
+
+export interface BackendDebugTrails {
+  active: boolean;
+  stage: string;
+  side: 'R' | 'L' | 'Both';
+  numTests: number;
+  waitTimeS: number;
+  currentTest: number;
+  phase: string;
+  lastOk: boolean;
+  fault: string;
+  records: BackendDebugTrailsRecord[];
+  recordCount: number;
+}
+
 export interface BackendLink {
   connected: boolean;
   host: string;
@@ -136,6 +160,7 @@ export interface BackendSnapshot {
   progress: number;
   resumeEnabled: boolean;
   cycle: BackendCycleSnapshot;
+  debugTrails?: BackendDebugTrails;
   motionLink: BackendLink;
   plcLink: BackendLink;
   pfLink: BackendLink;

@@ -110,13 +110,27 @@
 #define FEED_HALT_DECEL_PP          8000000u
 
 #define FEED_OM_SETTLE_MS           250
-#define FEED_OM_TARGET_TOL_MM       0.5f
-#define FEED_OM_CORR_RETRY_MAX      3
+#define FEED_OM_TARGET_TOL_MM       0.5f   // legacy overview; Feed usa ventanas abajo
+#define FEED_OM_CORR_RETRY_MAX      1      // 1 corrección (aprox. no cuenta)
 #define FEED_OM_READ_RETRY_MAX      3
 #define FEED_WAIT_TIMEOUT_MS        5000
 #define FEED_OM_FEED_POLL_MS        40
 #define FEED_OM_REQUIRE_NEGATIVE    1
 #define FEED_OM_DIR_CHECK_MM        0.8f
+
+// Ventanas Feed (TARGET fijo; no mezclar)
+#define FEED_TARGET_FIXED_MM        55.0f
+#define FEED_CONTROL_TOL_MM         1.0f   // 54–56 aceptación final / control interno
+#define FEED_GOOD_TOL_MM            2.0f   // 53–57 producción (corrige si fuera de control)
+#define FEED_OM_PHYS_MIN_MM         50.0f
+#define FEED_OM_PHYS_MAX_MM         58.0f
+#define FEED_OM_QUANTUM_MM          0.5f   // paso oficial omRoundMm; umbral OK |err|<=0.5 (no re-cuantizar)
+#define FEED_APPROACH_PCT_DEFAULT   80.0f
+#define FEED_APPROACH_PCT_MIN       50.0f
+#define FEED_APPROACH_PCT_MAX       95.0f
+#define FEED_MOVE_SPEED_PCT_DEFAULT 50.0f  // approach + corrección = % de vel nominal
+#define FEED_MOVE_SPEED_PCT_MIN     10.0f
+#define FEED_MOVE_SPEED_PCT_MAX    100.0f
 
 #define FEED_VELOCITY_PP_DEFAULT    FEED_SERVO_BASE_PP_DEFAULT
 #define FEED_PREFS_NS               "motion_feed"
@@ -143,6 +157,31 @@ enum FeedMode : uint8_t {
   FEED_MODE_STEPS_SENSOR = 2
 };
 
+// FSM por lado (L y R independientes)
+enum FeedSidePhase : uint8_t {
+  FSP_IDLE = 0,
+  FSP_APPROACH,
+  FSP_WAIT_SERVO,
+  FSP_SETTLE,
+  FSP_VALIDATE,
+  FSP_CORRECTION,
+  FSP_WAIT_SERVO_CORR,
+  FSP_SETTLE_FINAL,
+  FSP_VALIDATE_FINAL,
+  FSP_DONE_OK,
+  FSP_DONE_NG
+};
+
+// Resultado Validator (FEED_CORRECT solo interno; no se emite a HMI)
+enum FeedValResult : uint8_t {
+  FVR_NONE = 0,
+  FVR_OK,
+  FVR_CORRECT,
+  FVR_NG,
+  FVR_INCONSISTENT
+};
+
+// Alias legacy (status JSON / HTTP)
 enum FeedPhase : uint8_t {
   FEED_IDLE = 0,
   FEED_RUNNING,

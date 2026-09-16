@@ -23,9 +23,18 @@ static bool stYellow = false;
 static bool stRed = false;
 static bool stBuzzerWant = false;
 
+// Fin de WO (0x47): secuencia temporal R→Y→G + buzzer (no bloqueante).
+static bool finishSeqActive = false;
+static uint8_t finishSeqPhase = 0;   // 0=R, 1=Y, 2=G por ciclo
+static uint8_t finishSeqCycle = 0;
+static uint32_t finishSeqPhaseMs = 0;
+
 static bool tcpLinkOk();
 static bool tcpTx(const String& m);
 static void andonTxStatus();
+static void andonFinishSeqStop(bool settleIdle);
+static void andonFinishSeqStart();
+static void andonApplyStaticTower(uint8_t byteCode);
 
 static void andonWriteOut(uint8_t pin, bool on)
 {
@@ -86,22 +95,66 @@ static void andonTxStatus()
 
 static bool andonIsNaByte(uint8_t byteCode)
 {
-  // Excel: Start / Reset / ReturnStop → N/A (no cambian torreta)
-  return byteCode == ANDON_RX_START
-      || byteCode == ANDON_RX_RESET
-      || byteCode == ANDON_RX_RETURN;
+  // Start / Reset → N/A (no cambian torreta)
+  return byteCode == ANDON_RX_START || byteCode == ANDON_RX_RESET;
 }
 
-void andonApplyMachineByte(uint8_t byteCode)
+static void andonFinishSeqStop(bool settleIdle)
 {
-  if (!andonIsMachineByte(byteCode)) return;
-  if (pressureFaultLatched) return;
-  if (andonIsNaByte(byteCode)) return;
+  finishSeqActive = false;
+  finishSeqPhase = 0;
+  finishSeqCycle = 0;
+  finishSeqPhaseMs = 0;
+  if (settleIdle) {
+    lastMachineByte = ANDON_RX_IDLE;
+    andonTowerAllOff();
+    andonSetGreen(true);
+    andonTxStatus();
+  }
+}
 
-  manualOverride = false;
-  lastMachineByte = byteCode;
+static void andonFinishSeqStart()
+{
+  finishSeqActive = true;
+  finishSeqPhase = 0;
+  finishSeqCycle = 0;
+  finishSeqPhaseMs = millis();
   andonTowerAllOff();
+  andonSetRed(true);
+  andonSetBuzzer(true);
+  andonTxStatus();
+}
 
+void andonServiceFinishSequence()
+{
+  if (!finishSeqActive || pressureFaultLatched || manualOverride) return;
+
+  const uint32_t now = millis();
+  if ((now - finishSeqPhaseMs) < ANDON_FINISH_STEP_MS) return;
+
+  finishSeqPhaseMs = now;
+  finishSeqPhase++;
+
+  if (finishSeqPhase >= 3) {
+    finishSeqPhase = 0;
+    finishSeqCycle++;
+    if (finishSeqCycle >= ANDON_FINISH_CYCLES) {
+      andonFinishSeqStop(true);
+      return;
+    }
+  }
+
+  andonTowerAllOff();
+  andonSetBuzzer(true);
+  if (finishSeqPhase == 0) andonSetRed(true);
+  else if (finishSeqPhase == 1) andonSetYellow(true);
+  else andonSetGreen(true);
+  andonTxStatus();
+}
+
+static void andonApplyStaticTower(uint8_t byteCode)
+{
+  andonTowerAllOff();
   switch (byteCode) {
     case ANDON_RX_INIT:
     case ANDON_RX_IDLE:
@@ -115,9 +168,8 @@ void andonApplyMachineByte(uint8_t byteCode)
       andonSetRed(true);
       andonSetBuzzer(true);
       break;
-    case ANDON_RX_FINISH:
-      andonSetGreen(true);
-      andonSetBuzzer(true);
+    case ANDON_RX_PAUSE:
+      andonSetYellow(true);
       break;
     case ANDON_RX_MATERIALIST:
       andonSetYellow(true);
@@ -126,6 +178,24 @@ void andonApplyMachineByte(uint8_t byteCode)
     default:
       break;
   }
+}
+
+void andonApplyMachineByte(uint8_t byteCode)
+{
+  if (!andonIsMachineByte(byteCode)) return;
+  if (pressureFaultLatched) return;
+  if (andonIsNaByte(byteCode)) return;
+
+  manualOverride = false;
+  andonFinishSeqStop(false);
+  lastMachineByte = byteCode;
+
+  if (byteCode == ANDON_RX_FINISH) {
+    andonFinishSeqStart();
+    return;
+  }
+
+  andonApplyStaticTower(byteCode);
   andonTxStatus();
 }
 
@@ -137,8 +207,10 @@ void andonSetBuzzerMute(bool mute)
   } else if (!pressureFaultLatched) {
     if (manualOverride) {
       andonSetBuzzer(stBuzzerWant);
+    } else if (finishSeqActive) {
+      andonSetBuzzer(true);
     } else {
-      andonApplyMachineByte(lastMachineByte);
+      andonApplyStaticTower(lastMachineByte);
     }
   } else {
     andonSetBuzzer(true);
@@ -149,6 +221,7 @@ void andonSetBuzzerMute(bool mute)
 static void andonManualSetOut(const String& outName, bool wantOn)
 {
   if (pressureFaultLatched) return;
+  andonFinishSeqStop(false);
   manualOverride = true;
   String n = outName;
   n.trim();
@@ -163,6 +236,7 @@ static void andonManualSetOut(const String& outName, bool wantOn)
 static void andonManualAllOff()
 {
   if (pressureFaultLatched) return;
+  andonFinishSeqStop(false);
   manualOverride = true;
   andonTowerAllOff();
   andonTxStatus();
@@ -205,6 +279,7 @@ void andonServicePressure()
     stable = r;
     if (stable) {
       pressureFaultLatched = true;
+      andonFinishSeqStop(false);
       andonTowerAllOff();
       andonSetRed(true);
       andonSetBuzzer(true);
@@ -499,5 +574,6 @@ void setup()
 void loop()
 {
   serviceTcp();
+  andonServiceFinishSequence();
   andonServicePressure();
 }
