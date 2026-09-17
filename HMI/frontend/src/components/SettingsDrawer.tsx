@@ -29,6 +29,8 @@ interface SettingsDrawerProps {
   andonConn: ConnectionState;
   andonBuzzerMute: boolean;
   onAndonBuzzerMute: (mute: boolean) => void;
+  ignorePrefeeder?: boolean;
+  onIgnorePrefeeder?: (on: boolean) => void;
   connected?: boolean;
   onReconnectNetwork?: () => void;
   reconnecting?: boolean;
@@ -44,6 +46,8 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
   andonConn,
   andonBuzzerMute,
   onAndonBuzzerMute,
+  ignorePrefeeder = false,
+  onIgnorePrefeeder,
   connected = true,
   onReconnectNetwork,
   reconnecting = false,
@@ -346,6 +350,32 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
                   </div>
                   {showLogs && <Check className="h-4 w-4 text-teal-600" />}
                 </button>
+
+                {onIgnorePrefeeder && (
+                  <button
+                    type="button"
+                    id="btn-ignore-prefeeder"
+                    onClick={() => onIgnorePrefeeder(!ignorePrefeeder)}
+                    className={`flex w-full items-center justify-between rounded-xl border p-3.5 text-left transition shadow-2xs ${
+                      ignorePrefeeder
+                        ? 'border-violet-500 bg-violet-50 dark:bg-violet-950/30 ring-2 ring-violet-500/20'
+                        : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/50'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <Network className="h-4 w-4 text-violet-600" />
+                      <div>
+                        <div className="text-xs font-bold">{t('ignore_prefeeder_title')}</div>
+                        <div className="text-[10px] text-slate-500 dark:text-slate-400">
+                          {ignorePrefeeder
+                            ? t('ignore_prefeeder_on')
+                            : t('ignore_prefeeder_off')}
+                        </div>
+                      </div>
+                    </div>
+                    {ignorePrefeeder && <Check className="h-4 w-4 text-violet-600" />}
+                  </button>
+                )}
 
                 <button
                   type="button"

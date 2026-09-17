@@ -14,6 +14,7 @@
 #include "Asda.h"
 #include "Encoder.h"
 #include "Servo_Feed.h"
+#include "Stage2.h"
 
 // Overview hitos (antes de prototipos auto-generados por Arduino)
 struct OvHit {
@@ -125,8 +126,13 @@ static bool motionTcpNotifyIoStatus = false;  // push niveles laser/safety al ma
 static bool ioLaserRActive = false;
 static bool ioLaserLActive = false;
 static bool ioSafetyActive = false;
+// Detalle EXXX: slot global (ASDA/exhaust) + slots Feed L/R (sin carrera entre lados)
 static uint8_t motionTcpPendingDetailErr = 0;
 static char motionTcpPendingDetailName[32] = "";
+static uint8_t motionTcpPendingDetailErrL = 0;
+static char motionTcpPendingDetailNameL[32] = "";
+static uint8_t motionTcpPendingDetailErrR = 0;
+static char motionTcpPendingDetailNameR[32] = "";
 
 // =============================================================================
 // ENCODER — estado runtime (dos unidades físicas L / R)
@@ -442,14 +448,17 @@ String configJson() {
            "\"stepsPerMm\":%.3f,\"offsetSteps\":%.1f,"
            "\"factoryStepsPerMm\":%.3f,\"factoryLinearActuatorMm\":%.1f,"
            "\"egearN\":%lu,\"calProg1Mm\":%.1f,\"calMeas1Mm\":%.1f,"
-           "\"calProg2Mm\":%.1f,\"calMeas2Mm\":%.1f}",
+           "\"calProg2Mm\":%.1f,\"calMeas2Mm\":%.1f",
            cfgMoveRpm, MOVE_RPM_MIN, MOVE_RPM_MAX,
            cfgStepsPerMm, cfgOffsetSteps,
            FACTORY_STEPS_PER_MM, FACTORY_LINEAR_ACTUATOR_MM,
            (unsigned long)LINEAR_EGEAR_N,
            cfgCalProg1Mm, cfgCalMeas1Mm,
            cfgCalProg2Mm, cfgCalMeas2Mm);
-  return String(buf);
+  String j = String(buf);
+  stage2AppendConfigJson(j);
+  j += "}";
+  return j;
 }
 
 // =============================================================================
@@ -2234,6 +2243,8 @@ void handleConfigPost() {
     changed = true;
   }
 
+  (void)stage2ApplyConfigFromJson(body, changed);
+
   if (jsonBool(body, "resetCal", false)) {
     resetCalFactory();
     changed = true;
@@ -2268,7 +2279,7 @@ void handleConfigPost() {
   }
 
   if (!changed) {
-    sendJson(400, errJson("Nada que guardar (moveRpm, 2 puntos o resetCal)"));
+    sendJson(400, errJson("Nada que guardar (moveRpm, stage2*, 2 puntos o resetCal)"));
     return;
   }
 
@@ -2547,6 +2558,35 @@ void motionTcpOnDetailError(uint8_t errByte, const char* name) {
   }
 }
 
+void motionTcpOnDetailErrorSide(bool sideR, uint8_t errByte, const char* name) {
+  if (errByte == 0) return;
+  uint8_t& slot = sideR ? motionTcpPendingDetailErrR : motionTcpPendingDetailErrL;
+  char* nameBuf = sideR ? motionTcpPendingDetailNameR : motionTcpPendingDetailNameL;
+  const size_t nameSz = sideR ? sizeof(motionTcpPendingDetailNameR) : sizeof(motionTcpPendingDetailNameL);
+  slot = errByte;
+  motionAlarmErrByte = errByte;
+  if (name && name[0]) {
+    strncpy(nameBuf, name, nameSz - 1);
+    nameBuf[nameSz - 1] = '\0';
+  } else {
+    nameBuf[0] = '\0';
+  }
+}
+
+void motionTcpClearFeedSidePending(bool sideR) {
+  if (sideR) {
+    motionTcpNotifyFeedOkR = false;
+    motionTcpNotifyFeedNgR = false;
+    motionTcpPendingDetailErrR = 0;
+    motionTcpPendingDetailNameR[0] = '\0';
+  } else {
+    motionTcpNotifyFeedOkL = false;
+    motionTcpNotifyFeedNgL = false;
+    motionTcpPendingDetailErrL = 0;
+    motionTcpPendingDetailNameL[0] = '\0';
+  }
+}
+
 static void motionTcpTxMeasured(uint8_t byteCode, bool sideR,
                                   float mmOfficial, float mmSigned, bool settled) {
   char buf[240];
@@ -2606,6 +2646,7 @@ static bool feederTcpDoByte(uint8_t cmdByte, const char* line) {
   (void)line;
   String err;
   bool ok = false;
+  const bool sideR = (cmdByte == FEED_CMD_FEED_R);
 
   switch (cmdByte) {
     case FEED_CMD_FEED_R:
@@ -2621,7 +2662,10 @@ static bool feederTcpDoByte(uint8_t cmdByte, const char* line) {
 
   // Rechazo por servo CAN no listo → detalle E023 (ack ya lleva UI normativa).
   if (!ok && (err.indexOf("E023") >= 0 || err.indexOf("CAN") >= 0)) {
-    motionTcpOnDetailError(MOT_ERR_FEED_CAN_NO_RESP, "FeedCanNoResp");
+    if (cmdByte == FEED_CMD_FEED_R || cmdByte == FEED_CMD_FEED_L)
+      motionTcpOnDetailErrorSide(sideR, MOT_ERR_FEED_CAN_NO_RESP, "FeedCanNoResp");
+    else
+      motionTcpOnDetailError(MOT_ERR_FEED_CAN_NO_RESP, "FeedCanNoResp");
   }
 
   char buf[256];
@@ -2985,10 +3029,23 @@ static void motionTcpPollFeedEvents() {
     motionTcpNotifyFeedNgR = false;
     motionTcpTxEvent("feeder", FEED_TX_LENGTH_NG_R, "LenghtNG_R");
   }
+  // Detalles: global (ASDA/exhaust) + Feed L + Feed R — sin que un lado pise al otro.
   if (motionTcpPendingDetailErr != 0) {
     const uint8_t b = motionTcpPendingDetailErr;
     motionTcpPendingDetailErr = 0;
     const char* n = motionTcpPendingDetailName[0] ? motionTcpPendingDetailName : "DetailErr";
+    motionTcpTxEvent("motion", b, n);
+  }
+  if (motionTcpPendingDetailErrL != 0) {
+    const uint8_t b = motionTcpPendingDetailErrL;
+    motionTcpPendingDetailErrL = 0;
+    const char* n = motionTcpPendingDetailNameL[0] ? motionTcpPendingDetailNameL : "FeedL";
+    motionTcpTxEvent("motion", b, n);
+  }
+  if (motionTcpPendingDetailErrR != 0) {
+    const uint8_t b = motionTcpPendingDetailErrR;
+    motionTcpPendingDetailErrR = 0;
+    const char* n = motionTcpPendingDetailNameR[0] ? motionTcpPendingDetailNameR : "FeedR";
     motionTcpTxEvent("motion", b, n);
   }
 }
@@ -3261,6 +3318,7 @@ void setup() {
   server.on("/api/overview/start", HTTP_POST, handleOverviewStart);
   server.on("/api/overview/mark", HTTP_POST, handleOverviewMark);
   feedRegisterHttpRoutes(server);
+  stage2RegisterHttpRoutes(server);
   server.on("/feed", HTTP_GET, []() {
     server.send_P(200, "text/html", feed_index_html);
   });
@@ -3270,7 +3328,7 @@ void setup() {
   Serial.printf("API lista en http://%s/\n", STA_IP.toString().c_str());
   Serial.printf("ASDA TCP maestro en %s:%u\n",
                 STA_IP.toString().c_str(), (unsigned)MOTION_TCP_PORT);
-  Serial.println("UI Motion: Vista general | ASDA B3 | OM | Alimentacion (/feed)");
+  Serial.println("UI Motion: Vista general | ASDA B3 | OM | Alimentacion (/feed) | Stage2");
 
   servoCanInitMutex();
   delay(SERVO_POWERUP_MS);
@@ -3284,7 +3342,10 @@ void setup() {
     }
   }
   feedInit();
+  stage2Init();
   Serial.printf("Motion CAN: can=%d servo=%d\n", (int)canInitialized, (int)servoCanReady);
+  Serial.printf("STAGE2 apPct=%.0f fastRpm=%.0f fineRpm=%.0f\n",
+                (double)stage2ApproachPct, (double)stage2FastRpm, (double)stage2FineRpm);
 }
 
 void loop() {
@@ -3298,5 +3359,42 @@ void loop() {
   updateEncoderMotion(millis());
   serviceCANRx();
   feedLoop();
+  stage2Loop();
+}
+
+// =============================================================================
+// Stage2 — puentes ASDA (sin tocar Communication Core)
+// =============================================================================
+bool stage2HostIsOccupied() {
+  return motionIsOccupied();
+}
+
+bool stage2HostStartAbsMm(float mmAbs, float rpm, String& err) {
+  if (mmAbs < 0.0f) mmAbs = 0.0f;
+  const int32_t puu = mmToWorkPuu(mmAbs, false);
+  return asdaStartMove(puu, rpm, err);
+}
+
+bool stage2HostCurrentMm(float* mmOut) {
+  if (!mmOut) return false;
+  if (cachedPosOk) {
+    *mmOut = puuToMm(cachedPosPuu, false);
+    return true;
+  }
+  int32_t pos = 0;
+  if (!read32(REG_P5_016, pos))
+    return false;
+  cachedPosPuu = pos;
+  cachedPosOk = true;
+  *mmOut = puuToMm(pos, false);
+  return true;
+}
+
+bool stage2HostStop(String& err) {
+  return asdaExecStop(err);
+}
+
+bool stage2HostLastJobOk() {
+  return motionJobOk;
 }
 

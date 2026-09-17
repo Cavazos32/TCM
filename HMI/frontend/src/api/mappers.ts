@@ -1,4 +1,4 @@
-import type { BackendSnapshot } from './backendTypes';
+import type { BackendCycleConfig, BackendSnapshot } from './backendTypes';
 import type {
   AndonState,
   ConnectionState,
@@ -110,6 +110,7 @@ export function mapMachineState(
     cycleMaterialist: cycle.materialist ?? false,
     stepByStep: cycle.stepByStep ?? false,
     trialMode: cycle.trialMode ?? false,
+    ignorePrefeeder: cycle.ignorePrefeeder ?? false,
     pauseEnabled: cycle.active && !cycle.paused,
     progress: cycle.completed
       ? 100
@@ -263,7 +264,10 @@ export function mapAppConfig(snap: BackendSnapshot): { andonBuzzerMute: boolean 
 }
 
 export function mapCycleConfig(cfg: BackendSnapshot['cycle']['config']): CycleConfig {
-  return { ...cfg };
+  const raw = (cfg as BackendCycleConfig)?.feedSides;
+  const feedSides =
+    raw === 'L' || raw === 'R' || raw === 'LR' ? raw : 'LR';
+  return { ...(cfg as CycleConfig), feedSides };
 }
 
 export function valveByteFromId(

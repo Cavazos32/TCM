@@ -7,6 +7,7 @@ import os
 import threading
 import time
 from collections import deque
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -16,9 +17,23 @@ PLC_CONFIG_PATH = HMI_ROOT / "config" / "plc_config.json"
 APP_CONFIG_PATH = HMI_ROOT / "config" / "app_config.json"
 DEFAULT_BLOWER_SEC = 2.0
 DEFAULT_ANDON_BUZZER_MUTE = False
+# CMD_MOVE (0x05): reintentos de transporte acotados (no loop infinito).
+MOTION_MOVE_TX_ATTEMPTS = 3  # 1 envío + 2 reintentos máx.
+MOTION_MOVE_ACK_TIMEOUT_S = 2.0
+MOTION_MOVE_LINK_WAIT_S = 5.0
+
+
+@dataclass
+class _PendingAsdaAck:
+    """Espera ACK ASDA de un byte concreto (anti-duplicado en retry MOVE)."""
+
+    byte: int
+    gen: int
+    event: threading.Event = field(default_factory=threading.Event)
+    ok: bool | None = None
+    message: str = ""
 
 from cycle import CycleRunner, PROGRESS_STEPS
-from debug_trails import DebugTrailsRunner
 from motion import (
     CMD_ENC_MEASURE_L,
     CMD_ENC_MEASURE_R,
@@ -49,6 +64,8 @@ from motion import (
     TX_LENGTH_OK,
     TX_LENGTH_OK_L,
     TX_LENGTH_OK_R,
+    motion_http_stage2_start,
+    motion_http_stage2_status,
     TX_REACHED,
     TX_RETURN,
     TX_STOP_STATE,
@@ -98,7 +115,7 @@ from prefeeder import (
     TX_PF_RETURN,
     TX_PF_STOP,
 )
-from error_catalog import format_ui
+from error_catalog import CLASS_C1, CLASS_C2, CLASS_C3, format_ui, lookup
 from error_policy import ErrorPolicy
 from andon import AndonClient, DEFAULT_HOST as ANDON_HOST, DEFAULT_PORT as ANDON_PORT
 from machine_states import MACH_ERROR, MACH_IDLE, MACH_RESET
@@ -110,6 +127,7 @@ MAX_LOG_LINES = 400
 LINK_DOWN_CONFIRM_SEC = 8.0
 # Arranque ASDA: solo tras Motion listo (TCP + Init/Idle), luego Servo ON → Home.
 MOTION_BOOT_SETTLE_SEC = 2.5
+MOTION_BOOT_ON_RETRIES = 3
 MOTION_BOOT_READY_STATES = frozenset({TX_INIT, TX_IDLE})
 
 PLC_ERROR_BYTES = frozenset(
@@ -180,6 +198,9 @@ _PF_SIDE_SENSOR_FIELDS = (
     ("hoseAbsent", 0x37, 0x31),
     ("holgura", 0x38, 0x32),
 )
+
+# Prioridad de clase al elegir el EXXX primario PF (C1 gana).
+_PF_CLASS_RANK = {CLASS_C1: 0, CLASS_C2: 1, CLASS_C3: 2}
 
 
 def _ts() -> str:
@@ -306,26 +327,28 @@ class HmiState:
         # Motivo del último LengthNG por lado (láser E004/E005, ventana, etc.)
         self._feed_fault_l = ""
         self._feed_fault_r = ""
+        # Stage2: operación única (no Reached ASDA; no Feed L/R)
+        self._stage2_armed = False
+        self._stage2_gen = 0
+        self._stage2_fault = ""
+        # ACK ASDA pendiente (CMD_MOVE recovery — no reenviar a ciegas)
+        self._pending_asda_ack: _PendingAsdaAck | None = None
+        self._asda_ack_gen = 0
+        self._last_move_fail_kind = ""  # transport | rejected | ""
         self._pf_materialist = False
-        # Debug Trails: OM oficial por lado + eventos GetMeasured
-        self._enc_mm_r: float | None = None
-        self._enc_mm_l: float | None = None
-        self._enc_measure_evt_r = threading.Event()
-        self._enc_measure_evt_l = threading.Event()
-        self._debug_trails_active = False
 
         self._error_policy = ErrorPolicy()
         self._cycle = CycleRunner(self)
         self._cycle.set_machine_state_hook(self._broadcast_machine_state)
-        self._debug_trails = DebugTrailsRunner(self)
         # Histéresis enlace: gen+1 cancela timer pendiente al recuperar.
         self._link_down_gen = {"motion": 0, "plc": 0, "prefeeder": 0}
-        # Prep ASDA solo tras Motion listo (estado Init/Idle), una vez por arranque HMI.
+        # Prep ASDA tras Motion Init/Idle: Servo ON → Home (una vez por enlace TCP).
         self._motion_boot_prep_done = False
         self._motion_boot_prep_gen = 0
         self._motion_boot_awaiting_on_ack = False
         self._motion_boot_armed = False
         self._motion_boot_worker_launched = False
+        self._motion_boot_on_fails = 0
 
         self._load_models()
         self._started = False
@@ -348,8 +371,6 @@ class HmiState:
         self._notify_event.set()
         if self._cycle.is_active():
             self._cycle.request_stop()
-        if self._debug_trails.is_active():
-            self._debug_trails.request_stop()
         self._client.stop_background()
         self._plc_client.stop_background()
         self._pf_client.stop_background()
@@ -406,7 +427,6 @@ class HmiState:
                 "progress": progress,
                 "resumeEnabled": resume,
                 "cycle": cycle_snap,
-                "debugTrails": self._debug_trails.snapshot(),
                 "motionLink": {
                     "connected": self._motion["connected"],
                     "host": DEFAULT_HOST,
@@ -571,6 +591,9 @@ class HmiState:
         self._feed_armed_r = False
         self._feed_fault_l = ""
         self._feed_fault_r = ""
+        self._stage2_armed = False
+        self._stage2_gen = 0
+        self._stage2_fault = ""
 
     def clear_motion_reached_flag(self) -> None:
         """Solo Idle/Reached — conserva LengthOK/NG del prefetch en paralelo."""
@@ -578,6 +601,111 @@ class HmiState:
 
     def wait_motion_idle_or_reached(self, timeout_s: float) -> bool:
         return self._motion_idle_or_reached.wait(timeout=timeout_s)
+
+    def arm_stage2(self) -> None:
+        """CLEAR/ARM Stage2 — descarta resultado previo; no usa flags Feed/Reached."""
+        self._stage2_armed = True
+        self._stage2_gen = 0
+        self._stage2_fault = ""
+
+    def cmd_motion_stage2_start(
+        self, piece_mm: float | None = None, sides: str = "LR", *, target_abs_mm: float | None = None
+    ) -> bool:
+        """START Stage2. CYCLE debe pasar target_abs_mm=abs(model.mm)."""
+        if not self._stage2_armed:
+            self.arm_stage2()
+        host = getattr(self._client, "_host", DEFAULT_HOST)
+        try:
+            data = motion_http_stage2_start(
+                piece_mm if target_abs_mm is None else None,
+                sides=str(sides or "LR"),
+                host=str(host),
+                target_abs_mm=target_abs_mm,
+            )
+        except Exception as exc:  # noqa: BLE001 — enlace HTTP Motion
+            self._stage2_fault = f"Stage2 start: {exc}"
+            self._stage2_armed = False
+            return False
+        if not data.get("ok"):
+            self._stage2_fault = str(data.get("error") or "Stage2 start rechazado")
+            self._stage2_armed = False
+            return False
+        self._stage2_gen = int(data.get("gen", 0) or 0)
+        if self._stage2_gen <= 0:
+            self._stage2_fault = "Stage2 start sin gen"
+            self._stage2_armed = False
+            return False
+        return True
+
+    def wait_stage2_result(
+        self,
+        timeout_s: float,
+        *,
+        abort_event: threading.Event | None = None,
+    ) -> str:
+        """Espera resultado final Stage2 (OK/NG). Ignora ASDA Reached intermedios.
+
+        Returns: ok | ng | timeout | aborted
+        """
+        host = getattr(self._client, "_host", DEFAULT_HOST)
+        deadline = time.monotonic() + float(timeout_s)
+        last_phase = ""
+        while time.monotonic() < deadline:
+            if abort_event is not None and abort_event.is_set():
+                self._stage2_armed = False
+                return "aborted"
+            if not self._stage2_armed:
+                return "aborted"
+            try:
+                st = motion_http_stage2_status(host=str(host))
+            except Exception as exc:  # noqa: BLE001
+                self._stage2_fault = f"Stage2 status: {exc}"
+                time.sleep(0.1)
+                continue
+            gen = int(st.get("gen", 0) or 0)
+            result = str(st.get("result") or "NONE")
+            phase = str(st.get("phase") or "")
+            if phase and phase != last_phase:
+                last_phase = phase
+                self.cycle_log(f"Stage2 phase={phase} gen={gen}")
+            if self._stage2_gen and gen == self._stage2_gen:
+                if result == "OK":
+                    self._stage2_armed = False
+                    self._log_stage2_snapshot(st, "OK")
+                    return "ok"
+                if result == "NG":
+                    fault = str(st.get("fault") or "").strip()
+                    self._stage2_fault = fault or "Stage2 NG"
+                    self._stage2_armed = False
+                    self._log_stage2_snapshot(st, "NG")
+                    return "ng"
+            time.sleep(0.05)
+        return "timeout"
+
+    def stage2_fault(self) -> str:
+        return self._stage2_fault
+
+    def _log_stage2_snapshot(self, st: dict[str, Any], result: str) -> None:
+        self.cycle_log(
+            "Stage2 {res} gen={gen} piece={piece} target={tgt} "
+            "apPct={ap} apMm={apMm} fast={fast} fine={fine} "
+            "asda={asda} omL={omL} omR={omR} omAvg={omAvg} "
+            "fault={fault}".format(
+                res=result,
+                gen=st.get("gen"),
+                piece=st.get("pieceMm"),
+                tgt=st.get("targetMm"),
+                ap=st.get("stage2ApproachPct"),
+                apMm=st.get("approachMm"),
+                fast=st.get("stage2FastRpm"),
+                fine=st.get("stage2FineRpm"),
+                asda=st.get("asdaMm"),
+                omL=st.get("omL"),
+                omR=st.get("omR"),
+                omAvg=st.get("omAvg") or st.get("finalAverageMm"),
+                fault=st.get("fault") or "",
+            )
+        )
 
     def wait_feed_length_ok(self, timeout_s: float) -> bool:
         # OK en ambos lados; NG en cualquiera = fallo. No OK global por un solo lado.
@@ -634,13 +762,187 @@ class HmiState:
         return ""
 
     def cmd_motion_move_mm(self, mm: float, rpm: float) -> bool:
+        """CMD_MOVE (0x05) con recuperación de transporte acotada.
+
+        True = Motion aceptó el MOVE (ACK ok) o ya está ejecutándolo.
+        False = rechazo ASDA (caller → E012/E013) o transporte agotado (E065).
+        No reenvía si hay evidencia de que Motion ya recibió el comando.
+        """
         mm = abs(float(mm))
         lat_mark("0", source="motion", cmd="move_mm", mm=mm)
         with self._lock:
             self._move_target_mm = mm
             self._move_start_mm = self._last_position_mm
+            self._last_move_fail_kind = ""
         lat_mark("1", source="motion", cmd="move_mm")
-        return self._client.cmd_move_mm(mm, rpm)
+        return self._cmd_motion_move_with_recovery(mm, rpm)
+
+    def last_move_fail_kind(self) -> str:
+        """transport | rejected | '' tras el último cmd_motion_move_mm."""
+        with self._lock:
+            return self._last_move_fail_kind
+
+    def _arm_asda_ack(self, byte_code: int) -> int:
+        with self._lock:
+            self._asda_ack_gen += 1
+            gen = self._asda_ack_gen
+            self._pending_asda_ack = _PendingAsdaAck(byte=int(byte_code), gen=gen)
+            return gen
+
+    def _clear_asda_ack(self, gen: int | None = None) -> None:
+        with self._lock:
+            if self._pending_asda_ack is None:
+                return
+            if gen is None or self._pending_asda_ack.gen == gen:
+                self._pending_asda_ack = None
+
+    def _wait_asda_ack(self, gen: int, timeout_s: float) -> bool | None:
+        """True=ok, False=rechazo, None=timeout / cancelado."""
+        with self._lock:
+            pending = self._pending_asda_ack
+        if pending is None or pending.gen != gen:
+            return None
+        if not pending.event.wait(timeout=timeout_s):
+            return None
+        with self._lock:
+            if self._pending_asda_ack is None or self._pending_asda_ack.gen != gen:
+                return None
+            return self._pending_asda_ack.ok
+
+    def _asda_ack_snapshot(self, gen: int) -> tuple[bool | None, str]:
+        with self._lock:
+            pending = self._pending_asda_ack
+            if pending is None or pending.gen != gen:
+                return None, ""
+            return pending.ok, pending.message or ""
+
+    def _motion_move_evidence_active(self, gen: int) -> bool:
+        """True si Motion ya aceptó / ejecuta el MOVE — no reenviar CMD_MOVE.
+
+        No usa Idle genérico: tras reconnect Motion emite Idle y eso no prueba
+        que el CMD_MOVE haya llegado (ni debe satisfacer wait_motion).
+        """
+        ok, msg = self._asda_ack_snapshot(gen)
+        if ok is True:
+            return True
+        if ok is False and "ocupado" in (msg or "").lower():
+            return True
+        with self._lock:
+            if self._last_state_byte == TX_BUSY:
+                return True
+            # TX_REACHED limpia _move_target_mm; Idle de reconnect no.
+            if self._move_target_mm is None and self._motion_idle_or_reached.is_set():
+                return True
+        return False
+
+    def _wait_motion_link(self, timeout_s: float) -> bool:
+        """Espera enlace Motion (bg reconnect o reconnect explícito)."""
+        deadline = time.monotonic() + float(timeout_s)
+        while time.monotonic() < deadline:
+            if self._client.connected:
+                return True
+            time.sleep(0.05)
+        return self._client.connected
+
+    def _cmd_motion_move_with_recovery(self, mm: float, rpm: float) -> bool:
+        """Envía CMD_MOVE; reintenta solo si no hay evidencia de recepción."""
+        for attempt in range(1, MOTION_MOVE_TX_ATTEMPTS + 1):
+            if not self._wait_motion_link(MOTION_MOVE_LINK_WAIT_S):
+                self.cycle_log(
+                    f"CMD_MOVE: sin enlace Motion (intento {attempt}/{MOTION_MOVE_TX_ATTEMPTS})"
+                )
+                if attempt < MOTION_MOVE_TX_ATTEMPTS:
+                    self._client.reconnect(silent=True)
+                    continue
+                break
+
+            gen = self._arm_asda_ack(CMD_MOVE)
+            # Idle de reconnect no debe colarse como Reached del MOVE actual.
+            self._motion_idle_or_reached.clear()
+            sent = self._client.cmd_move_mm(mm, rpm)
+            if not sent:
+                self.cycle_log(
+                    f"CMD_MOVE: fallo de transporte send "
+                    f"(intento {attempt}/{MOTION_MOVE_TX_ATTEMPTS}) — recuperando…"
+                )
+                self._client.reconnect(silent=True)
+                if not self._wait_motion_link(MOTION_MOVE_LINK_WAIT_S):
+                    self._clear_asda_ack(gen)
+                    continue
+                if self._motion_move_evidence_active(gen):
+                    self._clear_asda_ack(gen)
+                    # Busy en curso: esperar Idle real de este movimiento.
+                    if self._move_target_mm is not None:
+                        self._motion_idle_or_reached.clear()
+                    self.cycle_log(
+                        "CMD_MOVE: Motion ya activo tras corte — no se reenvía"
+                    )
+                    return True
+                self._clear_asda_ack(gen)
+                continue
+
+            ack = self._wait_asda_ack(gen, MOTION_MOVE_ACK_TIMEOUT_S)
+            if ack is True:
+                self._clear_asda_ack(gen)
+                self._motion_idle_or_reached.clear()
+                return True
+            if ack is False:
+                _, msg = self._asda_ack_snapshot(gen)
+                self._clear_asda_ack(gen)
+                if "ocupado" in (msg or "").lower():
+                    self._motion_idle_or_reached.clear()
+                    self.cycle_log(
+                        "CMD_MOVE: ACK ocupado — se asume movimiento en curso"
+                    )
+                    return True
+                with self._lock:
+                    self._last_move_fail_kind = "rejected"
+                self.cycle_log(
+                    f"CMD_MOVE: rechazado por Motion — {msg or 'sin detalle'}"
+                )
+                return False
+
+            # Timeout ACK: ¿Busy/Reached real, o corte a mitad?
+            if self._motion_move_evidence_active(gen):
+                self._clear_asda_ack(gen)
+                if self._move_target_mm is not None:
+                    self._motion_idle_or_reached.clear()
+                self.cycle_log(
+                    "CMD_MOVE: sin ACK a tiempo pero Motion activo — no se reenvía"
+                )
+                return True
+            if self._client.connected:
+                # Enlace OK, Idle, sin ACK: no reenviar a ciegas (ambiguo).
+                self._clear_asda_ack(gen)
+                with self._lock:
+                    self._last_move_fail_kind = "rejected"
+                self.cycle_log(
+                    "CMD_MOVE: timeout ACK con enlace OK — no se reenvía"
+                )
+                return False
+
+            self.cycle_log(
+                f"CMD_MOVE: timeout ACK + enlace caído "
+                f"(intento {attempt}/{MOTION_MOVE_TX_ATTEMPTS})"
+            )
+            self._client.reconnect(silent=True)
+            if self._wait_motion_link(MOTION_MOVE_LINK_WAIT_S) and self._motion_move_evidence_active(
+                gen
+            ):
+                self._clear_asda_ack(gen)
+                if self._move_target_mm is not None:
+                    self._motion_idle_or_reached.clear()
+                self.cycle_log(
+                    "CMD_MOVE: tras reconectar Motion ya activo — no se reenvía"
+                )
+                return True
+            self._clear_asda_ack(gen)
+
+        with self._lock:
+            self._last_move_fail_kind = "transport"
+        self.cycle_log("CMD_MOVE: transporte agotado — E065")
+        self._apply_detail_error("E065", source="motion")
+        return False
 
     def cmd_motion_move_zero(self, rpm: float | None = None) -> bool:
         lat_mark("0", source="motion", cmd="move_zero")
@@ -676,28 +978,39 @@ class HmiState:
     def cmd_motion_enc_set0_l(self) -> bool:
         return self._client.cmd_enc_set0_l()
 
-    def cmd_motion_enc_measure_r(self) -> bool:
-        self._enc_measure_evt_r.clear()
-        return self._client.cmd_enc_measure_r()
-
-    def cmd_motion_enc_measure_l(self) -> bool:
-        self._enc_measure_evt_l.clear()
-        return self._client.cmd_enc_measure_l()
-
-    def wait_encoder_mm(self, side: str, timeout_s: float) -> float | None:
-        """Espera GetMeasured (mmOfficial) del lado indicado."""
-        evt = self._enc_measure_evt_r if side == "R" else self._enc_measure_evt_l
-        if not evt.wait(timeout=timeout_s):
-            with self._lock:
-                return self._enc_mm_r if side == "R" else self._enc_mm_l
+    def plc_valve_is_on(self, byte_code: int) -> bool | None:
+        """Estado lógico HMI de una válvula PLC (None = desconocido)."""
         with self._lock:
-            return self._enc_mm_r if side == "R" else self._enc_mm_l
+            valve = self._plc["valves"].get(str(byte_code))
+            if not valve:
+                return None
+            on = valve.get("on")
+            if on is None:
+                return None
+            return bool(on)
+
+    def _cmd_plc_valve_desired(self, byte_code: int, on: bool, send) -> bool:
+        """Envía pulso KEEP solo si el estado lógico no coincide (evita invertir)."""
+        cur = self.plc_valve_is_on(byte_code)
+        if cur is not None and cur == on:
+            return True
+        ok = bool(send(on))
+        if ok:
+            with self._lock:
+                key = str(byte_code)
+                if key in self._plc["valves"]:
+                    self._plc["valves"][key]["on"] = on
+        return ok
 
     def cmd_plc_holder(self, on: bool) -> bool:
-        return self._plc_client.cmd_holder(on)
+        return self._cmd_plc_valve_desired(
+            CMD_HOLDER, on, self._plc_client.cmd_holder
+        )
 
     def cmd_plc_encoder(self, on: bool) -> bool:
-        return self._plc_client.cmd_encoder(on)
+        return self._cmd_plc_valve_desired(
+            CMD_ENCODER, on, self._plc_client.cmd_encoder
+        )
 
     def cmd_plc_gripper(self, on: bool) -> bool:
         return self._plc_client.cmd_gripper(on)
@@ -713,8 +1026,18 @@ class HmiState:
     def cmd_plc_cutter_l(self, on: bool) -> bool:
         return self._plc_client.cmd_cutter_l(on)
 
+    def cmd_plc_tools_safe(self) -> bool:
+        """Cutters + grippers OFF. No toca holder/encoder (deben quedar cerrados)."""
+        ok_c = self.cmd_plc_cutters(False)
+        ok_g = self.cmd_plc_gripper(False)
+        return ok_c and ok_g
+
     def cmd_plc_all_safe(self) -> bool:
-        return self._plc_client.cmd_all_off()
+        ok = self._plc_client.cmd_all_off()
+        if ok:
+            with self._lock:
+                self._plc_apply_home_valve_cache()
+        return ok
 
     def cycle_is_active(self) -> bool:
         return self._cycle.is_active()
@@ -724,9 +1047,6 @@ class HmiState:
 
     def cutter_pulse_ms(self) -> int:
         return int(self._cycle.get_config().cutter_pulse_ms)
-
-    def set_debug_trails_active(self, on: bool) -> None:
-        self._debug_trails_active = bool(on)
 
     def cmd_pf_start(self) -> bool:
         return self._pf_client.cmd_start()
@@ -762,8 +1082,6 @@ class HmiState:
 
     def cmd_start(self, qty: int | None = None) -> dict:
         """Start máquina (0x040): lote Cycle con mm/qty del modelo."""
-        if self._debug_trails.is_active():
-            return {"ok": False, "error": "Debug Trails activo — detener antes de producir"}
         with self._lock:
             mm, rpm = self._mm, self._rpm
             model = self._models[self._selected_model_idx] if self._models else {}
@@ -773,8 +1091,6 @@ class HmiState:
         return self._cycle.request_start(mm, use_qty, rpm)
 
     def cmd_stop(self) -> dict:
-        if self._debug_trails.is_active():
-            return self._debug_trails.request_stop()
         if self._cycle.is_active() or self._cycle.snapshot().get("paused"):
             return self._cycle.request_stop()
         return {"ok": self._manual_motion(lambda: self._client.cmd_stop())}
@@ -822,6 +1138,11 @@ class HmiState:
         recovery = latch.recovery
         ui = latch.ui_text
 
+        # Si el ciclo sigue active (p.ej. atrapado en Stage2 tras Stop visual),
+        # abortar waits antes de pedir Reset Idle.
+        if self._cycle.is_active():
+            self._cycle.request_stop()
+
         # Reset módulos (Res)
         self._client.cmd_reset_errors()
         self._plc_client.cmd_reset()
@@ -831,6 +1152,19 @@ class HmiState:
 
         old = self._error_policy.clear()
         cycle_res = self._cycle.request_reset()
+        if not cycle_res.get("ok", False):
+            err = str(cycle_res.get("error") or "Reset de ciclo rechazado")
+            self._banner = {"text": err, "kind": "error"}
+            _append_log(self._main_log, f"Reset ciclo falló · {err}")
+            self._notify()
+            return {
+                "ok": False,
+                "error": err,
+                "cycle": cycle_res,
+                "cleared": old.snapshot() if old.active else None,
+                "recovery": recovery,
+            }
+
         self._broadcast_machine_state(MACH_RESET)
         self._broadcast_machine_state(MACH_IDLE)
 
@@ -981,31 +1315,12 @@ class HmiState:
     def cmd_cycle_trial_mode(self, on: bool = True) -> dict:
         return self._cycle.set_trial_mode(on)
 
-    def cmd_debug_trails_start(
-        self,
-        side: str = "Both",
-        num_tests: int = 1,
-        wait_time_s: float = 1.0,
-    ) -> dict:
-        return self._debug_trails.request_start(
-            side=side, num_tests=num_tests, wait_time_s=wait_time_s
-        )
-
-    def cmd_debug_trails_stop(self) -> dict:
-        return self._debug_trails.request_stop()
-
-    def cmd_debug_trails_clear(self) -> dict:
-        return self._debug_trails.clear_records()
-
-    def get_debug_trails_snapshot(self) -> dict:
-        return self._debug_trails.snapshot()
-
-    def export_debug_trails_csv(self) -> tuple[str, str]:
-        return self._debug_trails.export_csv()
+    def cmd_cycle_ignore_prefeeder(self, on: bool = True) -> dict:
+        return self._cycle.set_ignore_prefeeder(on)
 
     def cmd_motion(self, action: str, **kwargs) -> dict:
         handlers = {
-            "move": lambda: self._client.cmd_move_mm(
+            "move": lambda: self.cmd_motion_move_mm(
                 float(kwargs.get("mm", self._mm)),
                 float(kwargs.get("rpm", kwargs.get("speedRpm", self._rpm))),
             ),
@@ -1480,6 +1795,7 @@ class HmiState:
                     self._motion_boot_armed = True
                     self._motion_boot_worker_launched = False
                     self._motion_boot_awaiting_on_ack = False
+                    self._motion_boot_on_fails = 0
             else:
                 self._last_state_byte = None
                 self._stopped_pending_resume = False
@@ -1489,10 +1805,13 @@ class HmiState:
                 self._motion["laserR"] = False
                 self._motion["laserL"] = False
                 self._motion["safetyExhaust"] = False
+                # Caída/reboot del micro: permitir Servo ON→Home al reconectar.
+                self._motion_boot_prep_done = False
                 self._motion_boot_prep_gen += 1
                 self._motion_boot_awaiting_on_ack = False
                 self._motion_boot_armed = False
                 self._motion_boot_worker_launched = False
+                self._motion_boot_on_fails = 0
                 self._banner = {
                     "text": f"Reconectando Motion ({DEFAULT_HOST}:{DEFAULT_PORT})…",
                     "kind": "warn",
@@ -1504,6 +1823,12 @@ class HmiState:
             self._arm_link_down("motion", "E065", source="motion")
         self._notify()
         if connected:
+            # Init/Idle pueden haber llegado antes de armar (callback diferido).
+            threading.Thread(
+                target=self._motion_boot_try_launch,
+                daemon=True,
+                name="motion-boot-try",
+            ).start()
             threading.Thread(
                 target=self.refresh_feed_offset, daemon=True
             ).start()
@@ -1531,21 +1856,29 @@ class HmiState:
                 name="motion-boot-prep",
             ).start()
 
+    def _motion_boot_retry_after_on_fail(self) -> None:
+        """Tras rechazo de Servo ON en arranque, reintenta si sigue armado."""
+        time.sleep(MOTION_BOOT_SETTLE_SEC)
+        self._motion_boot_try_launch()
+
     def _motion_boot_prep_worker(self, gen: int) -> None:
-        """Motion ya listo → settle → 0x04 Servo ON; Home va al ack OK."""
+        """TCP+Init/Idle listos → settle → 0x04 Servo ON; Home al ack OK."""
         time.sleep(MOTION_BOOT_SETTLE_SEC)
         with self._lock:
             if gen != self._motion_boot_prep_gen or self._motion_boot_prep_done:
                 return
             if not self._motion["connected"]:
                 return
-            # No mover ASDA si ya hay ciclo/trails (p.ej. reconnect tardío).
-            if self._cycle.is_active() or self._debug_trails_active:
+            # No mover ASDA si ya hay ciclo (p.ej. reconnect tardío).
+            if self._cycle.is_active():
                 self._motion_boot_prep_done = True
                 self._motion_boot_armed = False
                 return
-            _append_log(self._motion_log, "Arranque: Servo ON (0x004)…")
-            self._set_motion_status("Arranque: Servo ON (0x004)…", "info")
+            _append_log(
+                self._motion_log,
+                "Arranque lineal: TCP OK → Servo ON (0x004)…",
+            )
+            self._set_motion_status("Arranque lineal: Servo ON (0x004)…", "info")
             self._motion_boot_awaiting_on_ack = True
         self._notify()
         ok = self._client.cmd_on()
@@ -1556,12 +1889,26 @@ class HmiState:
                 return
             self._motion_boot_awaiting_on_ack = False
             self._motion_boot_worker_launched = False
-            _append_log(self._motion_log, "Arranque: Servo ON no enviado")
-            self._set_motion_status("Arranque: Servo ON no enviado", "error")
+            self._motion_boot_on_fails += 1
+            _append_log(self._motion_log, "Arranque lineal: Servo ON no enviado")
+            self._set_motion_status("Arranque lineal: Servo ON no enviado", "error")
+            can_retry = (
+                self._motion_boot_armed
+                and not self._motion_boot_prep_done
+                and self._motion_boot_on_fails < MOTION_BOOT_ON_RETRIES
+            )
+            if can_retry:
+                threading.Thread(
+                    target=self._motion_boot_retry_after_on_fail,
+                    daemon=True,
+                    name="motion-boot-retry",
+                ).start()
+            else:
+                self._motion_boot_armed = False
         self._notify()
 
     def _motion_boot_send_home(self) -> None:
-        """Home (0x01) tras ack OK de Servo ON en prep de arranque."""
+        """Home (0x01) tras ack OK de Servo ON (servo ya habilitado)."""
         if not self._client.connected:
             return
         with self._lock:
@@ -1569,14 +1916,17 @@ class HmiState:
             self._move_start_mm = self._last_position_mm
             self._progress = 0
             self._motion_boot_armed = False
-            _append_log(self._motion_log, "Arranque: Home (0x001)")
-            self._set_motion_status("Arranque: Home (0x001)", "info")
+            _append_log(
+                self._motion_log,
+                "Arranque lineal: servo ON → Home (0x001)",
+            )
+            self._set_motion_status("Arranque lineal: Home (0x001)", "info")
         self._notify()
         ok = self._client.cmd_home("F")
         if not ok:
             with self._lock:
-                _append_log(self._motion_log, "Arranque: Home no enviado")
-                self._set_motion_status("Arranque: Home no enviado", "error")
+                _append_log(self._motion_log, "Arranque lineal: Home no enviado")
+                self._set_motion_status("Arranque lineal: Home no enviado", "error")
             self._notify()
 
     def _on_plc_connection(self, connected: bool) -> None:
@@ -1806,12 +2156,8 @@ class HmiState:
                         text += "  (moviendo…)"
                     if side == "R":
                         self._motion["enc_r"] = text
-                        self._enc_mm_r = mm_off
-                        self._enc_measure_evt_r.set()
                     else:
                         self._motion["enc_l"] = text
-                        self._enc_mm_l = mm_off
-                        self._enc_measure_evt_l.set()
                     return True
                 if byte_code == TX_REACHED:
                     pos = msg.get("positionPuu")
@@ -1841,7 +2187,6 @@ class HmiState:
                     self._feed_fault_l = ""
                     self._feed_ok_l.set()
                     if not self._cycle.is_active():
-                        # Incluye Debug Trails: no dejar status OK viejo engañando.
                         text = "Feed OK L — longitud en tolerancia (0x014)"
                         self._set_banner(text, "ok")
                         self._set_motion_status(text, "ok")
@@ -1853,12 +2198,7 @@ class HmiState:
                     if not self._feed_fault_l:
                         self._feed_fault_l = format_ui(TX_LENGTH_NG_L)
                     self._feed_ng_l.set()
-                    if self._debug_trails_active:
-                        text = self._feed_fault_l
-                        self._set_banner(text, "error")
-                        self._set_motion_status(text, "error")
-                    else:
-                        self._apply_detail_error(TX_LENGTH_NG_L, source="motion")
+                    self._apply_detail_error(TX_LENGTH_NG_L, source="motion")
                     return True
                 if byte_code == TX_LENGTH_OK_R:
                     if not self._feed_armed_r:
@@ -1878,12 +2218,7 @@ class HmiState:
                     if not self._feed_fault_r:
                         self._feed_fault_r = format_ui(TX_LENGTH_NG_R)
                     self._feed_ng_r.set()
-                    if self._debug_trails_active:
-                        text = self._feed_fault_r
-                        self._set_banner(text, "error")
-                        self._set_motion_status(text, "error")
-                    else:
-                        self._apply_detail_error(TX_LENGTH_NG_R, source="motion")
+                    self._apply_detail_error(TX_LENGTH_NG_R, source="motion")
                     return True
                 if byte_code in MOTION_DETAIL_ERROR_BYTES:
                     # laserR/L = material presente; E004/E005 = sin material → False.
@@ -1893,19 +2228,6 @@ class HmiState:
                         self._motion["laserL"] = False
                     elif byte_code == TX_EXHAUST:
                         self._motion["safetyExhaust"] = True
-                    if self._debug_trails_active and byte_code != TX_EXHAUST:
-                        # Trails: guardar detalle (láser…) sin política C1/C2/C3.
-                        # Exhaust sí se propaga (seguridad).
-                        ui = format_ui(byte_code)
-                        if byte_code == TX_LASER_L:
-                            self._feed_fault_l = ui
-                            self._set_motion_status(ui, "error")
-                        elif byte_code == TX_LASER_R:
-                            self._feed_fault_r = ui
-                            self._set_motion_status(ui, "error")
-                        else:
-                            self._set_motion_status(ui, "error")
-                        return True
                     self._apply_detail_error(byte_code, source="motion")
                     return True
                 return False
@@ -1913,6 +2235,14 @@ class HmiState:
                 ok = msg.get("ok", True)
                 detail = msg.get("message", "")
                 byte_code = int(msg.get("byte", 0) or 0)
+                if (
+                    self._pending_asda_ack is not None
+                    and msg.get("actuator") == "asda"
+                    and byte_code == self._pending_asda_ack.byte
+                ):
+                    self._pending_asda_ack.ok = bool(ok)
+                    self._pending_asda_ack.message = str(detail or "")
+                    self._pending_asda_ack.event.set()
                 if msg.get("actuator") == "encoder" and not ok:
                     side = (
                         "R"
@@ -1949,8 +2279,27 @@ class HmiState:
                         and byte_code == CMD_ON
                         and self._motion_boot_awaiting_on_ack
                     ):
-                        # Reintento en el próximo connect si el ON de arranque falló.
+                        # Servo ON de arranque rechazado: reintentar con tope.
                         self._motion_boot_awaiting_on_ack = False
+                        self._motion_boot_worker_launched = False
+                        self._motion_boot_on_fails += 1
+                        can_retry = (
+                            self._motion_boot_armed
+                            and not self._motion_boot_prep_done
+                            and self._motion_boot_on_fails < MOTION_BOOT_ON_RETRIES
+                        )
+                        if can_retry:
+                            threading.Thread(
+                                target=self._motion_boot_retry_after_on_fail,
+                                daemon=True,
+                                name="motion-boot-retry",
+                            ).start()
+                        else:
+                            self._motion_boot_armed = False
+                            _append_log(
+                                self._motion_log,
+                                "Arranque lineal: Servo ON agotó reintentos",
+                            )
                     text = detail or "Comando rechazado"
                     _append_log(self._main_log, text)
                     _append_log(self._motion_log, text)
@@ -2120,6 +2469,35 @@ class HmiState:
                 changed = True
         return changed
 
+    def _pf_primary_active_error_byte(self) -> int | None:
+        """EXXX PF activo de peor clase (C1>C2>C3). Solo para latch único."""
+        best_byte: int | None = None
+        best_rank = 99
+        for key, info in self._pf["errors"].items():
+            if not info.get("active"):
+                continue
+            try:
+                byte = int(key)
+            except (TypeError, ValueError):
+                continue
+            entry = lookup(byte)
+            if entry is None:
+                continue
+            rank = _PF_CLASS_RANK.get(str(entry.get("class") or ""), 50)
+            if rank < best_rank or (rank == best_rank and (best_byte is None or byte < best_byte)):
+                best_rank = rank
+                best_byte = byte
+        return best_byte
+
+    def _pf_try_latch_once(self) -> bool:
+        """Un solo Set/log/Andon por fallo PF. Sensores viven en el panel HMI."""
+        if self._error_policy.latch.active:
+            return False
+        primary = self._pf_primary_active_error_byte()
+        if primary is None:
+            return False
+        return self._apply_detail_error(primary, source="prefeeder")
+
     def _handle_prefeeder_message(self, msg: dict) -> bool:
         with self._lock:
             mtype = msg.get("type", "")
@@ -2132,8 +2510,10 @@ class HmiState:
                 return False
             if mtype == "status" and msg.get("actuator") == "prefeeder":
                 changed = False
+                entered_error = False
                 byte_code = int(msg.get("byte") or 0)
                 if byte_code and byte_code != self._pf["last_state_byte"]:
+                    prev_byte = self._pf["last_state_byte"]
                     self._pf["last_state_byte"] = byte_code
                     text = PF_STATE_TEXT.get(
                         byte_code, f"Estado PreFeeder 0x{byte_code:02X}"
@@ -2141,6 +2521,7 @@ class HmiState:
                     kind = "info"
                     if byte_code == TX_PF_ERROR:
                         kind = "error"
+                        entered_error = prev_byte != TX_PF_ERROR
                     elif byte_code == TX_PF_STOP:
                         kind = "warn"
                     elif byte_code in (TX_PF_IDLE, TX_PF_RETURN):
@@ -2153,23 +2534,30 @@ class HmiState:
                     changed = self._apply_pf_side_sensors(side_l, True) or changed
                 if isinstance(side_r, dict):
                     changed = self._apply_pf_side_sensors(side_r, False) or changed
+                if entered_error:
+                    changed = self._pf_try_latch_once() or changed
                 return changed
             if mtype == "state" and msg.get("actuator") == "prefeeder":
                 byte_code = int(msg.get("byte", 0))
                 if byte_code == self._pf["last_state_byte"]:
                     return False
+                prev_byte = self._pf["last_state_byte"]
                 self._pf["last_state_byte"] = byte_code
                 text = PF_STATE_TEXT.get(
                     byte_code, f"Estado PreFeeder 0x{byte_code:02X}"
                 )
                 kind = "info"
+                entered_error = False
                 if byte_code == TX_PF_ERROR:
                     kind = "error"
+                    entered_error = prev_byte != TX_PF_ERROR
                 elif byte_code == TX_PF_STOP:
                     kind = "warn"
                 elif byte_code in (TX_PF_IDLE, TX_PF_RETURN):
                     kind = "ok"
                 self._set_pf_status(text, kind)
+                if entered_error:
+                    self._pf_try_latch_once()
                 return True
             if mtype == "event":
                 byte_code = int(msg.get("byte", 0))
@@ -2179,8 +2567,9 @@ class HmiState:
                     prev = self._pf["errors"].get(key, {}).get("active")
                     if key in self._pf["errors"]:
                         self._pf["errors"][key]["active"] = active
+                    # Sensores → panel. Un solo Set/log/Andon (el EXXX primario).
                     if active and prev is not True:
-                        self._apply_detail_error(byte_code, source="prefeeder")
+                        self._pf_try_latch_once()
                     return prev != active
             if mtype == "ack":
                 ok = msg.get("ok", True)

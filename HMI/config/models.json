@@ -1,9 +1,9 @@
 {
   "models": [
     {
-      "name": "Modelo A — corte corto",
-      "mm": -45.0,
-      "rpm": 1200,
+      "name": "102101-TUBE1-100-M",
+      "mm": -265.0,
+      "rpm": 3000,
       "qty": 1
     }
   ]

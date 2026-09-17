@@ -125,7 +125,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
           <div>
             <span className="text-slate-500 dark:text-slate-400">{t('mm_rpm_label')}: </span>
             <span className="text-slate-800 dark:text-slate-200 font-semibold">
-              {machineState.mm.toFixed(1)} mm @ {machineState.rpm} RPM
+              {(-machineState.mm).toFixed(1)} mm @ {machineState.rpm} RPM
             </span>
           </div>
           <div className="flex items-center gap-1.5">
@@ -363,7 +363,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
           >
             <RotateCcw className="h-3.5 w-3.5 text-amber-600" />
             <span>{t('btn_reset_cycle')}</span>
-            <span className="font-mono text-[10px]">0x042</span>
+            <span className="font-mono text-[10px]">0x043</span>
           </button>
         </div>
       </div>

@@ -8,7 +8,6 @@ import { MotionTab } from './components/MotionTab';
 import { PlcTab } from './components/PlcTab';
 import { PreFeederTab } from './components/PreFeederTab';
 import { AndonTab } from './components/AndonTab';
-import { DebugTrailsTab } from './components/DebugTrailsTab';
 import { SettingsDrawer } from './components/SettingsDrawer';
 import { AppProvider, useApp } from './context/AppContext';
 import { useHmiState } from './hooks/useHmiState';
@@ -43,11 +42,14 @@ function AppMain() {
     if (view.machineState.trialMode) {
       void hmi.setCycleTrialMode(false);
     }
+    if (view.machineState.ignorePrefeeder) {
+      void hmi.setCycleIgnorePrefeeder(false);
+    }
     if (currentTab !== 'maquina') {
       setCurrentTab('maquina');
       hmi.onTabChange('maquina');
     }
-  }, [currentTab, hmi, view.machineState.trialMode]);
+  }, [currentTab, hmi, view.machineState.trialMode, view.machineState.ignorePrefeeder]);
 
   useEffect(() => {
     if (!debugMode && currentTab !== 'maquina') {
@@ -72,7 +74,6 @@ function AppMain() {
       else if (debugMode && e.key === '4') handleTabChange('plc');
       else if (debugMode && e.key === '5') handleTabChange('prefeeder');
       else if (debugMode && e.key === '6') handleTabChange('andon');
-      else if (debugMode && e.key === '7') handleTabChange('debug-trails');
       else if (e.code === 'Space') {
         e.preventDefault();
         if (currentTab === 'maquina') {
@@ -134,23 +135,25 @@ function AppMain() {
           />
         )}
 
-        {debugMode && currentTab === 'cycle' && (
-          <CycleTab
-            machineState={view.machineState}
-            cycleConfig={view.cycleConfig}
-            cycleStep={view.cycleStep}
-            cycleActive={view.cycleActive}
-            cycleFlow={view.cycleFlow}
-            onSaveConfig={hmi.saveCycleConfig}
-            onReloadConfig={hmi.reloadCycleConfig}
-            onPause={hmi.pauseCycle}
-            onReset={hmi.resetCycleCmd}
-            onMaterialist={hmi.toggleCycleMaterialist}
-            onSetStepByStep={hmi.setCycleStepByStep}
-            onToggleTrialMode={hmi.setCycleTrialMode}
-            onResume={hmi.resume}
-            resumeEnabled={view.resumeEnabled}
-          />
+        {debugMode && (
+          <div className={currentTab === 'cycle' ? undefined : 'hidden'} aria-hidden={currentTab !== 'cycle'}>
+            <CycleTab
+              machineState={view.machineState}
+              cycleConfig={view.cycleConfig}
+              cycleStep={view.cycleStep}
+              cycleActive={view.cycleActive}
+              cycleFlow={view.cycleFlow}
+              onSaveConfig={hmi.saveCycleConfig}
+              onReloadConfig={hmi.reloadCycleConfig}
+              onPause={hmi.pauseCycle}
+              onReset={hmi.resetCycleCmd}
+              onMaterialist={hmi.toggleCycleMaterialist}
+              onSetStepByStep={hmi.setCycleStepByStep}
+              onToggleTrialMode={hmi.setCycleTrialMode}
+              onResume={hmi.resume}
+              resumeEnabled={view.resumeEnabled}
+            />
+          </div>
         )}
 
         {debugMode && currentTab === 'motion' && (
@@ -222,19 +225,6 @@ function AppMain() {
             onClearLogs={() => hmi.clearLogs('andon')}
           />
         )}
-
-        {/* Mantener montado en debug: side/numTests/wait no deben resetear al cambiar de pestaña */}
-        {debugMode && (
-          <div className={currentTab === 'debug-trails' ? undefined : 'hidden'} aria-hidden={currentTab !== 'debug-trails'}>
-            <DebugTrailsTab
-              trails={view.debugTrails}
-              onStart={hmi.startDebugTrails}
-              onStop={hmi.stopDebugTrails}
-              onClear={hmi.clearDebugTrails}
-              onExport={hmi.exportDebugTrails}
-            />
-          </div>
-        )}
       </main>
 
       <SettingsDrawer
@@ -246,6 +236,8 @@ function AppMain() {
         andonConn={view.andonConn}
         andonBuzzerMute={view.andonBuzzerMute}
         onAndonBuzzerMute={hmi.setAndonBuzzerMute}
+        ignorePrefeeder={view.machineState.ignorePrefeeder}
+        onIgnorePrefeeder={debugMode ? hmi.setCycleIgnorePrefeeder : undefined}
         connected={view.connected}
         onReconnectNetwork={handleReconnectNetwork}
         reconnecting={reconnecting}

@@ -505,6 +505,39 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
         </section>
 
         <section class="full">
+          <h2>Stage 2 · Lineal (doble gripper)</h2>
+          <p class="hint">
+            Target = L − 55 mm · Approach % × Fast RPM · luego remaining real @ Fine RPM.
+            Parámetros en NVS (namespace asda). No modifica Feed.
+          </p>
+          <div class="row c3">
+            <div>
+              <label for="s2ApPct">Approach %</label>
+              <input id="s2ApPct" type="number" min="50" max="95" step="1" value="80"/>
+            </div>
+            <div>
+              <label for="s2FastRpm">Fast RPM</label>
+              <input id="s2FastRpm" type="number" min="400" max="3000" step="50" value="3000"/>
+            </div>
+            <div>
+              <label for="s2FineRpm">Fine RPM</label>
+              <input id="s2FineRpm" type="number" min="400" max="3000" step="50" value="800"/>
+            </div>
+          </div>
+          <div class="row c2">
+            <div>
+              <label for="s2PieceMm">Pieza L (mm) · test</label>
+              <input id="s2PieceMm" type="number" min="56" step="1" value="310"/>
+            </div>
+            <div class="btns" style="align-items:flex-end">
+              <button class="btnG" type="button" onclick="saveStage2Cfg()">Guardar Stage2</button>
+              <button class="btn" type="button" onclick="startStage2()">Start Stage2</button>
+            </div>
+          </div>
+          <p class="hint" id="s2Hint">Approach → — mm @ — RPM · Fine remaining @ — RPM</p>
+        </section>
+
+        <section class="full">
           <div class="log" id="log">Listo. Abre http://10.10.32.20/</div>
         </section>
       </div>
@@ -848,8 +881,66 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
         $('mRpm').value = c.moveRpm;
       if (c.moveRpmMin != null) $('mRpm').min = c.moveRpmMin;
       if (c.moveRpmMax != null) $('mRpm').max = c.moveRpmMax;
+      if (c.stage2ApproachPct != null && document.activeElement !== $('s2ApPct'))
+        $('s2ApPct').value = c.stage2ApproachPct;
+      if (c.stage2FastRpm != null && document.activeElement !== $('s2FastRpm'))
+        $('s2FastRpm').value = c.stage2FastRpm;
+      if (c.stage2FineRpm != null && document.activeElement !== $('s2FineRpm'))
+        $('s2FineRpm').value = c.stage2FineRpm;
+      if (c.moveRpmMin != null) {
+        $('s2FastRpm').min = c.moveRpmMin;
+        $('s2FineRpm').min = c.moveRpmMin;
+      }
+      if (c.moveRpmMax != null) {
+        $('s2FastRpm').max = c.moveRpmMax;
+        $('s2FineRpm').max = c.moveRpmMax;
+      }
+      if (c.stage2ApproachPctMin != null) $('s2ApPct').min = c.stage2ApproachPctMin;
+      if (c.stage2ApproachPctMax != null) $('s2ApPct').max = c.stage2ApproachPctMax;
       previewPuuMm();
       previewRpmMmS();
+      previewStage2();
+    }
+
+    function previewStage2() {
+      const L = Number($('s2PieceMm').value);
+      const pct = Number($('s2ApPct').value);
+      const fast = Number($('s2FastRpm').value);
+      const fine = Number($('s2FineRpm').value);
+      const target = Math.max(0, L - 55);
+      const ap = target * (pct / 100);
+      const el = $('s2Hint');
+      if (!el) return;
+      el.textContent = 'Target ' + target.toFixed(1) + ' mm · Approach ' +
+        ap.toFixed(1) + ' mm @ ' + fast + ' RPM · Fine = remaining real @ ' + fine + ' RPM';
+    }
+
+    async function saveStage2Cfg() {
+      try {
+        const j = await api('POST', '/api/config', {
+          stage2ApproachPct: Number($('s2ApPct').value),
+          stage2FastRpm: Number($('s2FastRpm').value),
+          stage2FineRpm: Number($('s2FineRpm').value)
+        });
+        log('Stage2 CFG → ' + j._http + '\n' + JSON.stringify(j, null, 2));
+        if (j.ok) applyCfg(j);
+      } catch (e) {
+        log('Error Stage2 CFG: ' + e.message);
+      }
+    }
+
+    async function startStage2() {
+      const pieceMm = Number($('s2PieceMm').value);
+      setBusyUi(true, 'Stage2 en curso…');
+      try {
+        const j = await api('POST', '/api/stage2/start', { pieceMm: pieceMm });
+        log('Stage2 START → ' + j._http + '\n' + JSON.stringify(j, null, 2));
+        if (!j.ok) setBanner('bad', 'Stage2', j.error || j.message || 'Error');
+      } catch (e) {
+        log('Error Stage2: ' + e.message);
+      }
+      setBusyUi(false);
+      refresh();
     }
 
     function paint(s) {
@@ -1114,9 +1205,14 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
 
     previewPuuMm();
     previewRpmMmS();
+    previewStage2();
     loadCfg();
     startOvPoll();
     setInterval(() => { if (activeTab === 'asda' && !waiting) refresh(); }, 1500);
+    ['s2ApPct','s2FastRpm','s2FineRpm','s2PieceMm'].forEach(function(id){
+      const el = $(id);
+      if (el) el.addEventListener('input', previewStage2);
+    });
   </script>
 </body>
 </html>

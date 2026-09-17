@@ -161,6 +161,7 @@ enum FeedMode : uint8_t {
 enum FeedSidePhase : uint8_t {
   FSP_IDLE = 0,
   FSP_APPROACH,
+  FSP_HALT_SETTLE,  // halt emitido; espera FEED_HALT_SETTLE_MS sin delay()
   FSP_WAIT_SERVO,
   FSP_SETTLE,
   FSP_VALIDATE,

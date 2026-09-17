@@ -1,5 +1,5 @@
 import React from 'react';
-import { LayoutDashboard, Repeat, Move, CircuitBoard, Layers, Lightbulb, FlaskConical } from 'lucide-react';
+import { LayoutDashboard, Repeat, Move, CircuitBoard, Layers, Lightbulb } from 'lucide-react';
 import { TabType, ConnectionState } from '../types';
 import { useApp } from '../context/AppContext';
 
@@ -69,12 +69,6 @@ export const Navigation: React.FC<NavigationProps> = ({
       label: t('tab_andon'),
       icon: <Lightbulb className="h-4 w-4" />,
       isConnected: andonConn.connected,
-      debugOnly: true,
-    },
-    {
-      id: 'debug-trails',
-      label: t('tab_debug_trails'),
-      icon: <FlaskConical className="h-4 w-4" />,
       debugOnly: true,
     },
   ];

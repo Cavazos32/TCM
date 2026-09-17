@@ -18,8 +18,6 @@ import type {
   AndonState,
   ConnectionState,
   CycleConfig,
-  DebugTrailsSide,
-  DebugTrailsState,
   LogEntry,
   MachineState,
   MotionState,
@@ -30,20 +28,6 @@ import type {
 
 /** Bloqueo tras toggle: evita doble click ON→OFF antes de que el KEEP/pulso asiente. */
 const VALVE_TOGGLE_LOCK_MS = 450;
-
-const DEFAULT_TRAILS: DebugTrailsState = {
-  active: false,
-  stage: 'stage1',
-  side: 'Both',
-  numTests: 0,
-  waitTimeS: 0,
-  currentTest: 0,
-  phase: 'idle',
-  lastOk: false,
-  fault: '',
-  records: [],
-  recordCount: 0,
-};
 
 export interface HmiViewState {
   connected: boolean;
@@ -58,7 +42,6 @@ export interface HmiViewState {
   cycleStep: number;
   cycleActive: boolean;
   cycleFlow: BackendSnapshot['cycle']['flow'];
-  debugTrails: DebugTrailsState;
   resumeEnabled: boolean;
   logs: LogEntry[];
   models: { name: string; mm: number; rpm: number; qty?: number }[];
@@ -79,6 +62,7 @@ const DEFAULT_MACHINE: MachineState = {
   cycleMaterialist: false,
   stepByStep: false,
   trialMode: false,
+  ignorePrefeeder: false,
   pauseEnabled: false,
   progress: 0,
   cycleTimeSec: 0,
@@ -135,7 +119,6 @@ export function useHmiState() {
     cycleStep: 0,
     cycleActive: false,
     cycleFlow: [],
-    debugTrails: DEFAULT_TRAILS,
     resumeEnabled: false,
     logs: [],
     models: [],
@@ -177,31 +160,6 @@ export function useHmiState() {
       cycleStep: snap.cycle.step,
       cycleActive: snap.cycle.active,
       cycleFlow: snap.cycle.flow,
-      debugTrails: snap.debugTrails
-        ? {
-            active: !!snap.debugTrails.active,
-            stage: snap.debugTrails.stage || 'stage1',
-            side: (snap.debugTrails.side as DebugTrailsSide) || 'Both',
-            numTests: snap.debugTrails.numTests || 0,
-            waitTimeS: snap.debugTrails.waitTimeS || 0,
-            currentTest: snap.debugTrails.currentTest || 0,
-            phase: snap.debugTrails.phase || 'idle',
-            lastOk: !!snap.debugTrails.lastOk,
-            fault: snap.debugTrails.fault || '',
-            records: Array.isArray(snap.debugTrails.records)
-              ? snap.debugTrails.records.map((r) => ({
-                  testNum: r.testNum,
-                  side: r.side,
-                  measureMm: r.measureMm,
-                  status: r.status,
-                  error: r.error || '',
-                  timestamp: r.timestamp || '',
-                  phase: r.phase || '',
-                }))
-              : [],
-            recordCount: snap.debugTrails.recordCount || 0,
-          }
-        : DEFAULT_TRAILS,
       resumeEnabled: snap.resumeEnabled,
       logs: mergeAllLogs(snap),
       models: snap.models,
@@ -303,6 +261,11 @@ export function useHmiState() {
   const resetCycleCmd = useCallback(async () => {
     const snap = snapRef.current;
     const err = snap?.error;
+    const showResetFail = (res: { ok?: boolean; error?: string } | null) => {
+      if (res && res.ok === false && res.error) {
+        window.alert(res.error);
+      }
+    };
     if (err?.active && err.needsConfirm && !err.confirmed) {
       const ok = window.confirm(
         `${err.ui}\n\n¿Confirmar reset y homing general?`
@@ -313,7 +276,12 @@ export function useHmiState() {
       } catch {
         /* ignore */
       }
-      api.resetError({ confirm: true, doHome: true }).catch(() => {});
+      try {
+        const res = await api.resetError({ confirm: true, doHome: true });
+        showResetFail(res as { ok?: boolean; error?: string });
+      } catch {
+        /* ignore */
+      }
       return;
     }
     if (err?.active && err.needsHome) {
@@ -321,10 +289,20 @@ export function useHmiState() {
         `${err.ui}\n\nReset errores y ejecutar homing general?`
       );
       if (!ok) return;
-      api.resetError({ confirm: true, doHome: true }).catch(() => {});
+      try {
+        const res = await api.resetError({ confirm: true, doHome: true });
+        showResetFail(res as { ok?: boolean; error?: string });
+      } catch {
+        /* ignore */
+      }
       return;
     }
-    api.resetCycle({ confirm: true, doHome: false }).catch(() => {});
+    try {
+      const res = await api.resetCycle({ confirm: true, doHome: false });
+      showResetFail(res as { ok?: boolean; error?: string });
+    } catch {
+      /* ignore */
+    }
   }, []);
 
   const setCutOffset = useCallback(async (mm: number) => {
@@ -346,6 +324,10 @@ export function useHmiState() {
     api.setCycleTrialMode(on).catch(() => {});
   }, []);
 
+  const setCycleIgnorePrefeeder = useCallback((on: boolean) => {
+    api.setCycleIgnorePrefeeder(on).catch(() => {});
+  }, []);
+
   const reloadFeedOffset = useCallback(async () => {
     const res = await api.getFeedOffset();
     if (res.ok) {
@@ -362,12 +344,22 @@ export function useHmiState() {
 
   const saveCycleConfig = useCallback(async (cfg: Partial<CycleConfig>) => {
     const res = await api.setCycleConfig(cfg);
-    return res.config;
+    const mapped = mapCycleConfig(res.config);
+    // Si el body pedía L/R/LR y el server omitió el campo, no perder la selección.
+    const feedSides =
+      cfg.feedSides === 'L' || cfg.feedSides === 'R' || cfg.feedSides === 'LR'
+        ? cfg.feedSides
+        : mapped.feedSides;
+    const next = { ...mapped, feedSides };
+    setView((prev) => ({ ...prev, cycleConfig: next }));
+    return next;
   }, []);
 
   const reloadCycleConfig = useCallback(async () => {
     const res = await api.reloadCycleConfigFromDisk();
-    return res.config;
+    const mapped = mapCycleConfig(res.config);
+    setView((prev) => ({ ...prev, cycleConfig: mapped }));
+    return mapped;
   }, []);
 
   const setMmRpm = useCallback((mm: number, rpm: number) => {
@@ -576,36 +568,6 @@ export function useHmiState() {
     await api.reconnectNetwork().catch(() => {});
   }, []);
 
-  const startDebugTrails = useCallback(
-    async (side: DebugTrailsSide, numTests: number, waitTimeS: number) => {
-      const res = await api.debugTrailsStart({ side, numTests, waitTimeS });
-      if (!res.ok) {
-        throw new Error(res.error || 'No se pudo iniciar Debug Trails');
-      }
-    },
-    []
-  );
-
-  const stopDebugTrails = useCallback(async () => {
-    await api.debugTrailsStop();
-  }, []);
-
-  const clearDebugTrails = useCallback(async () => {
-    const res = await api.debugTrailsClear();
-    if (!res.ok) {
-      throw new Error(res.error || 'No se pudo borrar el registro');
-    }
-  }, []);
-
-  const exportDebugTrails = useCallback(() => {
-    const a = document.createElement('a');
-    a.href = api.debugTrailsExportUrl();
-    a.download = 'debug_trails_stage1.csv';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-  }, []);
-
   return {
     view,
     onTabChange,
@@ -621,10 +583,7 @@ export function useHmiState() {
     toggleCycleMaterialist,
     setCycleStepByStep,
     setCycleTrialMode,
-    startDebugTrails,
-    stopDebugTrails,
-    clearDebugTrails,
-    exportDebugTrails,
+    setCycleIgnorePrefeeder,
     reloadFeedOffset,
     saveCycleConfig,
     reloadCycleConfig,

@@ -9,7 +9,7 @@ import time
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any, Callable, Protocol
-from prefeeder import TX_PF_BUSY, TX_PF_ERROR
+from prefeeder import TX_PF_ERROR
 from machine_states import (
     CMD_RESET,
     CMD_START,
@@ -30,6 +30,10 @@ from error_catalog import format_ui
 HMI_ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = HMI_ROOT / "config" / "cycle_config.json"
 
+# Motion Stage2: CYCLE envía targetAbsMm = abs(model.mm) (carrera ABS).
+# El test HTML de Motion sigue usando pieceMm = L (target = L−55).
+# No modificar Feed / FEED_TARGET_FIXED_MM / Move ABS manual.
+
 # Protocolo máquina: machine_states.py (0x40–0x49). Andon solo refleja esos bytes.
 # Pasos atómicos (acción / delay independientes).
 # kind=parallel SOLO en: arranque prefetch (background) y join/handoff.
@@ -41,10 +45,10 @@ FLOW_STEPS: list[dict[str, Any]] = [
     {"id": 4, "key": "offset", "label": "Offset alimentación (Motion, paso lógico)", "kind": "action"},
     {"id": 5, "key": "grippers_on", "label": "Pinzas cierran", "kind": "action"},
     {"id": 6, "key": "wait_grippers_on", "label": "Delay tras cerrar pinzas", "kind": "wait", "delayKey": "grippersOnMs"},
-    {"id": 7, "key": "enc_set0", "label": "Encoder Set0 (OM)", "kind": "action"},
+    {"id": 7, "key": "enc_set0", "label": "OM ref (no usado por Stage2 ASDA)", "kind": "action"},
     {"id": 8, "key": "holder_off", "label": "Holder+Encoder se mantienen ON", "kind": "action"},
     {"id": 9, "key": "wait_holder_open", "label": "Delay (holder se mantiene)", "kind": "wait", "delayKey": "holderOpenMs"},
-    {"id": 10, "key": "lineal_fwd", "label": "Lineal FWD → posición de corte", "kind": "action"},
+    {"id": 10, "key": "lineal_fwd", "label": "Stage2 lineal ASDA ABS", "kind": "action"},
     {"id": 11, "key": "wait_linear_done", "label": "Delay antes del corte", "kind": "wait", "delayKey": "linearDoneMs"},
     {"id": 12, "key": "holder_precut", "label": "Confirmar Holder+Encoder ON (pre-corte)", "kind": "action"},
     {"id": 13, "key": "wait_holder_precut", "label": "Delay tras confirmar holder", "kind": "wait", "delayKey": "holderOnMs"},
@@ -87,7 +91,8 @@ class CycleConfig:
     holder_open_ms: int = 100
     grippers_on_ms: int = 100
     gripper_release_ms: int = 350
-    cutter_pulse_ms: int = 100
+    # ≥ VALVE_PULSE_MS (100) del PLC: si no, OFF llega durante el pulso ON y el KEEP falla.
+    cutter_pulse_ms: int = 200
     cutter_post_ms: int = 100
     linear_done_ms: int = 100
     asentar_ms: int = 50
@@ -98,6 +103,31 @@ class CycleConfig:
     motion_wait_timeout_s: float = 120.0
     feed_wait_timeout_s: float = 30.0
     pf_ready_timeout_s: float = 10.0
+    # Feed / Stage2 OM: "L" | "R" | "LR"
+    feed_sides: str = "LR"
+
+    @staticmethod
+    def normalize_feed_sides(raw: Any) -> str:
+        if isinstance(raw, (list, tuple, set)):
+            parts = {str(x).strip().upper() for x in raw}
+            has_l = "L" in parts
+            has_r = "R" in parts
+        else:
+            s = str(raw or "LR").strip().upper().replace(" ", "").replace(",", "")
+            if s in ("L", "R", "LR", "RL", "BOTH", "ALL"):
+                if s in ("RL", "BOTH", "ALL"):
+                    return "LR"
+                return s if s != "LR" else "LR"
+            has_l = "L" in s
+            has_r = "R" in s
+        if has_l and has_r:
+            return "LR"
+        if has_l:
+            return "L"
+        if has_r:
+            return "R"
+        return "LR"
+
     @staticmethod
     def _key_map() -> dict[str, str]:
         return {
@@ -116,6 +146,7 @@ class CycleConfig:
             "motionWaitTimeoutS": "motion_wait_timeout_s",
             "feedWaitTimeoutS": "feed_wait_timeout_s",
             "pfReadyTimeoutS": "pf_ready_timeout_s",
+            "feedSides": "feed_sides",
         }
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CycleConfig:
@@ -147,7 +178,9 @@ class CycleConfig:
             else:
                 continue
             try:
-                if attr in int_attrs:
+                if attr == "feed_sides":
+                    kw[attr] = cls.normalize_feed_sides(raw)
+                elif attr in int_attrs:
                     kw[attr] = int(float(raw))
                 elif attr in float_attrs:
                     kw[attr] = float(raw)
@@ -155,6 +188,9 @@ class CycleConfig:
                     kw[attr] = raw
             except (TypeError, ValueError):
                 continue
+        # Pulso lógico del cortador debe superar el pulso eléctrico KEEP del PLC (100 ms).
+        if "cutter_pulse_ms" in kw and kw["cutter_pulse_ms"] < 150:
+            kw["cutter_pulse_ms"] = 150
         return cls(**kw)
     def to_dict(self) -> dict[str, Any]:
         inv = {v: k for k, v in self._key_map().items()}
@@ -165,7 +201,12 @@ class CycleConfig:
 def load_cycle_config(path: Path = CONFIG_PATH) -> CycleConfig:
     if path.exists():
         try:
-            return CycleConfig.from_dict(json.loads(path.read_text(encoding="utf-8")))
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            cfg = CycleConfig.from_dict(raw if isinstance(raw, dict) else {})
+            # Migrar claves nuevas (feedSides) si el JSON viejo no las traía
+            if isinstance(raw, dict) and "feedSides" not in raw and "feed_sides" not in raw:
+                save_cycle_config(cfg, path)
+            return cfg
         except (json.JSONDecodeError, OSError, TypeError, ValueError):
             pass
     cfg = CycleConfig()
@@ -191,6 +232,29 @@ class CycleHost(Protocol):
     def clear_motion_reached_flag(self) -> None: ...
     def wait_motion_idle_or_reached(self, timeout_s: float) -> bool: ...
     def wait_feed_length_ok(self, timeout_s: float) -> bool: ...
+    def wait_feed_length_ok_for(
+        self,
+        sides: list[str],
+        timeout_s: float,
+        *,
+        abort_event: threading.Event | None = None,
+    ) -> dict[str, str]: ...
+    def feed_fault_for(self, side: str) -> str: ...
+    def arm_stage2(self) -> None: ...
+    def cmd_motion_stage2_start(
+        self,
+        piece_mm: float | None = None,
+        sides: str = "LR",
+        *,
+        target_abs_mm: float | None = None,
+    ) -> bool: ...
+    def wait_stage2_result(
+        self,
+        timeout_s: float,
+        *,
+        abort_event: threading.Event | None = None,
+    ) -> str: ...
+    def stage2_fault(self) -> str: ...
     def cmd_motion_move_mm(self, mm: float, rpm: float) -> bool: ...
     def cmd_motion_move_zero(self, rpm: float) -> bool: ...
     def cmd_motion_stop(self) -> bool: ...
@@ -198,10 +262,12 @@ class CycleHost(Protocol):
     def cmd_motion_feed_r(self) -> bool: ...
     def cmd_motion_enc_set0_r(self) -> bool: ...
     def cmd_motion_enc_set0_l(self) -> bool: ...
+    def plc_valve_is_on(self, byte_code: int) -> bool | None: ...
     def cmd_plc_holder(self, on: bool) -> bool: ...
     def cmd_plc_encoder(self, on: bool) -> bool: ...
     def cmd_plc_gripper(self, on: bool) -> bool: ...
     def cmd_plc_cutters(self, on: bool) -> bool: ...
+    def cmd_plc_tools_safe(self) -> bool: ...
     def cmd_plc_all_safe(self) -> bool: ...
     def cmd_pf_start(self) -> bool: ...
     def cmd_pf_stop(self) -> bool: ...
@@ -225,6 +291,7 @@ class CycleRunner:
         self._materialist = False
         self._step_by_step = False
         self._trial_mode = False
+        self._ignore_prefeeder = False
         self._step = 0
         self._parallel_group = ""
         self._rep = 0
@@ -255,6 +322,7 @@ class CycleRunner:
                 "materialist": self._materialist,
                 "stepByStep": self._step_by_step,
                 "trialMode": self._trial_mode,
+                "ignorePrefeeder": self._ignore_prefeeder,
                 "step": self._step,
                 "stepName": STEP_NAMES.get(self._step, ""),
                 "stepLabel": next(
@@ -292,12 +360,13 @@ class CycleRunner:
 
     @staticmethod
     def _delay_summary(cfg: CycleConfig) -> str:
+        sides = CycleConfig.normalize_feed_sides(cfg.feed_sides)
         return (
             f"Delays — holderOn={cfg.holder_on_ms}ms open={cfg.holder_open_ms}ms "
             f"grippers={cfg.grippers_on_ms}ms cutter={cfg.cutter_pulse_ms}ms "
             f"postCut={cfg.cutter_post_ms}ms linear={cfg.linear_done_ms}ms "
             f"dwell={cfg.dwell_at_dest_ms}ms gripRel={cfg.gripper_release_ms}ms "
-            f"asentar={cfg.asentar_ms}ms"
+            f"asentar={cfg.asentar_ms}ms · feedSides={sides}"
         )
 
     def update_config(self, data: dict[str, Any]) -> CycleConfig:
@@ -330,7 +399,7 @@ class CycleRunner:
                 return {"ok": False, "error": "Cantidad inválida"}
         if not self._host.motion_connected() or not self._host.plc_connected():
             return {"ok": False, "error": "Motion/PLC sin enlace"}
-        if self._host.pf_is_materialist():
+        if not self._ignore_prefeeder and self._host.pf_is_materialist():
             self._set_state(TX_MATERIALIST, "PreFeeder Materialist")
             return {"ok": False, "error": "PreFeeder en Materialist"}
         cfg = self.reload_config()
@@ -357,8 +426,12 @@ class CycleRunner:
         self._aborted = True
         self._stop.set()
         self._pause.clear()
+        # Desarma waits Stage2/Feed/Reached — si no, el hilo queda active ~3 min
+        # y Reset responde "Detener ciclo antes de Reset".
+        self._host.clear_motion_wait_flags()
         self._host.cmd_motion_stop()
-        self._host.cmd_pf_stop()
+        if not self._ignore_prefeeder:
+            self._host.cmd_pf_stop()
         self._host.cmd_plc_all_safe()
         self._set_state(TX_STOP, "Stop (0x042)")
         self._host.cycle_log("Cycle Stop (0x041)")
@@ -381,8 +454,16 @@ class CycleRunner:
         return {"ok": False, "error": "Ciclo no está en Pause"}
     def request_reset(self) -> dict[str, Any]:
         if self.is_active():
-            return {"ok": False, "error": "Detener ciclo antes de Reset"}
+            # Stop ya pedido: dar tiempo a que salga del wait Stage2/Feed.
+            if self._stop.is_set() or self._aborted:
+                self._host.clear_motion_wait_flags()
+                th = self._thread
+                if th is not None and th.is_alive():
+                    th.join(timeout=2.0)
+            if self.is_active():
+                return {"ok": False, "error": "Detener ciclo antes de Reset"}
         self._aborted = False
+        self._stop.clear()
         self._fault = ""
         self._fault_class = ""
         self._c3_stop_after_step = False
@@ -425,6 +506,20 @@ class CycleRunner:
         )
         self._host.cycle_notify()
         return {"ok": True, "trialMode": on}
+
+    def set_ignore_prefeeder(self, on: bool) -> dict[str, Any]:
+        if on and self.is_active():
+            return {"ok": False, "error": "No cambiar ignore PreFeeder con ciclo activo"}
+        self._ignore_prefeeder = bool(on)
+        self._host.cycle_log(
+            f"Ignore PreFeeder {'ON' if on else 'OFF'} (bypass 100% PF en ciclo)"
+        )
+        self._host.cycle_notify()
+        return {"ok": True, "ignorePrefeeder": self._ignore_prefeeder}
+
+    def _use_prefeeder(self) -> bool:
+        """PreFeeder participa en el ciclo (enlace + no bypass debug)."""
+        return (not self._ignore_prefeeder) and self._host.pf_connected()
     def mark_init_done(self) -> None:
         with self._lock:
             if self._state_byte == TX_INIT and not self._active:
@@ -486,6 +581,10 @@ class CycleRunner:
             self._aborted = True
             self._stop.set()
             self._pause.clear()
+            try:
+                self._host.clear_motion_wait_flags()
+            except Exception:
+                pass
             # Best-effort: un módulo caído no debe tumbar la política.
             for fn in (
                 self._host.cmd_motion_stop,
@@ -504,6 +603,10 @@ class CycleRunner:
             self._aborted = True
             self._stop.set()
             self._pause.clear()
+            try:
+                self._host.clear_motion_wait_flags()
+            except Exception:
+                pass
             self._set_state(TX_ERROR, ui)
             self._host.cycle_notify()
             return {"ok": True, "action": action}
@@ -660,38 +763,85 @@ class CycleRunner:
             self._host.cycle_log("Trial: feed OK omitido (bypass encoder)")
             return True
         cfg = self.get_config()
-        ok = self._host.wait_feed_length_ok(cfg.feed_wait_timeout_s)
-        if not ok:
-            self._raise_fault("timeout_feed")
-            self._host.cycle_log(format_ui("E009"))
-        return ok
+        sides = self._feed_side_list()
+        outcomes = self._host.wait_feed_length_ok_for(
+            sides, cfg.feed_wait_timeout_s, abort_event=self._stop
+        )
+        bad = [s for s, v in outcomes.items() if v != "ok"]
+        if not bad:
+            return True
+        for s in bad:
+            detail = self._host.feed_fault_for(s) or outcomes.get(s, "fail")
+            self._host.cycle_log(f"Feed {s}: {detail}")
+        self._raise_fault("timeout_feed")
+        self._host.cycle_log(format_ui("E009"))
+        return False
+
+    def _feed_side_list(self) -> list[str]:
+        mode = CycleConfig.normalize_feed_sides(self.get_config().feed_sides)
+        if mode == "L":
+            return ["L"]
+        if mode == "R":
+            return ["R"]
+        return ["L", "R"]
+
+    def _wait_stage2(self) -> bool:
+        """Espera Stage2 Complete (OK/NG). No usa ASDA Reached intermedios.
+
+        Timeout HMI ≥ timeout global Stage2 (ASDA ABS único).
+        """
+        cfg = self.get_config()
+        # STAGE2_GLOBAL_TIMEOUT_MS = 180000 → margen de poll HTTP
+        timeout_s = max(float(cfg.motion_wait_timeout_s), 185.0)
+        outcome = self._host.wait_stage2_result(timeout_s, abort_event=self._stop)
+        if outcome == "ok":
+            return True
+        if outcome == "ng":
+            detail = self._host.stage2_fault() or "Stage2 NG"
+            self._raise_fault("move_cmd")
+            self._host.cycle_log(f"Stage2 NG — {detail}")
+            return False
+        if outcome == "aborted":
+            # Stop/C1 del operador: no latchear EXXX genérico (bloquea Reset).
+            if self._should_abort():
+                self._host.cycle_log("Stage2 abortado (Stop)")
+                return False
+            self._raise_fault("move_cmd")
+            self._host.cycle_log("Stage2 abortado")
+            return False
+        self._raise_fault("timeout_motion")
+        self._host.cycle_log(format_ui("E008"))
+        self._host.cycle_log("Stage2 timeout — sin resultado final")
+        return False
+
     def _effective_mm(self, length_mm: float) -> float:
         cfg = self.get_config()
         return abs(float(length_mm)) + float(cfg.cut_offset_mm)
+
     def _arm_holder_encoder(self) -> None:
-        """Holder + Encoder (bandeja) ON desde Start hasta fin de pieza/lote."""
+        """Cierra Holder+Encoder (ON). Idempotente: no re-pulsa si ya están ON."""
         self._host.cmd_plc_holder(True)
         self._host.cmd_plc_encoder(True)
 
     def _prepare_before_cut(self) -> bool:
-        # Start: all_safe (cutters/grippers) y rearmar Holder+Encoder ON.
-        # Permanecen ON el lote; liberación solo en _finish (all_safe).
+        # Start: tools a seguro + Holder/Encoder ON. Sin HOME aquí (eso es paso 24).
         # El delay holderOnMs es el paso wait_holder_on (solo 1ª pieza).
-        self._host.cycle_log("prepareBeforeCut: PLC seguro + Holder/Encoder ON + HOME")
-        self._host.cmd_plc_all_safe()
+        self._host.cycle_log(
+            "prepareBeforeCut: cutters/grippers safe + Holder/Encoder cerrados"
+        )
+        self._host.cmd_plc_tools_safe()
         self._arm_holder_encoder()
-        self._host.clear_motion_wait_flags()
-        if not self._host.cmd_motion_move_zero(self._lot_rpm):
-            self._raise_fault("home_cmd")
-            return False
-        if not self._wait_motion():
-            return False
         return not self._should_abort()
     def _run_feed(self) -> bool:
         self._host.clear_motion_wait_flags()
-        ok_l = self._host.cmd_motion_feed_l()
-        ok_r = self._host.cmd_motion_feed_r()
-        if not (ok_l or ok_r):
+        sides = self._feed_side_list()
+        ok_any = False
+        if "L" in sides:
+            ok_any = self._host.cmd_motion_feed_l() or ok_any
+        if "R" in sides:
+            ok_any = self._host.cmd_motion_feed_r() or ok_any
+        self._host.cycle_log(f"Feed start lados={''.join(sides)}")
+        if not ok_any:
             self._raise_fault("feed_cmd")
             return False
         return self._wait_feed()
@@ -716,19 +866,31 @@ class CycleRunner:
             if not self._prepare_before_cut():
                 self._finish(False)
                 return
-            # Armar PreFeeder (In process ≈ Start PF)
-            if self._host.pf_connected():
+            # Armar PreFeeder: Start + esperar salir de ErrorState.
+            # Si a timeout sigue mal → fault (no continuar). Bypass: ignorePrefeeder.
+            if self._use_prefeeder():
                 self._host.cmd_pf_start()
-                # Espera blanda Busy/Idle — sin holgura fina aún
+                timeout_s = float(self.get_config().pf_ready_timeout_s)
                 t0 = time.monotonic()
-                while time.monotonic() - t0 < self.get_config().pf_ready_timeout_s:
+                ready = False
+                while time.monotonic() - t0 < timeout_s:
                     if self._should_abort():
                         self._finish(False)
                         return
                     st = self._host.pf_state_byte()
-                    if st in (TX_PF_BUSY, None) or st != TX_PF_ERROR:
+                    if st is not None and st != TX_PF_ERROR:
+                        ready = True
                         break
                     time.sleep(0.1)
+                if not ready:
+                    self._raise_fault("prefeeder_all_ok")
+                    self._host.cycle_log(
+                        f"PreFeeder: timeout {timeout_s:.0f}s esperando salir de ErrorState"
+                    )
+                    self._finish(False)
+                    return
+            elif self._ignore_prefeeder:
+                self._host.cycle_log("PreFeeder: ignorado (debug bypass)")
             target_mm = self._effective_mm(length_mm)
             completed = 0
             handoff_ready = False
@@ -772,29 +934,38 @@ class CycleRunner:
                     break
                 if self._enter(rep, qty, "enc_set0"):
                     break
-                if not self._trial_mode:
-                    self._host.cmd_motion_enc_set0_r()
-                    self._host.cmd_motion_enc_set0_l()
-                else:
-                    self._host.cycle_log("Trial: enc_set0 omitido")
+                # Stage2 es ASDA-only: no RESET OM en Motion.
+                self._host.cycle_log("enc_set0: omitido (Stage2 no usa OM)")
                 if self._after_step("enc_set0"):
                     break
-                # 8–11 Holder se mantiene ON (no liberar mid-pieza) + lineal + delay
+                # 8–11 Holder se mantienen ON (no liberar mid-pieza) + Stage2 + delay
                 if self._enter(rep, qty, "holder_off"):
                     break
+                # Idempotente: si ya cerrados, no re-pulsa (evita abrir KEEP).
                 self._arm_holder_encoder()
-                self._host.cycle_log("Holder/Encoder: se mantienen ON (sin abrir mid-pieza)")
+                self._host.cycle_log("Holder/Encoder: se mantienen cerrados (sin abrir mid-pieza)")
                 if self._after_step("holder_off"):
                     break
-                if self._do_wait(rep, qty, "wait_holder_open", "holder_open_ms"):
-                    break
+                # No esperar holderOpenMs: no se abre mid-pieza (solo retrasaba el corte).
+
                 if self._enter(rep, qty, "lineal_fwd"):
                     break
-                self._host.clear_motion_wait_flags()
-                if not self._host.cmd_motion_move_mm(target_mm, rpm):
+                # Producción: Stage2 FSM. model mm = carrera ABS → targetAbsMm=abs(mm).
+                self._host.arm_stage2()
+                sides = CycleConfig.normalize_feed_sides(self.get_config().feed_sides)
+                abs_target_mm = abs(float(length_mm))
+                self._host.cycle_log(
+                    f"Stage2 START modelMm={length_mm:.1f} → targetAbsMm={abs_target_mm:.1f} "
+                    f"sides={sides}; deposit abs sigue {target_mm:.1f} mm"
+                )
+                if not self._host.cmd_motion_stage2_start(
+                    sides=sides, target_abs_mm=abs_target_mm
+                ):
+                    detail = self._host.stage2_fault() or "stage2_cmd"
                     self._raise_fault("move_cmd")
+                    self._host.cycle_log(f"Stage2 START falló — {detail}")
                     break
-                if not self._wait_motion():
+                if not self._wait_stage2():
                     break
                 if self._after_step("lineal_fwd"):
                     break
@@ -811,7 +982,7 @@ class CycleRunner:
                 # 14–17 Corte + delays
                 if self._enter(rep, qty, "cutter_on"):
                     break
-                if not self._trial_mode and self._host.pf_connected():
+                if not self._trial_mode and self._use_prefeeder():
                     st = self._host.pf_state_byte()
                     if st == TX_PF_ERROR:
                         self._raise_fault("prefeeder_all_ok")
@@ -835,10 +1006,15 @@ class CycleRunner:
                     break
                 if rep < qty:
                     self._host.clear_motion_wait_flags()
-                    self._host.cmd_motion_feed_l()
-                    self._host.cmd_motion_feed_r()
+                    sides = self._feed_side_list()
+                    if "L" in sides:
+                        self._host.cmd_motion_feed_l()
+                    if "R" in sides:
+                        self._host.cmd_motion_feed_r()
                     prefetch_running = True
-                    self._host.cycle_log("∥ Prefetch feed en paralelo con depósito/HOME")
+                    self._host.cycle_log(
+                        f"∥ Prefetch feed lados={''.join(sides)} en paralelo con depósito/HOME"
+                    )
                 if self._after_step("prefetch_start"):
                     break
                 # 19–20 Depósito + delay (∥ A)
@@ -852,7 +1028,15 @@ class CycleRunner:
                     else:
                         self._host.clear_motion_wait_flags()
                     if not self._host.cmd_motion_move_mm(deposit_target, rpm):
-                        self._raise_fault("deposit_cmd")
+                        # Transporte agotado → E065 (ya latcheado). Rechazo ASDA → E013.
+                        if not self._should_abort() and not self._fault:
+                            kind = ""
+                            if hasattr(self._host, "last_move_fail_kind"):
+                                kind = self._host.last_move_fail_kind()
+                            if kind == "transport":
+                                self._raise_fault("E065")
+                            else:
+                                self._raise_fault("deposit_cmd")
                         break
                     if not self._wait_motion():
                         break
@@ -868,16 +1052,19 @@ class CycleRunner:
                     break
                 if self._enter(rep, qty, "pf_trigger"):
                     break
-                ok_r = self._host.cmd_pf_trigger_r()
-                ok_l = self._host.cmd_pf_trigger_l()
-                if not ok_r and not ok_l:
-                    self._raise_fault("pf_trigger")
-                    self._host.cycle_log("trigger PreFeeder falló (R+L)")
-                    break
-                self._host.cycle_log(
-                    f"trigger PreFeeder Tfeed — R(0x4C)={'ok' if ok_r else 'fail'} "
-                    f"L(0x51)={'ok' if ok_l else 'fail'}"
-                )
+                if self._use_prefeeder():
+                    ok_r = self._host.cmd_pf_trigger_r()
+                    ok_l = self._host.cmd_pf_trigger_l()
+                    if not ok_r and not ok_l:
+                        self._raise_fault("pf_trigger")
+                        self._host.cycle_log("trigger PreFeeder falló (R+L)")
+                        break
+                    self._host.cycle_log(
+                        f"trigger PreFeeder Tfeed — R(0x4C)={'ok' if ok_r else 'fail'} "
+                        f"L(0x51)={'ok' if ok_l else 'fail'}"
+                    )
+                else:
+                    self._host.cycle_log("trigger PreFeeder: omitido (ignore/bypass)")
                 if self._after_step("pf_trigger"):
                     break
                 if self._do_wait(rep, qty, "wait_gripper_release", "gripper_release_ms"):
@@ -950,8 +1137,13 @@ class CycleRunner:
                 self._finish(False)
     def _finish(self, ok: bool) -> None:
         self._pause.clear()
-        self._host.cmd_plc_all_safe()
-        if self._host.pf_connected():
+        # Stop/C1 ya hicieron all_safe (abre todo). En fin de piezas: cutters/
+        # grippers safe y Holder+Encoder quedan cerrados (sin pulso de más).
+        if not (self._aborted or self._stop.is_set()):
+            self._host.cmd_plc_tools_safe()
+            self._arm_holder_encoder()
+            self._host.cycle_log("Finish: Holder/Encoder cerrados; cutters/grippers OFF")
+        if self._use_prefeeder():
             self._host.cmd_pf_stop()
         elapsed = 0.0
         with self._lock:

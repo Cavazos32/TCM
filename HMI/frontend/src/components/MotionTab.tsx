@@ -62,13 +62,19 @@ export const MotionTab: React.FC<MotionTabProps> = ({
   onClearLogs,
 }) => {
   const { t } = useApp();
-  const [inputPos, setInputPos] = useState<string>(motionState.targetPositionMm.toString());
+  // Posición ASDA: internamente negativa; en UI se muestra y edita como magnitud positiva.
+  const toDisplayMm = (internalMm: number) => -internalMm;
+  const toInternalMm = (displayMm: number) => -displayMm;
+
+  const [inputPos, setInputPos] = useState<string>(
+    toDisplayMm(motionState.targetPositionMm).toString()
+  );
   const [inputRpm, setInputRpm] = useState<string>(motionState.rpm.toString());
   const [inputOffsetL, setInputOffsetL] = useState<string>((motionState.offsetL ?? 0).toString());
   const [inputOffsetR, setInputOffsetR] = useState<string>((motionState.offsetR ?? 0).toString());
 
   useEffect(() => {
-    setInputPos(motionState.targetPositionMm.toString());
+    setInputPos(toDisplayMm(motionState.targetPositionMm).toString());
     setInputRpm(motionState.rpm.toString());
     setInputOffsetL((motionState.offsetL ?? 0).toString());
     setInputOffsetR((motionState.offsetR ?? 0).toString());
@@ -83,7 +89,7 @@ export const MotionTab: React.FC<MotionTabProps> = ({
     setInputPos(val);
     const num = parseFloat(val);
     if (!isNaN(num)) {
-      onUpdateTargetPos(num);
+      onUpdateTargetPos(toInternalMm(num));
     }
   };
 
@@ -112,39 +118,42 @@ export const MotionTab: React.FC<MotionTabProps> = ({
   };
 
   const applyNudge = (delta: number) => {
-    const next = (parseFloat(inputPos) || 0) + delta;
-    setInputPos(next.toString());
-    onUpdateTargetPos(next);
+    const nextDisplay = (parseFloat(inputPos) || 0) + delta;
+    setInputPos(nextDisplay.toString());
+    onUpdateTargetPos(toInternalMm(nextDisplay));
   };
 
   const handleMove = () => {
-    const mm = parseFloat(inputPos);
+    const displayMm = parseFloat(inputPos);
     const rpm = parseInt(inputRpm, 10);
     onMover(
-      Number.isFinite(mm) ? mm : motionState.targetPositionMm,
+      Number.isFinite(displayMm)
+        ? toInternalMm(displayMm)
+        : motionState.targetPositionMm,
       Number.isFinite(rpm) ? rpm : motionState.rpm
     );
   };
 
-  // laserR/L true = sensor ON = material presente (OK); false = sin material.
+  // laserR/L true = Active (sensor ON / material presente) → indicador verde;
+  // false = Inactive (sin material) → ámbar.
   const laserChip = (
     id: string,
     label: string,
-    materialPresent: boolean,
+    active: boolean,
     opcode: string
   ) => (
     <div
       key={id}
       className={`flex items-center justify-between gap-2 rounded-lg border px-2.5 py-2 ${
-        materialPresent
-          ? 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60'
+        active
+          ? 'border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40'
           : 'border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40'
       }`}
     >
       <div className="flex items-center gap-2 min-w-0">
         <span
           className={`h-2 w-2 rounded-full shrink-0 ${
-            materialPresent ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'
+            active ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'
           }`}
         />
         <span className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">
@@ -154,12 +163,12 @@ export const MotionTab: React.FC<MotionTabProps> = ({
       <div className="flex items-center gap-1.5 shrink-0">
         <span
           className={`text-[10px] font-bold font-mono ${
-            materialPresent
+            active
               ? 'text-emerald-700 dark:text-emerald-300'
               : 'text-amber-800 dark:text-amber-200'
           }`}
         >
-          {materialPresent ? t('sensor_active') : t('sensor_inactive')}
+          {active ? t('sensor_active') : t('sensor_inactive')}
         </span>
         <span className="rounded bg-slate-100 dark:bg-slate-700 px-1 py-0.5 font-mono text-[10px] text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-600">
           {opcode}
@@ -205,7 +214,7 @@ export const MotionTab: React.FC<MotionTabProps> = ({
           <div className="flex items-center gap-1.5 text-xs font-mono">
             <span className="text-slate-500 dark:text-slate-400">{t('current_position')}:</span>
             <span className="font-bold text-slate-900 dark:text-white bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-md border border-slate-200 dark:border-slate-700">
-              {motionState.currentPositionMm.toFixed(2)} mm
+              {toDisplayMm(motionState.currentPositionMm).toFixed(2)} mm
             </span>
           </div>
         </div>
@@ -484,7 +493,7 @@ export const MotionTab: React.FC<MotionTabProps> = ({
               </span>
             </div>
 
-            {/* Orden físico = Encoder/láser: R izq · L der (Feed R→OM-R, Feed L→OM-L) */}
+            {/* Excel: 0x12 Feed (R) · 0x13 Feed (L); columnas alineadas con OM (R izq · L der) */}
             <div className="mt-3 grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-2 rounded-lg bg-slate-50 dark:bg-slate-800/60 p-2.5 border border-slate-200 dark:border-slate-700">
                 <button

@@ -339,46 +339,10 @@ def api_cycle_trial_mode():
     return jsonify(get_state().cmd_cycle_trial_mode(bool(body.get("on", True))))
 
 
-@app.get("/api/debug-trails")
-def api_debug_trails_get():
-    return jsonify({"ok": True, "trails": get_state().get_debug_trails_snapshot()})
-
-
-@app.post("/api/debug-trails/start")
-def api_debug_trails_start():
+@app.post("/api/cycle/ignore-prefeeder")
+def api_cycle_ignore_prefeeder():
     body = request.get_json(silent=True) or {}
-    return jsonify(
-        get_state().cmd_debug_trails_start(
-            side=str(body.get("side", "Both")),
-            num_tests=int(body.get("numTests", body.get("num_tests", 1))),
-            wait_time_s=float(body.get("waitTimeS", body.get("wait_time_s", 1.0))),
-        )
-    )
-
-
-@app.post("/api/debug-trails/stop")
-def api_debug_trails_stop():
-    return jsonify(get_state().cmd_debug_trails_stop())
-
-
-@app.post("/api/debug-trails/clear")
-def api_debug_trails_clear():
-    return jsonify(get_state().cmd_debug_trails_clear())
-
-
-@app.get("/api/debug-trails/export.csv")
-def api_debug_trails_export_csv():
-    from flask import Response
-
-    filename, csv_text = get_state().export_debug_trails_csv()
-    return Response(
-        csv_text,
-        mimetype="text/csv; charset=utf-8",
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
-            "Cache-Control": "no-store",
-        },
-    )
+    return jsonify(get_state().cmd_cycle_ignore_prefeeder(bool(body.get("on", True))))
 
 
 @app.get("/api/cycle/config")

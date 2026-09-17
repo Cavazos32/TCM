@@ -89,34 +89,11 @@ export function setCycleTrialMode(on: boolean) {
   );
 }
 
-export function debugTrailsStart(opts: {
-  side: string;
-  numTests: number;
-  waitTimeS: number;
-}) {
-  return post<{ ok: boolean; trails?: unknown; error?: string }>(
-    '/api/debug-trails/start',
-    {
-      side: opts.side,
-      numTests: opts.numTests,
-      waitTimeS: opts.waitTimeS,
-    }
+export function setCycleIgnorePrefeeder(on: boolean) {
+  return post<{ ok: boolean; ignorePrefeeder?: boolean; error?: string }>(
+    '/api/cycle/ignore-prefeeder',
+    { on }
   );
-}
-
-export function debugTrailsStop() {
-  return post<{ ok: boolean; trails?: unknown }>('/api/debug-trails/stop', {});
-}
-
-export function debugTrailsClear() {
-  return post<{ ok: boolean; trails?: unknown; error?: string }>(
-    '/api/debug-trails/clear',
-    {}
-  );
-}
-
-export function debugTrailsExportUrl() {
-  return '/api/debug-trails/export.csv';
 }
 
 export function getCycleConfig() {

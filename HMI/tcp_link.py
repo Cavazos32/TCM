@@ -245,13 +245,16 @@ class ModuleTcpClient(ABC):
         line = json.dumps(payload, separators=(",", ":")) + "\n"
         data = line.encode("utf-8")
         with self._io_lock:
-            if not self._sock:
+            # Evitar ventana "connected=True / sock muerto": no enviar si el
+            # flag de enlace ya cayó o el socket fue invalidado por RX/drop.
+            if not self._connected or not self._sock:
                 return False
             try:
                 self._sock.sendall(data)
                 return True
             except OSError:
-                pass
+                # Invalidar socket ya; disconnect async notifica y limpia RX.
+                self._sock = None
         threading.Thread(
             target=lambda: self.disconnect(silent=False), daemon=True
         ).start()
@@ -291,16 +294,18 @@ class ModuleTcpClient(ABC):
         if session != self._session:
             return
 
-        with self._io_lock:
-            if self._sock is sock:
-                self._sock = None
+        was = False
+        with self._conn_lock:
+            with self._io_lock:
+                if self._sock is sock:
+                    self._sock = None
+            was = self._connected
+            self._connected = False
         try:
             sock.close()
         except OSError:
             pass
 
-        was = self._connected
-        self._connected = False
         if was:
             self._schedule_connection(False)
 

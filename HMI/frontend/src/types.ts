@@ -1,30 +1,4 @@
-export type TabType = 'maquina' | 'cycle' | 'motion' | 'plc' | 'prefeeder' | 'andon' | 'debug-trails';
-
-export type DebugTrailsSide = 'R' | 'L' | 'Both';
-
-export interface DebugTrailsRecord {
-  testNum: number;
-  side: 'R' | 'L';
-  measureMm: number | null;
-  status: string;
-  error: string;
-  timestamp: string;
-  phase: string;
-}
-
-export interface DebugTrailsState {
-  active: boolean;
-  stage: string;
-  side: DebugTrailsSide;
-  numTests: number;
-  waitTimeS: number;
-  currentTest: number;
-  phase: string;
-  lastOk: boolean;
-  fault: string;
-  records: DebugTrailsRecord[];
-  recordCount: number;
-}
+export type TabType = 'maquina' | 'cycle' | 'motion' | 'plc' | 'prefeeder' | 'andon';
 
 export interface CycleConfig {
   holderOnMs: number;
@@ -42,6 +16,8 @@ export interface CycleConfig {
   motionWaitTimeoutS: number;
   feedWaitTimeoutS: number;
   pfReadyTimeoutS: number;
+  /** Feed / Stage2 OM: 'L' | 'R' | 'LR' */
+  feedSides: 'L' | 'R' | 'LR';
 }
 
 export type CycleStepType = 'action' | 'delay' | 'background' | 'join';
@@ -105,6 +81,7 @@ export interface MachineState {
   cycleMaterialist: boolean;
   stepByStep: boolean;
   trialMode: boolean;
+  ignorePrefeeder: boolean;
   pauseEnabled: boolean;
   progress: number;
   cycleTimeSec: number;

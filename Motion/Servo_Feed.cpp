@@ -371,19 +371,19 @@ void feedCanSetVelAcc(uint32_t velL, uint32_t velR)
   canSetMotionProfile(velL, aL, dL, velR, aR, dR);
 }
 
-void feedCanPrimeHaltDecel()
+// Prime halt/QSDec solo del lado activo (no tocar el otro servo en paralelo).
+static void feedCanPrimeHaltDecelSide(bool sideR)
 {
+  const uint32_t canId = sideR ? SERVO_CAN_TX_R : SERVO_CAN_TX_L;
   byte haltOpt[8] = {0x2B, 0x5D, 0x60, 0x00, (byte)FEED_HALT_OPTION_CODE, 0x00, 0x00, 0x00};
-  sendCANMessage(SERVO_CAN_TX_L, 8, haltOpt, "HaltOpt L", false);
-  sendCANMessage(SERVO_CAN_TX_R, 8, haltOpt, "HaltOpt R", false);
+  sendCANMessage(canId, 8, haltOpt, sideR ? "HaltOpt R" : "HaltOpt L", false);
   uint32_t hd = FEED_HALT_DECEL_PP;
   byte qdec[8] = {
     0x23, 0x85, 0x60, 0x00,
     (byte)(hd & 0xFF), (byte)((hd >> 8) & 0xFF),
     (byte)((hd >> 16) & 0xFF), (byte)((hd >> 24) & 0xFF)
   };
-  sendCANMessage(SERVO_CAN_TX_L, 8, qdec, "QSDec L", false);
-  sendCANMessage(SERVO_CAN_TX_R, 8, qdec, "QSDec R", false);
+  sendCANMessage(canId, 8, qdec, sideR ? "QSDec R" : "QSDec L", false);
 }
 
 void canHaltSide(bool sideR) { sendCanHaltImmediate(sideR); }
@@ -418,16 +418,20 @@ static void canWriteTargetAbs(bool doL, bool doR, int32_t absL, int32_t absR)
 }
 
 // steps con signo: + = avance feed, − = retroceso (corrección). No clampear a 0.
-void canMoveRelativePP(int32_t stepsL, int32_t stepsR)
+// false = no se emitió el movimiento pedido (SDO 6064 falló o bus bloqueado).
+bool canMoveRelativePP(int32_t stepsL, int32_t stepsR)
 {
-  if (stepsL == 0 && stepsR == 0) return;
-  if (canBusMotionBlocked()) return;
-  bool doL = (stepsL != 0);
-  bool doR = (stepsR != 0);
+  if (stepsL == 0 && stepsR == 0) return true;
+  if (canBusMotionBlocked()) return false;
+  const bool wantL = (stepsL != 0);
+  const bool wantR = (stepsR != 0);
+  bool doL = wantL;
+  bool doR = wantR;
   int32_t posL = 0, posR = 0;
   if (doL && !canReadSdoI32(SERVO_NODE_L, SERVO_OD_POSITION_ACTUAL, 0x00, posL, CAN_SDO_TIMEOUT_MS)) doL = false;
   if (doR && !canReadSdoI32(SERVO_NODE_R, SERVO_OD_POSITION_ACTUAL, 0x00, posR, CAN_SDO_TIMEOUT_MS)) doR = false;
-  if (!doL && !doR) return;
+  // Si cualquier lado pedido falló la lectura, no mover (evita timeout disfrazado).
+  if ((wantL && !doL) || (wantR && !doR)) return false;
   const int32_t absL = doL ? (posL + (int32_t)SERVO_CMD_SIGN_L * stepsL) : 0;
   const int32_t absR = doR ? (posR + (int32_t)SERVO_CMD_SIGN_R * stepsR) : 0;
   canControlWordSides(doL, doR, SERVO_CW_HALT_HOLD, "halt hold");
@@ -435,6 +439,7 @@ void canMoveRelativePP(int32_t stepsL, int32_t stepsR)
   canControlWordSides(doL, doR, SERVO_CW_RESET_HALT, "reset+halt");
   canControlWordSides(doL, doR, SERVO_CW_NEW_ABS_HALT, "new+abs+halt");
   canControlWordSides(doL, doR, SERVO_CW_RUN_ABSOLUTE, "run absolute");
+  return true;
 }
 
 static void canWriteU32OneNode(bool sideR, uint16_t index, uint32_t val, const char* desc)
@@ -506,6 +511,10 @@ struct FeedSideRt {
 
 static FeedSideRt feedSides[2];
 static uint32_t feedGenCounter = 1;
+
+// Fuente única de índice: sideR=false → 0 (L); sideR=true → 1 (R).
+static inline uint8_t feedSideIx(bool sideR) { return sideR ? 1u : 0u; }
+static inline FeedSideRt& feedSideAt(bool sideR) { return feedSides[feedSideIx(sideR)]; }
 
 volatile float feedTargetMmL = FEED_TARGET_MM_DEFAULT;
 volatile float feedTargetMmR = FEED_TARGET_MM_DEFAULT;
@@ -696,6 +705,7 @@ static const char* feedSidePhaseName(FeedSidePhase p)
 {
   switch (p) {
     case FSP_APPROACH: return "APPROACH";
+    case FSP_HALT_SETTLE: return "HALT_SETTLE";
     case FSP_WAIT_SERVO: return "WAIT_SERVO";
     case FSP_SETTLE: return "SETTLE";
     case FSP_VALIDATE: return "VALIDATE";
@@ -780,7 +790,7 @@ static bool feedServoTargetReachedNode(uint8_t nodeId)
 
 bool feedSideIsActive(bool sideR)
 {
-  const FeedSideRt& s = feedSides[sideR ? 1 : 0];
+  const FeedSideRt& s = feedSideAt(sideR);
   return s.active && s.phase != FSP_IDLE && s.phase != FSP_DONE_OK && s.phase != FSP_DONE_NG;
 }
 
@@ -822,9 +832,20 @@ static void feedSideClearDiag(FeedSideRt& s)
   s.moveSteps = 0;
 }
 
+// Globals = "último lado que terminó" (HTTP/overview). Fuente de verdad = feedSides[].
+static void feedPublishLegacyDiag(const FeedSideRt& s, FeedValResult result)
+{
+  strncpy(feedFaultReason, s.fault, sizeof(feedFaultReason) - 1);
+  feedFaultReason[sizeof(feedFaultReason) - 1] = '\0';
+  feedErrorCode = s.errByte;
+  feedOmLastOfficialMm = (s.finalOmMm >= 0.0f) ? s.finalOmMm : s.approachOmMm;
+  omPhase1Mm = s.approachOmMm;
+  feedOmLengthMet = (result == FVR_OK);
+}
+
 static void feedSideFinish(bool sideR, FeedValResult result, uint8_t errByte, const char* reason)
 {
-  FeedSideRt& s = feedSides[sideR ? 1 : 0];
+  FeedSideRt& s = feedSideAt(sideR);
   const uint32_t gen = s.gen;
   s.result = result;
   s.errByte = errByte;
@@ -832,12 +853,7 @@ static void feedSideFinish(bool sideR, FeedValResult result, uint8_t errByte, co
     strncpy(s.fault, reason, sizeof(s.fault) - 1);
     s.fault[sizeof(s.fault) - 1] = '\0';
   }
-  strncpy(feedFaultReason, s.fault, sizeof(feedFaultReason) - 1);
-  feedFaultReason[sizeof(feedFaultReason) - 1] = '\0';
-  feedErrorCode = errByte;
-  feedOmLastOfficialMm = (s.finalOmMm >= 0.0f) ? s.finalOmMm : s.approachOmMm;
-  omPhase1Mm = s.approachOmMm;
-  feedOmLengthMet = (result == FVR_OK);
+  feedPublishLegacyDiag(s, result);
 
   const bool ok = (result == FVR_OK);
   s.phase = ok ? FSP_DONE_OK : FSP_DONE_NG;
@@ -845,7 +861,7 @@ static void feedSideFinish(bool sideR, FeedValResult result, uint8_t errByte, co
 
   // Solo notificar si la generación sigue siendo la de esta operación (anti-stale).
   // LengthNG siempre: el wait HMI no depende solo del detalle EXXX.
-  if (gen != 0 && gen == feedSides[sideR ? 1 : 0].gen) {
+  if (gen != 0 && gen == feedSideAt(sideR).gen) {
     if (ok)
       motionTcpOnFeedOk(sideR);
     else {
@@ -863,7 +879,7 @@ static void feedSideFinish(bool sideR, FeedValResult result, uint8_t errByte, co
           || errByte == MOT_ERR_FEED_R_NO_FB
           || errByte == MOT_ERR_LASER_R
           || errByte == MOT_ERR_LASER_L)
-        motionTcpOnDetailError(errByte, sideR ? "FeedR" : "FeedL");
+        motionTcpOnDetailErrorSide(sideR, errByte, sideR ? "FeedR" : "FeedL");
     }
   }
 
@@ -873,25 +889,30 @@ static void feedSideFinish(bool sideR, FeedValResult result, uint8_t errByte, co
                 (int)s.laserState, feedSidePhaseName(s.phase));
 }
 
-static void feedSideIssueMove(bool sideR, int32_t steps, uint32_t now)
+// Emite move solo en el servo de sideR. false = SDO posición falló (sin movimiento).
+static bool feedSideIssueMove(bool sideR, int32_t steps, uint32_t now)
 {
-  FeedSideRt& s = feedSides[sideR ? 1 : 0];
+  FeedSideRt& s = feedSideAt(sideR);
   const uint32_t vel = feedSideMovePp(sideR);
   const uint16_t decMs = sideR ? feedDecRampMsR : feedDecRampMsL;
   feedCanSetVelAccSide(sideR, vel);
-  if (sideR)
-    canMoveRelativePP(0, steps);
-  else
-    canMoveRelativePP(steps, 0);
+  const bool moved = sideR ? canMoveRelativePP(0, steps) : canMoveRelativePP(steps, 0);
+  if (!moved) return false;
   s.moveSteps = steps;
   s.moveStartMs = now;
   s.absDueMs = now + feedSsCmdTimeMs(steps, vel, decMs) + FEED_SS_ABS_MARGIN_MS;
   s.lastTrPollMs = 0;
+  return true;
+}
+
+static uint8_t feedSideNoFbErr(bool sideR)
+{
+  return sideR ? MOT_ERR_FEED_R_NO_FB : MOT_ERR_FEED_L_NO_FB;
 }
 
 static bool feedSidePollServoDone(bool sideR, uint32_t now)
 {
-  FeedSideRt& s = feedSides[sideR ? 1 : 0];
+  FeedSideRt& s = feedSideAt(sideR);
   if (s.moveStartMs == 0) return false;
   if (now < s.moveStartMs + FEED_SS_POLL_MIN_MS) return false;
   if (s.absDueMs != 0 && now < s.absDueMs) return false;
@@ -904,49 +925,47 @@ static bool feedSidePollServoDone(bool sideR, uint32_t now)
 
 static void feedSideStartApproach(bool sideR)
 {
-  FeedSideRt& s = feedSides[sideR ? 1 : 0];
+  FeedSideRt& s = feedSideAt(sideR);
   feedSideClearDiag(s);
   s.targetMm = FEED_TARGET_FIXED_MM;
   s.approachMm = FEED_TARGET_FIXED_MM * (feedApproachPct / 100.0f);
   // approachMm = comando servo intermedio (p.ej. 44). No es medición OM ni pasa por PHYS 50–58.
   s.gen = feedGenCounter++;
   if (s.gen == 0) s.gen = feedGenCounter++;
+  // Descarta LengthOK/NG/detalle stale de una operación anterior de este lado.
+  motionTcpClearFeedSidePending(sideR);
   s.opStartMs = millis();
   s.active = true;
   s.pending = false;
-  s.phase = FSP_APPROACH;
+  s.moveStartMs = 0;
+  s.absDueMs = 0;
 
   const float offset = sideR ? feedOffsetMmB : feedOffsetMm;
   FeedEncPlan plan = feedPlanEncTarget(s.approachMm, offset, sideR);
   if (!plan.ok) {
+    s.phase = FSP_APPROACH;
     feedSideFinish(sideR, FVR_NG,
                    sideR ? MOT_ERR_FEED_R_NEG_TARGET : MOT_ERR_FEED_L_NEG_TARGET,
                    plan.error ? plan.error : "target+offset neg");
     return;
   }
 
-  sendCanHaltImmediate(sideR);
-  delay(FEED_HALT_SETTLE_MS);
-  feedOmResetSide(sideR);
-
   const int32_t steps = feedEncCountsToCmdSteps(plan.targetCounts);
   if (steps <= 0) {
+    s.phase = FSP_APPROACH;
     feedSideFinish(sideR, FVR_NG, MOT_ERR_ENCODER_NO_PULSES, "approach steps=0");
     return;
   }
+  s.moveSteps = steps;  // pending approach steps tras halt settle
 
-  Serial.printf("FEED %c gen=%lu APPROACH %.1fmm (%.0f%% of %.1f) steps=%ld\n",
-                sideR ? 'R' : 'L', (unsigned long)s.gen, (double)s.approachMm,
-                (double)feedApproachPct, (double)FEED_TARGET_FIXED_MM, (long)steps);
-
-  feedCanPrimeHaltDecel();
-  feedSideIssueMove(sideR, steps, millis());
-  s.phase = FSP_WAIT_SERVO;
+  sendCanHaltImmediate(sideR);
+  s.settleUntilMs = millis() + FEED_HALT_SETTLE_MS;
+  s.phase = FSP_HALT_SETTLE;
 }
 
 static void feedSideService(bool sideR, uint32_t now)
 {
-  FeedSideRt& s = feedSides[sideR ? 1 : 0];
+  FeedSideRt& s = feedSideAt(sideR);
   if (s.pending && !s.active) {
     feedSideStartApproach(sideR);
     return;
@@ -960,6 +979,24 @@ static void feedSideService(bool sideR, uint32_t now)
   }
 
   switch (s.phase) {
+    case FSP_HALT_SETTLE:
+      if (now < s.settleUntilMs) break;
+      {
+        // Misma secuencia física: halt → settle → reset OM del lado → approach move.
+        feedOmResetSide(sideR);
+        const int32_t steps = s.moveSteps;
+        Serial.printf("FEED %c gen=%lu APPROACH %.1fmm (%.0f%% of %.1f) steps=%ld\n",
+                      sideR ? 'R' : 'L', (unsigned long)s.gen, (double)s.approachMm,
+                      (double)feedApproachPct, (double)FEED_TARGET_FIXED_MM, (long)steps);
+        feedCanPrimeHaltDecelSide(sideR);
+        if (!feedSideIssueMove(sideR, steps, now)) {
+          feedSideFinish(sideR, FVR_NG, feedSideNoFbErr(sideR), "FEED: sin feedback 6064");
+          break;
+        }
+        s.phase = FSP_WAIT_SERVO;
+      }
+      break;
+
     case FSP_WAIT_SERVO:
     case FSP_WAIT_SERVO_CORR:
       if (feedSidePollServoDone(sideR, now)) {
@@ -988,6 +1025,7 @@ static void feedSideService(bool sideR, uint32_t now)
           s.approachOmMm = om;
         else
           s.finalOmMm = om;
+        // Snapshot legacy (último OM leído); no pisa el diag del otro lado en feedSides[].
         feedOmLastOfficialMm = om;
 
 #if FEED_OM_REQUIRE_NEGATIVE
@@ -1062,7 +1100,10 @@ static void feedSideService(bool sideR, uint32_t now)
         }
         Serial.printf("FEED %c CORR %.2fmm steps=%ld\n",
                       sideR ? 'R' : 'L', (double)s.correctionMm, (long)steps);
-        feedSideIssueMove(sideR, steps, now);
+        if (!feedSideIssueMove(sideR, steps, now)) {
+          feedSideFinish(sideR, FVR_NG, feedSideNoFbErr(sideR), "FEED: sin feedback 6064");
+          break;
+        }
         s.phase = FSP_WAIT_SERVO_CORR;
       }
       break;
@@ -1153,7 +1194,7 @@ void feedLoop()
 
 static void feedSideAppendJson(String& j, bool sideR)
 {
-  const FeedSideRt& s = feedSides[sideR ? 1 : 0];
+  const FeedSideRt& s = feedSideAt(sideR);
   j += sideR ? ",\"R\":{" : ",\"L\":{";
   j += "\"gen\":" + String((unsigned long)s.gen);
   j += ",\"phase\":\""; j += feedSidePhaseName(s.phase); j += "\"";
@@ -1167,6 +1208,7 @@ static void feedSideAppendJson(String& j, bool sideR)
   j += ",\"laser\":"; j += s.laserState ? "true" : "false";
   j += ",\"correctionCount\":" + String((unsigned)s.correctionCount);
   j += ",\"result\":\""; j += feedValResultName(s.result); j += "\"";
+  j += ",\"errByte\":" + String((unsigned)s.errByte);
   j += ",\"fault\":\""; j += String(s.fault); j += "\"";
   j += "}";
 }

@@ -25,7 +25,7 @@ export const DEFAULT_CYCLE_CONFIG: CycleConfig = {
   holderOpenMs: 100,
   grippersOnMs: 100,
   gripperReleaseMs: 350,
-  cutterPulseMs: 100,
+  cutterPulseMs: 200,
   cutterPostMs: 100,
   linearDoneMs: 100,
   asentarMs: 50,
@@ -36,6 +36,7 @@ export const DEFAULT_CYCLE_CONFIG: CycleConfig = {
   motionWaitTimeoutS: 120,
   feedWaitTimeoutS: 30,
   pfReadyTimeoutS: 10,
+  feedSides: 'LR',
 };
 
 const PRESET_COMPARE_KEYS: (keyof CycleConfig)[] = [
@@ -57,8 +58,8 @@ export const PRESET_FAST: CycleConfig = {
   holderOpenMs: 60,
   grippersOnMs: 60,
   gripperReleaseMs: 200,
-  cutterPulseMs: 70,
-  cutterPostMs: 60,
+  cutterPulseMs: 200,
+  cutterPostMs: 100,
   linearDoneMs: 60,
   asentarMs: 30,
   dwellAtDestMs: 100,
@@ -97,10 +98,10 @@ export const CYCLE_STEPS_DEFINITION: CycleStep[] = [
   { id: 4, title: 'Offset alimentación (si hay)', type: 'action' },
   { id: 5, title: 'Pinzas cierran', type: 'action' },
   { id: 6, title: 'Delay tras cerrar pinzas', type: 'delay', delayKey: 'grippersOnMs', defaultDurationMs: 100 },
-  { id: 7, title: 'Encoder Set0 (OM)', type: 'action' },
+  { id: 7, title: 'OM ref (Stage2 RESET)', type: 'action' },
   { id: 8, title: 'Holder+Encoder se mantienen ON', type: 'action' },
   { id: 9, title: 'Delay (holder se mantiene)', type: 'delay', delayKey: 'holderOpenMs', defaultDurationMs: 100 },
-  { id: 10, title: 'Lineal FWD → posición de corte', type: 'action' },
+  { id: 10, title: 'Stage2 lineal (approach+fine)', type: 'action' },
   { id: 11, title: 'Delay antes del corte', type: 'delay', delayKey: 'linearDoneMs', defaultDurationMs: 100 },
   { id: 12, title: 'Confirmar Holder+Encoder ON (pre-corte)', type: 'action' },
   { id: 13, title: 'Delay tras confirmar holder', type: 'delay', delayKey: 'holderOnMs', defaultDurationMs: 200 },
@@ -201,6 +202,8 @@ export const CycleTab: React.FC<CycleTabProps> = ({
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingSaveRef = useRef<CycleConfig | null>(null);
   const savingRef = useRef(false);
+  /** Evita que un SSE/poll viejo con LR pise L/R recién guardado. */
+  const confirmedFeedSidesRef = useRef<'L' | 'R' | 'LR' | null>(null);
 
   const sequenceSteps = useMemo(
     () => (cycleFlow && cycleFlow.length > 0 ? stepsFromFlow(cycleFlow) : CYCLE_STEPS_DEFINITION),
@@ -209,10 +212,16 @@ export const CycleTab: React.FC<CycleTabProps> = ({
   const maxStepId = sequenceSteps.length > 0 ? sequenceSteps[sequenceSteps.length - 1].id : 27;
 
   useEffect(() => {
-    if (!configDirty && cycleConfig && Object.keys(cycleConfig).length > 0) {
-      setConfig(cycleConfig);
-      setActivePreset(detectCyclePreset(cycleConfig));
+    if (configDirty || savingRef.current) return;
+    if (!cycleConfig || Object.keys(cycleConfig).length === 0) return;
+    const confirmed = confirmedFeedSidesRef.current;
+    if (confirmed && cycleConfig.feedSides !== confirmed) {
+      setConfig({ ...cycleConfig, feedSides: confirmed });
+      return;
     }
+    confirmedFeedSidesRef.current = null;
+    setConfig(cycleConfig);
+    setActivePreset(detectCyclePreset(cycleConfig));
   }, [cycleConfig, configDirty]);
 
   useEffect(() => {
@@ -231,14 +240,24 @@ export const CycleTab: React.FC<CycleTabProps> = ({
   const persistConfig = useCallback(
     async (next: CycleConfig, toastKey: 'cycle_saved_success' | 'cycle_delay_saved' | 'cycle_preset_applied') => {
       savingRef.current = true;
+      confirmedFeedSidesRef.current = next.feedSides;
       try {
         const saved = await onSaveConfig(next);
-        setConfig(saved);
+        const feedSides =
+          saved.feedSides === 'L' || saved.feedSides === 'R' || saved.feedSides === 'LR'
+            ? saved.feedSides
+            : next.feedSides;
+        const merged = { ...saved, feedSides };
+        confirmedFeedSidesRef.current = feedSides;
+        setConfig(merged);
         setConfigDirty(false);
-        setActivePreset(detectCyclePreset(saved));
+        setActivePreset(detectCyclePreset(merged));
         setToastMessage(t(toastKey));
         setTimeout(() => setToastMessage(null), 2500);
-        return saved;
+        return merged;
+      } catch (err) {
+        confirmedFeedSidesRef.current = null;
+        throw err;
       } finally {
         savingRef.current = false;
       }
@@ -321,6 +340,20 @@ export const CycleTab: React.FC<CycleTabProps> = ({
     }
   };
 
+  /** Auto-guarda (debounce) para que Start (reload desde disco) aplique el valor. */
+  const schedulePersist = useCallback(
+    (next: CycleConfig, toastKey: 'cycle_saved_success' | 'cycle_delay_saved' | 'cycle_preset_applied') => {
+      pendingSaveRef.current = next;
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = setTimeout(() => {
+        const toSave = pendingSaveRef.current;
+        if (!toSave || savingRef.current) return;
+        persistConfig(toSave, toastKey).catch(() => {});
+      }, 450);
+    },
+    [persistConfig],
+  );
+
   // Inline delay: actualiza UI y auto-guarda (debounce) para que el ciclo sí lo aplique.
   const handleUpdateDelay = (delayKey?: keyof CycleConfig, value?: number) => {
     if (!delayKey || value === undefined) return;
@@ -329,20 +362,26 @@ export const CycleTab: React.FC<CycleTabProps> = ({
     setConfigDirty(true);
     setConfig((prev) => {
       const next = { ...prev, [delayKey]: cleanVal };
-      pendingSaveRef.current = next;
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-      saveTimerRef.current = setTimeout(() => {
-        const toSave = pendingSaveRef.current;
-        if (!toSave || savingRef.current) return;
-        persistConfig(toSave, 'cycle_delay_saved').catch(() => {});
-      }, 450);
+      schedulePersist(next, 'cycle_delay_saved');
+      return next;
+    });
+  };
+
+  const handleFeedSides = (side: 'L' | 'R' | 'LR') => {
+    setActivePreset('custom');
+    setConfigDirty(true);
+    setConfig((prev) => {
+      const next = { ...prev, feedSides: side };
+      schedulePersist(next, 'cycle_saved_success');
       return next;
     });
   };
 
   const handleSelectPreset = async (preset: 'default' | 'fast' | 'heavy') => {
-    const next =
+    const base =
       preset === 'default' ? DEFAULT_CYCLE_CONFIG : preset === 'fast' ? PRESET_FAST : PRESET_HEAVY;
+    // Presets = timings; no pisar L/R/LR (evita volver a L+R y disparar feed R).
+    const next = { ...base, feedSides: config.feedSides };
     setActivePreset(preset);
     if (saveTimerRef.current) {
       clearTimeout(saveTimerRef.current);
@@ -441,7 +480,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
         >
           <RotateCcw className="h-3.5 w-3.5" />
           {t('btn_reset_cycle')}
-          <span className="font-mono text-[10px]">0x042</span>
+          <span className="font-mono text-[10px]">0x043</span>
         </button>
         {onMaterialist && (
           <button
@@ -815,6 +854,31 @@ export const CycleTab: React.FC<CycleTabProps> = ({
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 font-mono">
                 {t('material_handling_subtitle')}
+              </p>
+            </div>
+
+            <div className="mb-4 space-y-1.5">
+              <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                {t('cfg_feed_sides')}
+              </label>
+              <div className="flex items-center gap-1.5">
+                {(['L', 'R', 'LR'] as const).map((side) => (
+                  <button
+                    key={side}
+                    type="button"
+                    onClick={() => handleFeedSides(side)}
+                    className={`rounded-md px-3 py-1.5 text-xs font-mono font-semibold border transition ${
+                      config.feedSides === side
+                        ? 'bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 border-slate-900 dark:border-white'
+                        : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700'
+                    }`}
+                  >
+                    {side === 'LR' ? t('cfg_feed_sides_both') : side}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                {t('cfg_feed_sides_hint')}
               </p>
             </div>
 

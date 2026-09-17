@@ -29,6 +29,7 @@ export interface BackendCycleConfig {
   motionWaitTimeoutS: number;
   feedWaitTimeoutS: number;
   pfReadyTimeoutS: number;
+  feedSides?: 'L' | 'R' | 'LR' | string;
 }
 
 export interface BackendFlowStep {
@@ -48,6 +49,7 @@ export interface BackendCycleSnapshot {
   materialist: boolean;
   stepByStep: boolean;
   trialMode?: boolean;
+  ignorePrefeeder?: boolean;
   step: number;
   stepName: string;
   stepLabel: string;
@@ -65,30 +67,6 @@ export interface BackendCycleSnapshot {
   c3Pending?: boolean;
   config: BackendCycleConfig;
   flow: BackendFlowStep[];
-}
-
-export interface BackendDebugTrailsRecord {
-  testNum: number;
-  side: 'R' | 'L';
-  measureMm: number | null;
-  status: string;
-  error: string;
-  timestamp: string;
-  phase: string;
-}
-
-export interface BackendDebugTrails {
-  active: boolean;
-  stage: string;
-  side: 'R' | 'L' | 'Both';
-  numTests: number;
-  waitTimeS: number;
-  currentTest: number;
-  phase: string;
-  lastOk: boolean;
-  fault: string;
-  records: BackendDebugTrailsRecord[];
-  recordCount: number;
 }
 
 export interface BackendLink {
@@ -160,7 +138,6 @@ export interface BackendSnapshot {
   progress: number;
   resumeEnabled: boolean;
   cycle: BackendCycleSnapshot;
-  debugTrails?: BackendDebugTrails;
   motionLink: BackendLink;
   plcLink: BackendLink;
   pfLink: BackendLink;

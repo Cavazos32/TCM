@@ -35,7 +35,8 @@ void servoCanInitMutex();
 bool initCANBus(uint8_t maxRetries = CAN_INIT_MAX_RETRIES);
 bool setupServoFeeder();
 void serviceCANRx();
-void canMoveRelativePP(int32_t stepsL, int32_t stepsR);
+// true = movimiento(s) pedido(s) emitidos; false = SDO posición falló / no se movió
+bool canMoveRelativePP(int32_t stepsL, int32_t stepsR);
 void canHalt();
 bool sendCanHaltImmediate(bool sideR);
 bool canReadSdoI32(uint8_t nodeId, uint16_t index, uint8_t subIndex, int32_t& valOut, uint32_t timeoutMs = CAN_SDO_TIMEOUT_MS);
@@ -97,4 +98,9 @@ void motionTcpOnEncoderError();
 void motionTcpOnEncoderErrorL();
 void motionTcpOnFeedOk(bool sideR);
 void motionTcpOnFeedNg(bool sideR);
+// Detalle no-Feed (ASDA/exhaust/…) — slot global
 void motionTcpOnDetailError(uint8_t errByte, const char* name);
+// Detalle Feed por lado — L y R no compiten por el mismo slot
+void motionTcpOnDetailErrorSide(bool sideR, uint8_t errByte, const char* name);
+// Al arrancar Feed en un lado: descarta OK/NG/detalle pending stale de ese lado
+void motionTcpClearFeedSidePending(bool sideR);
