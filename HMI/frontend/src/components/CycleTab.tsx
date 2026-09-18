@@ -61,16 +61,16 @@ export const CYCLE_STEPS_DEFINITION: CycleStep[] = [
   { id: 15, title: 'Delay entre Set y Res cortador', type: 'delay', delayKey: 'cutterPulseMs', defaultDurationMs: 200, sbsPause: false },
   { id: 16, title: 'Cortador OFF', type: 'action', sbsPause: false },
   { id: 17, title: 'Delay post-corte', type: 'delay', delayKey: 'cutterPostMs', defaultDurationMs: 100, sbsPause: true },
+  { id: 18, title: 'Extra / depósito lineal', type: 'action', sbsPause: false },
+  { id: 19, title: 'Delay tras depósito', type: 'delay', delayKey: 'dwellAtDestMs', defaultDurationMs: 150, sbsPause: true },
   {
-    id: 18,
+    id: 20,
     title: 'Prefetch feed — arranca en background',
     type: 'background',
     badge: 'background',
-    note: 'Prefetch sigue en background; abajo la secuencia principal continúa (depósito → pinzas → HOME), no son "todas a la vez".',
+    note: 'Depósito ya hecho (manguera fuera). Prefetch en background; la secuencia continúa (pinzas → HOME), no todo a la vez.',
     sbsPause: false,
   },
-  { id: 19, title: 'Extra / depósito lineal', type: 'action', sbsPause: false },
-  { id: 20, title: 'Delay tras depósito', type: 'delay', delayKey: 'dwellAtDestMs', defaultDurationMs: 150, sbsPause: true },
   { id: 21, title: 'Pinzas abren', type: 'action', sbsPause: false },
   { id: 22, title: 'Trigger PreFeeder (Tfeed)', type: 'action', sbsPause: false },
   { id: 23, title: 'Delay antes de HOME', type: 'delay', delayKey: 'gripperReleaseMs', defaultDurationMs: 350, sbsPause: true },
@@ -107,7 +107,7 @@ function stepsFromFlow(flow: BackendFlowStep[]): CycleStep[] {
         badge: isJoin ? 'join' : 'background',
         note: isJoin
           ? undefined
-          : 'Prefetch sigue en background; la secuencia principal continúa (depósito → pinzas → HOME).',
+          : 'Depósito ya hecho (manguera fuera). Prefetch en background; la secuencia continúa (pinzas → HOME).',
         sbsPause,
       };
     }

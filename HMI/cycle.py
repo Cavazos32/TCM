@@ -68,16 +68,17 @@ FLOW_STEPS: list[dict[str, Any]] = [
     {"id": 15, "key": "wait_cutter_pulse", "label": "Delay entre Set y Res cortador", "kind": "wait", "delayKey": "cutterPulseMs", "sbsPause": False},
     {"id": 16, "key": "cutter_off", "label": "Cortador OFF", "kind": "action", "sbsPause": False},
     {"id": 17, "key": "wait_cutter_post", "label": "Delay post-corte", "kind": "wait", "delayKey": "cutterPostMs", "sbsPause": True},
+    # Depósito ANTES del prefetch: la manguera debe salir del área antes de pre-alimentar.
+    {"id": 18, "key": "deposit", "label": "Extra / depósito lineal", "kind": "action", "sbsPause": False},
+    {"id": 19, "key": "wait_deposit_dwell", "label": "Delay tras depósito", "kind": "wait", "delayKey": "dwellAtDestMs", "sbsPause": True},
     {
-        "id": 18,
+        "id": 20,
         "key": "prefetch_start",
         "label": "Prefetch feed — arranca en background",
         "kind": "parallel",
         "parallelRole": "start",
         "sbsPause": False,
     },
-    {"id": 19, "key": "deposit", "label": "Extra / depósito lineal", "kind": "action", "sbsPause": False},
-    {"id": 20, "key": "wait_deposit_dwell", "label": "Delay tras depósito", "kind": "wait", "delayKey": "dwellAtDestMs", "sbsPause": True},
     {"id": 21, "key": "grippers_off", "label": "Pinzas abren", "kind": "action", "sbsPause": False},
     {"id": 22, "key": "pf_trigger", "label": "Trigger PreFeeder (Tfeed)", "kind": "action", "sbsPause": False},
     {"id": 23, "key": "wait_gripper_release", "label": "Delay antes de HOME", "kind": "wait", "delayKey": "gripperReleaseMs", "sbsPause": True},
@@ -1438,35 +1439,16 @@ class CycleRunner:
                     break
                 if self._do_wait(rep, qty, "wait_cutter_post", "cutter_post_ms"):
                     break
-                # 18 Prefetch — inicia paralelo A
-                prefetch_running = False
-                if self._enter(rep, qty, "prefetch_start"):
-                    break
-                if rep < qty:
-                    self._host.clear_motion_wait_flags()
-                    sides = self._feed_side_list()
-                    if "L" in sides:
-                        self._host.cmd_motion_feed_l()
-                    if "R" in sides:
-                        self._host.cmd_motion_feed_r()
-                    prefetch_running = True
-                    self._host.cycle_log(
-                        f"∥ Prefetch feed lados={''.join(sides)} en paralelo con depósito/HOME"
-                    )
-                if self._after_step("prefetch_start"):
-                    break
-                # 19–20 Depósito + delay (∥ A)
+                # 18–19 Depósito + delay (manguera fuera del área ANTES del prefetch)
                 # wip_start_mm = magnitud ABS del move confirmado (fuente WIP).
                 wip_start_mm: float | None = None
+                prefetch_running = False
                 if self._enter(rep, qty, "deposit"):
                     break
                 extra = self._deposit_extra_mm(rep)
                 if abs(extra) > 0.01:
                     deposit_target = target_mm + extra
-                    if prefetch_running:
-                        self._host.clear_motion_reached_flag()
-                    else:
-                        self._host.clear_motion_wait_flags()
+                    self._host.clear_motion_wait_flags()
                     if not self._host.cmd_motion_move_mm(deposit_target, rpm):
                         # Transporte agotado → E065 (ya latcheado). Rechazo ASDA → E013.
                         if not self._should_abort() and not self._fault:
@@ -1496,6 +1478,23 @@ class CycleRunner:
                 if self._after_step("deposit"):
                     break
                 if self._do_wait(rep, qty, "wait_deposit_dwell", "dwell_at_dest_ms"):
+                    break
+                # 20 Prefetch — inicia paralelo A (tras depósito: manguera ya movida)
+                if self._enter(rep, qty, "prefetch_start"):
+                    break
+                if rep < qty:
+                    self._host.clear_motion_wait_flags()
+                    sides = self._feed_side_list()
+                    if "L" in sides:
+                        self._host.cmd_motion_feed_l()
+                    if "R" in sides:
+                        self._host.cmd_motion_feed_r()
+                    prefetch_running = True
+                    self._host.cycle_log(
+                        f"∥ Prefetch feed lados={''.join(sides)} "
+                        f"en paralelo con pinzas/HOME (post-depósito)"
+                    )
+                if self._after_step("prefetch_start"):
                     break
                 # 21–23 Pinzas OFF + Tfeed + delay (∥ A)
                 if self._enter(rep, qty, "grippers_off"):
