@@ -93,8 +93,13 @@ export function mapMachineState(
   const qty = targetQty || model?.qty || model?.cantidad || 1;
 
   const piecesDone = cycle.piecesDone ?? 0;
-  const targetReps =
+  // Tamaño del lote en curso / último lote (progreso). No es el valor editable.
+  const lotTarget =
     cycle.totalReps > 0 ? cycle.totalReps : qty;
+  // Editable: qty del operador. Solo durante ciclo activo mostramos el lote real
+  // (input deshabilitado). Si no, totalReps residual tras FinishParts pisaba el input.
+  const targetPieces =
+    cycle.active && cycle.totalReps > 0 ? cycle.totalReps : qty;
 
   return {
     model: model?.name ?? '—',
@@ -116,18 +121,18 @@ export function mapMachineState(
     pauseEnabled: cycle.active && !cycle.paused && !cycle.refillAwaitingConfirm,
     progress: cycle.completed
       ? 100
-      : cycle.active && targetReps > 0
+      : cycle.active && lotTarget > 0
         ? Math.max(
             snap.progress,
-            Math.round((piecesDone / targetReps) * 100)
+            Math.round((piecesDone / lotTarget) * 100)
           )
         : cycle.lastOk
-          ? Math.max(snap.progress, Math.round((piecesDone / Math.max(targetReps, 1)) * 100))
+          ? Math.max(snap.progress, Math.round((piecesDone / Math.max(lotTarget, 1)) * 100))
           : snap.progress,
     cycleTimeSec: cycle.elapsedSec ?? 0,
     // Piezas terminadas (no el rep en curso — eso confundía 1/15 al empezar)
-    piecesCount: cycle.completed ? targetReps : piecesDone,
-    targetPieces: targetReps,
+    piecesCount: cycle.completed ? lotTarget : piecesDone,
+    targetPieces,
     cycleCompleted: cycle.completed ?? false,
     safetyExhaust: !!snap.motion.safetyExhaust,
     fault: snap.error?.active ? snap.error.ui : cycle.fault || undefined,

@@ -34,65 +34,70 @@ CONFIG_PATH = HMI_ROOT / "config" / "cycle_config.json"
 # El test HTML de Motion sigue usando pieceMm = L (target = L−55).
 # No modificar Feed / FEED_TARGET_FIXED_MM / Move ABS manual.
 
-# WIP Delivery (HOME): 2 pulsos blower sobre el recorrido real ASDA → 0.
-# Fracciones del viaje (ej. 255 mm → puntos a ~85 mm y ~170 mm recorridos).
-WIP_BLOWER_POINT_FRACS = (1.0 / 3.0, 2.0 / 3.0)
+# WIP Delivery (HOME): 1 soplo a mitad del viaje (ABS) hacia 0.
+# start = magnitud ABS del depósito confirmado (o Stage2 si no hubo extra).
+# Ej. start=255 → mid≈127.5; start=315 (255+60) → mid≈157.5.
+# ON(blowerSec) → dwell → OFF explícito → HOME (sin carrera timer HMI/PLC).
 WIP_BLOWER_MIN_TRAVEL_MM = 8.0
-WIP_BLOWER_HOME_CLEAR_MM = 4.0  # no disparar dentro de esta zona de HOME
-WIP_BLOWER_POLL_S = 0.08
-# Motion/Asda.h LINEAR_MM_PER_MOTOR_REV — fallback temporal si no hay pos live
-ASDA_LINEAR_MM_PER_MOTOR_REV = 5.0
+# Si hay caché ASDA post-Reached, debe coincidir con la ref de depósito.
+WIP_START_CACHE_TOL_MM = 5.0
 
 # Protocolo máquina: machine_states.py (0x40–0x49). Andon solo refleja esos bytes.
 # Pasos atómicos (acción / delay independientes).
 # kind=parallel SOLO en: arranque prefetch (background) y join/handoff.
 # El resto es secuencia principal (action|wait) — no implica “todo a la vez”.
+#
+# sbsPause: en modo Step by Step, pausa tras completar ese paso (checkpoint
+# físico). False = auto (delay / validación / join interno): visible en la
+# lista, pero no exige Next. Un Next avanza el grupo físico + sus internos.
 FLOW_STEPS: list[dict[str, Any]] = [
-    {"id": 1, "key": "holder_on", "label": "Holder+Encoder ON (solo 1ª pieza)", "kind": "action"},
-    {"id": 2, "key": "wait_holder_on", "label": "Delay Holder ON", "kind": "wait", "delayKey": "holderOnMs"},
-    {"id": 3, "key": "feed", "label": "Alimentación (feed / handoff)", "kind": "action"},
-    {"id": 4, "key": "offset", "label": "Offset alimentación (Motion, paso lógico)", "kind": "action"},
-    {"id": 5, "key": "grippers_on", "label": "Pinzas cierran", "kind": "action"},
-    {"id": 6, "key": "wait_grippers_on", "label": "Delay tras cerrar pinzas", "kind": "wait", "delayKey": "grippersOnMs"},
-    {"id": 7, "key": "enc_set0", "label": "OM ref (no usado por Stage2 ASDA)", "kind": "action"},
-    {"id": 8, "key": "holder_off", "label": "Holder+Encoder OFF (abre para lineal)", "kind": "action"},
-    {"id": 9, "key": "wait_holder_open", "label": "Delay Holder/Encoder OFF", "kind": "wait", "delayKey": "holderOpenMs"},
-    {"id": 10, "key": "lineal_fwd", "label": "Stage2 lineal ASDA (0→ABS)", "kind": "action"},
-    {"id": 11, "key": "wait_linear_done", "label": "Delay antes del corte", "kind": "wait", "delayKey": "linearDoneMs"},
-    {"id": 12, "key": "holder_precut", "label": "Holder ON / Encoder ON (pre-corte)", "kind": "action"},
-    {"id": 13, "key": "wait_holder_precut", "label": "Delay tras cerrar holder", "kind": "wait", "delayKey": "holderOnMs"},
-    {"id": 14, "key": "cutter_on", "label": "Cortador ON (+ All OK PreFeeder)", "kind": "action"},
-    {"id": 15, "key": "wait_cutter_pulse", "label": "Delay entre Set y Res cortador", "kind": "wait", "delayKey": "cutterPulseMs"},
-    {"id": 16, "key": "cutter_off", "label": "Cortador OFF", "kind": "action"},
-    {"id": 17, "key": "wait_cutter_post", "label": "Delay post-corte", "kind": "wait", "delayKey": "cutterPostMs"},
+    {"id": 1, "key": "holder_on", "label": "Holder+Encoder ON (solo 1ª pieza)", "kind": "action", "sbsPause": False},
+    {"id": 2, "key": "wait_holder_on", "label": "Delay Holder ON", "kind": "wait", "delayKey": "holderOnMs", "sbsPause": True},
+    {"id": 3, "key": "feed", "label": "Alimentación (feed / handoff)", "kind": "action", "sbsPause": True},
+    {"id": 4, "key": "offset", "label": "Offset alimentación (Motion, paso lógico)", "kind": "action", "sbsPause": False},
+    {"id": 5, "key": "grippers_on", "label": "Pinzas cierran", "kind": "action", "sbsPause": False},
+    {"id": 6, "key": "wait_grippers_on", "label": "Delay tras cerrar pinzas", "kind": "wait", "delayKey": "grippersOnMs", "sbsPause": False},
+    {"id": 7, "key": "enc_set0", "label": "OM ref (no usado por Stage2 ASDA)", "kind": "action", "sbsPause": True},
+    {"id": 8, "key": "holder_off", "label": "Holder+Encoder OFF (abre para lineal)", "kind": "action", "sbsPause": False},
+    {"id": 9, "key": "wait_holder_open", "label": "Delay Holder/Encoder OFF", "kind": "wait", "delayKey": "holderOpenMs", "sbsPause": True},
+    {"id": 10, "key": "lineal_fwd", "label": "Stage2 lineal ASDA (0→ABS)", "kind": "action", "sbsPause": False},
+    {"id": 11, "key": "wait_linear_done", "label": "Delay antes del corte", "kind": "wait", "delayKey": "linearDoneMs", "sbsPause": True},
+    {"id": 12, "key": "holder_precut", "label": "Holder ON / Encoder ON (pre-corte)", "kind": "action", "sbsPause": False},
+    {"id": 13, "key": "wait_holder_precut", "label": "Delay tras cerrar holder", "kind": "wait", "delayKey": "holderOnMs", "sbsPause": True},
+    {"id": 14, "key": "cutter_on", "label": "Cortador ON (+ All OK PreFeeder)", "kind": "action", "sbsPause": False},
+    {"id": 15, "key": "wait_cutter_pulse", "label": "Delay entre Set y Res cortador", "kind": "wait", "delayKey": "cutterPulseMs", "sbsPause": False},
+    {"id": 16, "key": "cutter_off", "label": "Cortador OFF", "kind": "action", "sbsPause": False},
+    {"id": 17, "key": "wait_cutter_post", "label": "Delay post-corte", "kind": "wait", "delayKey": "cutterPostMs", "sbsPause": True},
     {
         "id": 18,
         "key": "prefetch_start",
         "label": "Prefetch feed — arranca en background",
         "kind": "parallel",
         "parallelRole": "start",
+        "sbsPause": False,
     },
-    {"id": 19, "key": "deposit", "label": "Extra / depósito lineal", "kind": "action"},
-    {"id": 20, "key": "wait_deposit_dwell", "label": "Delay tras depósito", "kind": "wait", "delayKey": "dwellAtDestMs"},
-    {"id": 21, "key": "grippers_off", "label": "Pinzas abren", "kind": "action"},
-    {"id": 22, "key": "pf_trigger", "label": "Trigger PreFeeder (Tfeed)", "kind": "action"},
-    {"id": 23, "key": "wait_gripper_release", "label": "Delay antes de HOME", "kind": "wait", "delayKey": "gripperReleaseMs"},
-    {"id": 24, "key": "home", "label": "Lineal HOME + WIP blower", "kind": "action"},
+    {"id": 19, "key": "deposit", "label": "Extra / depósito lineal", "kind": "action", "sbsPause": False},
+    {"id": 20, "key": "wait_deposit_dwell", "label": "Delay tras depósito", "kind": "wait", "delayKey": "dwellAtDestMs", "sbsPause": True},
+    {"id": 21, "key": "grippers_off", "label": "Pinzas abren", "kind": "action", "sbsPause": False},
+    {"id": 22, "key": "pf_trigger", "label": "Trigger PreFeeder (Tfeed)", "kind": "action", "sbsPause": False},
+    {"id": 23, "key": "wait_gripper_release", "label": "Delay antes de HOME", "kind": "wait", "delayKey": "gripperReleaseMs", "sbsPause": True},
+    {"id": 24, "key": "home", "label": "HOME: mid + WIP blower + 0", "kind": "action", "sbsPause": True},
     {
         "id": 25,
         "key": "handoff",
         "label": "Join — espera fin del prefetch (handoff)",
         "kind": "parallel",
         "parallelRole": "join",
+        "sbsPause": False,
     },
-    {"id": 26, "key": "wait_asentar", "label": "Delay asentar", "kind": "wait", "delayKey": "asentarMs"},
-    {"id": 27, "key": "post_piece", "label": "Post-pieza (safety / peer / holgura)", "kind": "action"},
+    {"id": 26, "key": "wait_asentar", "label": "Delay asentar", "kind": "wait", "delayKey": "asentarMs", "sbsPause": False},
+    {"id": 27, "key": "post_piece", "label": "Post-pieza (safety / peer / holgura)", "kind": "action", "sbsPause": False},
 ]
 PROGRESS_STEPS = len(FLOW_STEPS)
 STEP_NAMES = {0: "idle", **{s["id"]: s["key"] for s in FLOW_STEPS}}
 STEP_BY_KEY = {s["key"]: s for s in FLOW_STEPS}
-# Pasos sin pausa automática en modo paso a paso (igual que firmware TCM).
-STEP_BY_STEP_NO_PAUSE = frozenset({"listo", "rep-start", "post_piece"})
+# Keys de control de lote (no están en FLOW_STEPS): nunca pausan en SBS.
+STEP_BY_STEP_NO_PAUSE = frozenset({"listo", "rep-start"})
 @dataclass
 
 class CycleConfig:
@@ -283,8 +288,8 @@ class CycleHost(Protocol):
     ) -> str: ...
     def stage2_fault(self) -> str: ...
     def asda_position_mm(self) -> float | None: ...
-    def refresh_asda_position_mm(self) -> float | None: ...
     def cmd_motion_move_mm(self, mm: float, rpm: float) -> bool: ...
+    def last_move_fail_kind(self) -> str: ...
     def cmd_motion_move_zero(self, rpm: float) -> bool: ...
     def cmd_motion_stop(self) -> bool: ...
     def cmd_motion_feed_l(self, *, skip_validate: bool = False) -> bool: ...
@@ -815,11 +820,15 @@ class CycleRunner:
             remaining -= time.monotonic() - t0
         return self._should_abort()
     def _step_by_step_should_pause(self, step_key: str) -> bool:
+        """True solo en checkpoints físicos (sbsPause). Delays/validaciones auto."""
         if not self._step_by_step:
             return False
         if step_key in STEP_BY_STEP_NO_PAUSE:
             return False
-        return bool(step_key)
+        meta = STEP_BY_KEY.get(step_key)
+        if meta is None:
+            return False
+        return bool(meta.get("sbsPause", False))
     def _after_step(self, step_key: str) -> bool:
         """Pausa cooperativa tras completar un paso atómico. True = abortar."""
         if self._should_abort():
@@ -861,51 +870,9 @@ class CycleRunner:
             self._host.cycle_log(format_ui("E008"))
         return ok
 
-    def _wait_home_wip_delivery(self, start_mm: float | None, rpm: float) -> bool:
-        """HOME + WIP Delivery: 2× blower ON(blowerSec)→OFF sobre el recorrido.
-
-        Umbrales = 1/3 y 2/3 del viaje real hacia 0 (p.ej. 255 mm → ~170 y ~85 mm
-        restantes). Preferencia: posición live HTTP; fallback: tiempo ∝ distancia/RPM.
-        No dispara dentro de WIP_BLOWER_HOME_CLEAR_MM de HOME.
-        """
-        cfg = self.get_config()
-        timeout_s = float(cfg.motion_wait_timeout_s)
-        deadline = time.monotonic() + timeout_s
-        t0 = time.monotonic()
-        blower_sec = float(self._host.plc_blower_sec())
-
-        travel = abs(float(start_mm)) if start_mm is not None else 0.0
-        remain_thresholds: list[float] = []
-        time_triggers: list[float] = []
-
-        if travel >= WIP_BLOWER_MIN_TRAVEL_MM:
-            mm_s = max(1.0, (float(rpm) / 60.0) * ASDA_LINEAR_MM_PER_MOTOR_REV)
-            t_move = travel / mm_s
-            # Margen para que el 2º pulso termine antes de llegar a HOME
-            usable = max(0.0, t_move - max(blower_sec + 0.05, 0.12))
-            for frac in WIP_BLOWER_POINT_FRACS:
-                rem = travel * (1.0 - float(frac))
-                if rem <= WIP_BLOWER_HOME_CLEAR_MM:
-                    continue
-                remain_thresholds.append(rem)
-                time_triggers.append(usable * float(frac))
-            pts_from_start = [travel - r for r in remain_thresholds]
-            self._host.cycle_log(
-                f"WIP Delivery blower: travel={travel:.1f} mm "
-                f"pts_from_start={[f'{p:.1f}' for p in pts_from_start]} mm "
-                f"remain≤{[f'{r:.1f}' for r in remain_thresholds]} mm "
-                f"hold={blower_sec:g}s"
-            )
-        else:
-            self._host.cycle_log(
-                f"WIP Delivery: omitido (travel={travel:.1f} mm < "
-                f"{WIP_BLOWER_MIN_TRAVEL_MM:.0f} mm)"
-            )
-
-        n_pts = len(remain_thresholds)
-        fired = [False] * n_pts
-        last_pos_poll = 0.0
-
+    def _wait_duration_s(self, sec: float) -> bool:
+        """Espera cooperativa (respeta pause/abort). False = abort."""
+        deadline = time.monotonic() + max(0.0, float(sec))
         while time.monotonic() < deadline:
             if self._should_abort():
                 return False
@@ -913,44 +880,121 @@ class CycleRunner:
                 if self._should_abort():
                     return False
                 time.sleep(0.05)
+            remain = deadline - time.monotonic()
+            if remain <= 0:
+                break
+            time.sleep(min(0.05, remain))
+        return True
 
-            now = time.monotonic()
-            if n_pts and not all(fired) and (now - last_pos_poll) >= WIP_BLOWER_POLL_S:
-                last_pos_poll = now
-                live = self._host.refresh_asda_position_mm()
-                elapsed = now - t0
-                for i, rem_th in enumerate(remain_thresholds):
-                    if fired[i]:
-                        continue
-                    crossed = False
-                    if live is not None:
-                        ap = abs(float(live))
-                        if ap <= rem_th and ap > WIP_BLOWER_HOME_CLEAR_MM:
-                            crossed = True
-                    elif elapsed >= time_triggers[i]:
-                        crossed = True
-                    if not crossed:
-                        continue
-                    fired[i] = True
-                    ok_b = self._host.cmd_plc_blower(True, duration_sec=blower_sec)
-                    pos_txt = (
-                        f"|pos|={abs(float(live)):.1f} mm"
-                        if live is not None
-                        else f"t={elapsed:.2f}s"
-                    )
-                    self._host.cycle_log(
-                        f"WIP Delivery blower {i + 1}/{n_pts} "
-                        f"@ {pos_txt} hold={blower_sec:g}s "
-                        f"{'ok' if ok_b else 'FAIL'}"
-                    )
+    def _arm_motion_leg(self, prefetch_running: bool) -> None:
+        """Limpia flags Idle/Reached; conserva LengthOK/NG si hay prefetch ∥."""
+        if prefetch_running:
+            self._host.clear_motion_reached_flag()
+        else:
+            self._host.clear_motion_wait_flags()
 
-            slice_s = min(0.05, max(0.01, deadline - time.monotonic()))
-            if self._host.wait_motion_idle_or_reached(slice_s):
-                return True
-
-        self._raise_fault("timeout_motion")
-        self._host.cycle_log(format_ui("E008"))
+    def _validate_wip_start_mm(self, start_mm: float) -> bool:
+        """True si OK. Caché ASDA opcional: si existe, debe cuadrar con la ref."""
+        cached = self._host.asda_position_mm()
+        if cached is None:
+            return True
+        err = abs(abs(float(cached)) - abs(float(start_mm)))
+        if err <= WIP_START_CACHE_TOL_MM:
+            return True
+        self._raise_fault("wip_start")
+        self._host.cycle_log(
+            f"WIP start inválido: ref={abs(float(start_mm)):.1f} mm "
+            f"caché ASDA={abs(float(cached)):.1f} mm "
+            f"(Δ={err:.1f} > {WIP_START_CACHE_TOL_MM:.0f} mm) — no se estima"
+        )
         return False
+
+    def _home_with_wip_delivery(
+        self,
+        start_mm: float | None,
+        rpm: float,
+        *,
+        prefetch_running: bool,
+    ) -> bool:
+        """HOME + WIP: mid → blower ON → dwell → blower OFF → HOME 0.
+
+        `start_mm` = magnitud ABS del depósito confirmado (post Idle/Reached)
+        o del target Stage2 si no hubo move de depósito. No es estimación.
+        """
+        if start_mm is None:
+            self._raise_fault("wip_start")
+            self._host.cycle_log(
+                "WIP start ausente — falta ref de depósito/Stage2 (no se estima)"
+            )
+            return False
+
+        start_abs = abs(float(start_mm))
+        if not self._validate_wip_start_mm(start_abs):
+            return False
+
+        travel = start_abs
+        blower_sec = float(self._host.plc_blower_sec())
+
+        if travel < WIP_BLOWER_MIN_TRAVEL_MM:
+            self._host.cycle_log(
+                f"WIP Delivery: omitido (travel={travel:.1f} mm) — HOME directo"
+            )
+            self._arm_motion_leg(prefetch_running)
+            if not self._host.cmd_motion_move_zero(rpm):
+                self._raise_fault("home_cmd")
+                return False
+            return self._wait_motion()
+
+        mid_mm = start_abs * 0.5
+        self._host.cycle_log(
+            f"WIP Delivery: start={start_abs:.1f} mm → mid={mid_mm:.1f} mm "
+            f"→ blower {blower_sec:g}s → OFF → HOME"
+        )
+
+        # 1) Mitad del viaje hacia 0
+        self._arm_motion_leg(prefetch_running)
+        if not self._host.cmd_motion_move_mm(mid_mm, rpm):
+            if not self._should_abort() and not self._fault:
+                kind = ""
+                if hasattr(self._host, "last_move_fail_kind"):
+                    kind = self._host.last_move_fail_kind()
+                self._raise_fault("E065" if kind == "transport" else "home_cmd")
+            return False
+        if not self._wait_motion():
+            return False
+
+        # 2) Soplo: ON debe OK; dwell; OFF explícito antes de mover (anti-carrera)
+        if self._should_abort():
+            return False
+        if not self._host.cmd_plc_blower(True, duration_sec=blower_sec):
+            self._raise_fault("wip_blower")
+            self._host.cycle_log(
+                f"WIP Delivery blower ON FAIL @ mid={mid_mm:.1f} mm "
+                f"— no dwell / no HOME"
+            )
+            return False
+        self._host.cycle_log(
+            f"WIP Delivery blower ON @ mid={mid_mm:.1f} mm hold={blower_sec:g}s"
+        )
+        if not self._wait_duration_s(blower_sec):
+            # Abort a mitad: apagar blower best-effort; no continuar a HOME
+            self._host.cmd_plc_blower(False)
+            return False
+        if not self._host.cmd_plc_blower(False):
+            self._raise_fault("wip_blower")
+            self._host.cycle_log(
+                "WIP Delivery blower OFF FAIL — no HOME (blower puede seguir activo)"
+            )
+            return False
+        self._host.cycle_log("WIP Delivery blower OFF ok — HOME")
+
+        # 3) Completar HOME (solo con blower OFF confirmado a nivel de comando)
+        self._arm_motion_leg(prefetch_running)
+        if not self._host.cmd_motion_move_zero(rpm):
+            self._raise_fault("home_cmd")
+            return False
+        return self._wait_motion()
+
     def _wait_feed(self) -> bool:
         if self._trial_mode:
             self._host.cycle_log("Trial: feed OK omitido (bypass encoder)")
@@ -1412,6 +1456,8 @@ class CycleRunner:
                 if self._after_step("prefetch_start"):
                     break
                 # 19–20 Depósito + delay (∥ A)
+                # wip_start_mm = magnitud ABS del move confirmado (fuente WIP).
+                wip_start_mm: float | None = None
                 if self._enter(rep, qty, "deposit"):
                     break
                 extra = self._deposit_extra_mm(rep)
@@ -1434,6 +1480,19 @@ class CycleRunner:
                         break
                     if not self._wait_motion():
                         break
+                    # Misma magnitud que envió cmd_motion_move_mm (abs).
+                    wip_start_mm = abs(float(deposit_target))
+                    self._host.cycle_log(
+                        f"WIP start ref=deposit_target {wip_start_mm:.1f} mm "
+                        f"(post Idle/Reached)"
+                    )
+                else:
+                    # Sin move de depósito: ref = target Stage2 ya confirmado.
+                    wip_start_mm = abs(float(target_mm))
+                    self._host.cycle_log(
+                        f"WIP start ref=stage2_target {wip_start_mm:.1f} mm "
+                        f"(sin depósito extra)"
+                    )
                 if self._after_step("deposit"):
                     break
                 if self._do_wait(rep, qty, "wait_deposit_dwell", "dwell_at_dest_ms"):
@@ -1447,15 +1506,26 @@ class CycleRunner:
                 if self._enter(rep, qty, "pf_trigger"):
                     break
                 if self._use_prefeeder():
-                    ok_r = self._host.cmd_pf_trigger_r()
-                    ok_l = self._host.cmd_pf_trigger_l()
-                    if not ok_r and not ok_l:
+                    # Misma política que corte/Stage2: solo lados de feedSides.
+                    sides = CycleConfig.normalize_feed_sides(
+                        self.get_config().feed_sides
+                    )
+                    want_r = "R" in sides
+                    want_l = "L" in sides
+                    ok_r = self._host.cmd_pf_trigger_r() if want_r else True
+                    ok_l = self._host.cmd_pf_trigger_l() if want_l else True
+                    r_txt = ("ok" if ok_r else "fail") if want_r else "omit"
+                    l_txt = ("ok" if ok_l else "fail") if want_l else "omit"
+                    if (want_r and not ok_r) or (want_l and not ok_l):
                         self._raise_fault("pf_trigger")
-                        self._host.cycle_log("trigger PreFeeder falló (R+L)")
+                        self._host.cycle_log(
+                            f"trigger PreFeeder falló lados={sides} "
+                            f"R(0x4C)={r_txt} L(0x51)={l_txt}"
+                        )
                         break
                     self._host.cycle_log(
-                        f"trigger PreFeeder Tfeed — R(0x4C)={'ok' if ok_r else 'fail'} "
-                        f"L(0x51)={'ok' if ok_l else 'fail'}"
+                        f"trigger PreFeeder Tfeed lados={sides} — "
+                        f"R(0x4C)={r_txt} L(0x51)={l_txt}"
                     )
                 else:
                     self._host.cycle_log("trigger PreFeeder: omitido (ignore/bypass)")
@@ -1463,18 +1533,14 @@ class CycleRunner:
                     break
                 if self._do_wait(rep, qty, "wait_gripper_release", "gripper_release_ms"):
                     break
-                # 24 HOME + WIP Delivery blower (∥ A) — conservar flags prefetch
+                # 24 HOME + WIP: mid → blower ON/dwell/OFF → 0
                 if self._enter(rep, qty, "home"):
                     break
-                home_start_mm = self._host.asda_position_mm()
-                if prefetch_running:
-                    self._host.clear_motion_reached_flag()
-                else:
-                    self._host.clear_motion_wait_flags()
-                if not self._host.cmd_motion_move_zero(self._lot_rpm):
-                    self._raise_fault("home_cmd")
-                    break
-                if not self._wait_home_wip_delivery(home_start_mm, self._lot_rpm):
+                if not self._home_with_wip_delivery(
+                    wip_start_mm,
+                    self._lot_rpm,
+                    prefetch_running=prefetch_running,
+                ):
                     break
                 if self._after_step("home"):
                     break

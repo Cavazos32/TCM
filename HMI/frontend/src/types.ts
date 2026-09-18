@@ -35,6 +35,8 @@ export interface CycleStep {
   description?: string;
   note?: string;
   badge?: string;
+  /** Checkpoint físico en paso a paso (exige Next). Ausente/false = auto. */
+  sbsPause?: boolean;
 }
 
 export interface LogEntry {

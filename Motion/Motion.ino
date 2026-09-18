@@ -83,6 +83,7 @@ static bool motionPrepForward = true;
 static uint16_t motionPrepTorque = 0;
 static uint16_t motionPrepTimeMs = 0;
 static uint32_t motionPrepTimeoutMs = 0;
+static uint32_t motionPrepWaitUntilMs = 0;
 
 #if MOT_LATENCY_DEBUG
 #define LAT_MARK(tag)                                                      \
@@ -813,34 +814,49 @@ static void motionPrepPollOnce() {
       const int32_t speed01rpm = (int32_t)lroundf(motionPrepSpeed * 10.0f);
       switch (motionPrepStep) {
         case 0:
-          ok = write16(REG_P1_087, motionPrepTorque);
-          if (ok) motionPrepStep = 1;
+          // SON antes de params/trigger: si ON y HOME van seguidos, el drive
+          // a veces solo queda en Servo ON y no ejecuta el PR de homing.
+          ok = servoOn();
+          if (ok) {
+            motionPrepWaitUntilMs = millis() + ASDA_SERVO_ON_SETTLE_MS;
+            motionPrepStep = 1;
+          }
           break;
         case 1:
-          ok = write16(REG_P1_088, motionPrepTimeMs);
-          if (ok) motionPrepStep = 2;
+          if ((int32_t)(millis() - motionPrepWaitUntilMs) < 0)
+            return;
+          ok = true;
+          motionPrepStep = 2;
           break;
         case 2:
-          ok = write16(REG_P5_004, homingMethod);
+          ok = write16(REG_P1_087, motionPrepTorque);
           if (ok) motionPrepStep = 3;
           break;
         case 3:
-          ok = write32(REG_P5_005, speed01rpm);
+          ok = write16(REG_P1_088, motionPrepTimeMs);
           if (ok) motionPrepStep = 4;
           break;
         case 4:
-          ok = write32(REG_P5_006, speed01rpm);
+          ok = write16(REG_P5_004, homingMethod);
           if (ok) motionPrepStep = 5;
           break;
         case 5:
-          ok = write32(REG_P6_000, 0);
+          ok = write32(REG_P5_005, speed01rpm);
           if (ok) motionPrepStep = 6;
           break;
         case 6:
-          ok = write32(REG_P6_001, 0);
+          ok = write32(REG_P5_006, speed01rpm);
           if (ok) motionPrepStep = 7;
           break;
         case 7:
+          ok = write32(REG_P6_000, 0);
+          if (ok) motionPrepStep = 8;
+          break;
+        case 8:
+          ok = write32(REG_P6_001, 0);
+          if (ok) motionPrepStep = 9;
+          break;
+        case 9:
           LAT_MARK("5");
           ok = write16(REG_P5_007, 0);
           if (ok) motionPrepComplete(0);

@@ -128,6 +128,9 @@ export function useHmiState() {
   });
 
   const targetQtyRef = useRef(1);
+  /** True si el operador editó Target Pieces; no re-sembrar desde el modelo. */
+  const targetQtyTouchedRef = useRef(false);
+  const lastModelIdxRef = useRef<number | null>(null);
   const snapRef = useRef<BackendSnapshot | null>(null);
   const encPollRef = useRef(false);
   /** Estado lógico local por válvula (fuente de verdad entre clicks). */
@@ -138,7 +141,13 @@ export function useHmiState() {
   const applySnapshot = useCallback((snap: BackendSnapshot) => {
     snapRef.current = snap;
     const model = snap.models[snap.selectedModel];
-    if (model?.qty && targetQtyRef.current <= 1) {
+    // Al cambiar de modelo (o primera carga), tomar qty del modelo.
+    // No pisar un 1 intencional del operador con model.qty>1 en cada SSE/poll.
+    if (lastModelIdxRef.current !== snap.selectedModel) {
+      lastModelIdxRef.current = snap.selectedModel;
+      targetQtyTouchedRef.current = false;
+    }
+    if (!targetQtyTouchedRef.current && model?.qty && model.qty >= 1) {
       targetQtyRef.current = model.qty;
     }
     const targetQty = targetQtyRef.current;
@@ -238,6 +247,7 @@ export function useHmiState() {
   }, []);
 
   const setTargetQty = useCallback((qty: number) => {
+    targetQtyTouchedRef.current = true;
     targetQtyRef.current = Math.max(1, qty);
     if (snapRef.current) {
       applySnapshot(snapRef.current);
@@ -342,7 +352,24 @@ export function useHmiState() {
   }, []);
 
   const setCycleIgnorePrefeeder = useCallback((on: boolean) => {
-    api.setCycleIgnorePrefeeder(on).catch(() => {});
+    api
+      .setCycleIgnorePrefeeder(on)
+      .then((res) => {
+        if (res && res.ok === false && res.error) {
+          window.alert(res.error);
+          return;
+        }
+        if (res?.ok && typeof res.ignorePrefeeder === 'boolean') {
+          setView((prev) => ({
+            ...prev,
+            machineState: {
+              ...prev.machineState,
+              ignorePrefeeder: res.ignorePrefeeder!,
+            },
+          }));
+        }
+      })
+      .catch(() => {});
   }, []);
 
   const startRefill = useCallback(async (opts?: { mm?: number; asdaMm?: number }) => {
@@ -536,15 +563,21 @@ export function useHmiState() {
   }, []);
 
   const pfStart = useCallback(() => {
-    api.prefeederAction('start').catch(() => {});
+    api.prefeederAction('start').then((res) => {
+      if (res.ok === false && res.error) window.alert(res.error);
+    }).catch(() => {});
   }, []);
 
   const pfStop = useCallback(() => {
-    api.prefeederAction('stop').catch(() => {});
+    api.prefeederAction('stop').then((res) => {
+      if (res.ok === false && res.error) window.alert(res.error);
+    }).catch(() => {});
   }, []);
 
   const pfReset = useCallback(() => {
-    api.prefeederAction('reset').catch(() => {});
+    api.prefeederAction('reset').then((res) => {
+      if (res.ok === false && res.error) window.alert(res.error);
+    }).catch(() => {});
   }, []);
 
   const pfMaterialist = useCallback(() => {
@@ -552,11 +585,15 @@ export function useHmiState() {
   }, []);
 
   const pfTriggerR = useCallback(() => {
-    api.prefeederAction('trigger_r').catch(() => {});
+    api.prefeederAction('trigger_r').then((res) => {
+      if (res.ok === false && res.error) window.alert(res.error);
+    }).catch(() => {});
   }, []);
 
   const pfTriggerL = useCallback(() => {
-    api.prefeederAction('trigger_l').catch(() => {});
+    api.prefeederAction('trigger_l').then((res) => {
+      if (res.ok === false && res.error) window.alert(res.error);
+    }).catch(() => {});
   }, []);
 
   const andonSetOut = useCallback((out: 'green' | 'yellow' | 'red' | 'buzzer', on: boolean) => {
@@ -591,7 +628,8 @@ export function useHmiState() {
         }));
       }
     } catch {
-      // ignore
+      // Revertir optimista si el POST falló
+      setView((prev) => ({ ...prev, andonBuzzerMute: !mute }));
     }
   }, []);
 

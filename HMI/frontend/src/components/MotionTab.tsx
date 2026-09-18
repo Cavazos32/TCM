@@ -493,7 +493,7 @@ export const MotionTab: React.FC<MotionTabProps> = ({
               </span>
             </div>
 
-            {/* Excel: 0x12 Feed (R) · 0x13 Feed (L); columnas alineadas con OM (R izq · L der) */}
+            {/* Excel: 0x12 Feed (R) · 0x13 Feed (L); columnas alineadas con OM (R | L) */}
             <div className="mt-3 grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-2 rounded-lg bg-slate-50 dark:bg-slate-800/60 p-2.5 border border-slate-200 dark:border-slate-700">
                 <button

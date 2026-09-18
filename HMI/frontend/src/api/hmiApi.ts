@@ -172,7 +172,7 @@ export function plcAction(action: string, extra: Record<string, unknown> = {}) {
 }
 
 export function prefeederAction(action: string) {
-  return post('/api/prefeeder', { action });
+  return post<{ ok: boolean; error?: string }>('/api/prefeeder', { action });
 }
 
 export function andonAction(

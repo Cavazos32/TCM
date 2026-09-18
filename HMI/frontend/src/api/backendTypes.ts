@@ -41,6 +41,8 @@ export interface BackendFlowStep {
   kind: 'action' | 'wait' | 'parallel';
   delayKey?: string;
   parallelRole?: 'start' | 'join';
+  /** Si true, Step by Step pausa tras este paso (checkpoint físico). */
+  sbsPause?: boolean;
 }
 
 export interface BackendCycleSnapshot {

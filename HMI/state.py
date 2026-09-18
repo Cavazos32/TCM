@@ -129,8 +129,12 @@ LINK_DOWN_CONFIRM_SEC = 8.0
 # Arranque ASDA: el MCU puede estar arriba antes que la fuente del drive.
 # Sonda = ack del propio Servo ON (0x04): si el ASDA no está alimentado, el
 # write Modbus falla y Motion contesta ok:false. Se reintenta sin tope hasta
-# que el drive responde; recién entonces Home (0x01).
+# que el drive responde; luego asentar SON y recién entonces Home (0x01).
+# Sin POST_ON, ON+Home van casi juntos y a veces el drive solo queda en SON.
+# Si el tiempo es muy corto y no entra HOME, incrementar MOTION_BOOT_POST_ON_SEC
+# (y en Motion ASDA_SERVO_ON_SETTLE_MS).
 MOTION_BOOT_SETTLE_SEC = 2.5
+MOTION_BOOT_POST_ON_SEC = 2.5
 MOTION_BOOT_RETRY_SEC = 4.0
 MOTION_BOOT_ACK_TIMEOUT_SEC = 6.0
 MOTION_BOOT_LOG_EVERY_SEC = 30.0
@@ -270,6 +274,7 @@ class HmiState:
         }
         self._load_plc_config()
         self._andon_buzzer_mute = DEFAULT_ANDON_BUZZER_MUTE
+        self._andon_mute_resync = False
         self._debug_password = "tcm"
         self._load_app_config()
         self._andon = {
@@ -617,7 +622,7 @@ class HmiState:
     def cmd_plc_blower(
         self, on: bool = True, duration_sec: float | None = None
     ) -> bool:
-        """Blower ON con duración (UI plc.blowerSec) → OFF automático en PLC."""
+        """Blower ON(durationSec) o OFF. True = comando TCP enviado."""
         use_sec: float | None = None
         if on:
             if duration_sec is None:
@@ -625,11 +630,11 @@ class HmiState:
             else:
                 use_sec = max(0.2, min(300.0, float(duration_sec)))
         ok = bool(self._plc_client.cmd_blower(on, duration_sec=use_sec))
-        if ok and on and use_sec is not None:
+        if ok:
             with self._lock:
                 key = str(CMD_BLOWER)
                 if key in self._plc["valves"]:
-                    self._plc["valves"][key]["on"] = True
+                    self._plc["valves"][key]["on"] = bool(on)
         return ok
 
     def pf_state_byte(self) -> int | None:
@@ -1179,7 +1184,12 @@ class HmiState:
     def cmd_stop(self) -> dict:
         if self._cycle.is_active() or self._cycle.snapshot().get("paused"):
             return self._cycle.request_stop()
-        return {"ok": self._manual_motion(lambda: self._client.cmd_stop())}
+        # Sin ciclo activo: misma política de módulos que request_stop (Motion+PF+PLC).
+        ok_m = self._manual_motion(lambda: self._client.cmd_stop())
+        if self._pf_client.connected:
+            self._manual_pf(lambda: self._pf_client.cmd_stop())
+        self.cmd_plc_all_safe()
+        return {"ok": ok_m}
 
     def cmd_resume(self) -> dict:
         snap = self._cycle.snapshot()
@@ -1365,8 +1375,8 @@ class HmiState:
             if "debugPassword" in data and str(data["debugPassword"]):
                 self._debug_password = str(data["debugPassword"])
             self._save_app_config()
-            mute = self._andon_buzzer_mute
-        self._andon_client.set_buzzer_mute(mute)
+        # Preferencia ya guardada; empujar a Andon (si no hay enlace, al reconnect).
+        self._push_andon_prefs()
         self._notify()
         return self.get_app_config()
 
@@ -1377,7 +1387,14 @@ class HmiState:
             return str(password).strip() == str(self._debug_password).strip()
 
     def _push_andon_prefs(self) -> None:
-        self._andon_client.set_buzzer_mute(self._andon_buzzer_mute)
+        """HMI es fuente de verdad del mute; Andon no persiste buzzerMuted."""
+        mute = self._andon_buzzer_mute
+        if not self._andon_client.set_buzzer_mute(mute):
+            if self._andon_client.connected:
+                _append_log(
+                    self._andon_log,
+                    f"Mute buzzer no enviado (pref={'ON' if mute else 'OFF'})",
+                )
 
     def _on_andon_connection(self, connected: bool) -> None:
         with self._lock:
@@ -1621,17 +1638,44 @@ class HmiState:
         if not fn:
             return {"ok": False, "error": f"Acción PF desconocida: {action}"}
         ok = self._manual_pf(fn)
-        if ok and action == "materialist":
+        if not ok:
+            with self._lock:
+                err = str(
+                    (self._pf.get("status") or {}).get("text")
+                    or f"Fallo al enviar comando PreFeeder ({action})"
+                )
+            return {"ok": False, "error": err}
+        if action == "materialist":
             with self._lock:
                 self._pf_materialist = True
             self._cycle.set_materialist(True)
-        if ok and action == "reset":
+        if action == "reset":
             with self._lock:
-                self._pf["status"] = {"text": "Reset enviado (0x02C)", "kind": "ok"}
+                self._pf["status"] = {"text": "Reset enviado L+R (0x02C)", "kind": "ok"}
                 self._pf_materialist = False
             self._cycle.request_reset()
             self._notify()
-        return {"ok": ok}
+        if action == "start":
+            with self._lock:
+                text = "Start enviado L+R (0x02A)"
+                _append_log(self._pf_log, text)
+                self._pf["status"] = {"text": text, "kind": "ok"}
+            self._notify()
+        if action == "stop":
+            with self._lock:
+                text = "Stop enviado L+R (0x02B)"
+                _append_log(self._pf_log, text)
+                self._pf["status"] = {"text": text, "kind": "ok"}
+            self._notify()
+        if action in ("trigger_r", "trigger_l"):
+            side = "R" if action == "trigger_r" else "L"
+            opcode = "0x4C" if side == "R" else "0x51"
+            with self._lock:
+                text = f"Trigger {side} enviado ({opcode})"
+                _append_log(self._pf_log, text)
+                self._pf["status"] = {"text": text, "kind": "ok"}
+            self._notify()
+        return {"ok": True}
 
     def _manual_andon(self, action: Callable[[], bool]) -> bool:
         if not self._andon_client.connected:
@@ -1648,8 +1692,10 @@ class HmiState:
         self._andon["red"] = bool(msg.get("red"))
         self._andon["buzzer"] = bool(msg.get("buzzer"))
         self._andon["manual"] = bool(msg.get("manual"))
-        if "mute" in msg:
-            self._andon_buzzer_mute = bool(msg.get("mute"))
+        # Mute: preferencia HMI (app_config). No pisar con status Andon
+        # (RAM volatile; race al conectar dejaba UI en mute y buzzer sonando).
+        if "mute" in msg and bool(msg.get("mute")) != bool(self._andon_buzzer_mute):
+            self._andon_mute_resync = True
 
     def cmd_andon(self, action: str, **kwargs: Any) -> dict:
         if action == "set_out":
@@ -1781,6 +1827,10 @@ class HmiState:
         if mtype == "status":
             with self._lock:
                 self._apply_andon_status(msg)
+                need_mute_push = self._andon_mute_resync
+                self._andon_mute_resync = False
+            if need_mute_push:
+                self._push_andon_prefs()
             return True
         if mtype == "ack":
             with self._lock:
@@ -2035,17 +2085,21 @@ class HmiState:
         self._motion_boot_attempt_failed("sin respuesta al Servo ON")
 
     def _motion_boot_send_home(self) -> None:
-        """Home (0x01) tras ack OK de Servo ON (servo ya habilitado)."""
+        """Home (0x01) tras ack OK de Servo ON + asentamiento del drive."""
+        time.sleep(MOTION_BOOT_POST_ON_SEC)
         if not self._client.connected:
             return
         with self._lock:
+            # Reconnect/aborto durante el asentamiento: no disparar Home.
+            if not self._motion_boot_prep_done:
+                return
             self._move_target_mm = 0.0
             self._move_start_mm = self._last_position_mm
             self._progress = 0
             self._motion_boot_armed = False
             _append_log(
                 self._motion_log,
-                "Arranque lineal: servo ON → Home (0x001)",
+                "Arranque lineal: servo ON asentado → Home (0x001)",
             )
             self._set_motion_status("Arranque lineal: Home (0x001)", "info")
         self._notify()

@@ -33,6 +33,9 @@ static const float    HOME_MAX_TRAVEL_MM      = 120.0f;
 
 static const uint32_t MOTION_POLL_MIN_MS = 40;
 static const uint32_t STATUS_LIVE_MIN_MS = 200;
+// Tras P2.030=1 (Servo ON) el drive necesita asentar antes de aceptar PR/home.
+// Si el tiempo es muy corto y no entra HOME, incrementar estos ms.
+static const uint32_t ASDA_SERVO_ON_SETTLE_MS = 2000;
 
 // ====================== Calibración lineal ======================
 static const uint32_t LINEAR_EGEAR_N          = 1;

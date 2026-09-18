@@ -605,9 +605,29 @@ static bool pfGlobalLinkUp()
   return pfClientL.connected() || pfClientR.connected();
 }
 
+// Start/Stop/Reset globales: misma semántica que HTML Master → ambos MCU.
+static bool pfBothSidesLinked()
+{
+  return pfClientL.connected() && pfClientR.connected();
+}
+
+static String pfMissingSideErr(const char* op)
+{
+  const bool lOk = pfClientL.connected();
+  const bool rOk = pfClientR.connected();
+  if (!lOk && !rOk) return String(op) + " sin enlace L/R";
+  if (!lOk) return String(op) + " sin enlace L";
+  if (!rOk) return String(op) + " sin enlace R";
+  return String("");
+}
+
 static bool pfBroadcastAutoFromQuery()
 {
   if (!pfGlobalLinkUp())
+    return false;
+
+  // enable/reset requieren L+R (no dejar un lado desincronizado).
+  if ((server.hasArg("enable") || server.hasArg("reset")) && !pfBothSidesLinked())
     return false;
 
   if (server.hasArg("all_cfg"))
@@ -651,7 +671,10 @@ void handleApiAuto()
 {
   if (!pfBroadcastAutoFromQuery())
   {
-    server.send(503, "application/json", "{\"ok\":false,\"error\":\"no_link\"}");
+    const bool needBoth = server.hasArg("enable") || server.hasArg("reset");
+    const String err = needBoth ? pfMissingSideErr("auto") : String("no_link");
+    server.send(503, "application/json",
+                String("{\"ok\":false,\"error\":\"") + err + "\"}");
     return;
   }
   server.sendHeader("Cache-Control", "no-store");
@@ -1002,22 +1025,39 @@ static bool pfTcpDoByte(uint8_t cmdByte)
 
   switch (cmdByte) {
     case PF_CMD_START:
-      ok = pfDispatchCmd("start", "", '-');
-      if (ok) pfTcpStopPending = false;
+      // Global L+R — misma ruta que Master /api/auto?enable=1 → peerDoCmd("start").
+      if (!pfBothSidesLinked()) {
+        err = pfMissingSideErr("Start");
+        ok = false;
+      } else {
+        ok = pfDispatchCmd("start", "", '-');
+        if (ok) pfTcpStopPending = false;
+        else err = "Start no enviado a L/R";
+      }
       break;
     case PF_CMD_STOP:
-      ok = pfDispatchCmd("stop", "", '-');
-      if (ok) {
-        pfTcpStopPending = true;
-        pfTcpTxState(PF_ST_STOP, "StoprState");
+      if (!pfBothSidesLinked()) {
+        err = pfMissingSideErr("Stop");
+        ok = false;
+      } else {
+        ok = pfDispatchCmd("stop", "", '-');
+        if (ok) {
+          pfTcpStopPending = true;
+          pfTcpTxState(PF_ST_STOP, "StoprState");
+        } else err = "Stop no enviado a L/R";
       }
       break;
     case PF_CMD_RESET:
-      ok = pfDispatchCmd("reset", "", '-');
-      if (ok) {
-        resetGraceUntilMs = millis() + 4000;
-        clearMasterFaultView();
-        pfTcpStopPending = false;
+      if (!pfBothSidesLinked()) {
+        err = pfMissingSideErr("Reset");
+        ok = false;
+      } else {
+        ok = pfDispatchCmd("reset", "", '-');
+        if (ok) {
+          resetGraceUntilMs = millis() + 4000;
+          clearMasterFaultView();
+          pfTcpStopPending = false;
+        } else err = "Reset no enviado a L/R";
       }
       break;
     case PF_CMD_MATERIALIST:

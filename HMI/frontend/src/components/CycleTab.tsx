@@ -44,39 +44,40 @@ export const DEFAULT_CYCLE_CONFIG: CycleConfig = {
 
 /** Fallback local si el backend aún no envió flow (arranque). */
 export const CYCLE_STEPS_DEFINITION: CycleStep[] = [
-  { id: 1, title: 'Holder+Encoder ON (solo 1ª pieza)', type: 'action' },
-  { id: 2, title: 'Delay Holder ON', type: 'delay', delayKey: 'holderOnMs', defaultDurationMs: 200 },
-  { id: 3, title: 'Alimentación (feed / handoff)', type: 'action' },
-  { id: 4, title: 'Offset alimentación (si hay)', type: 'action' },
-  { id: 5, title: 'Pinzas cierran', type: 'action' },
-  { id: 6, title: 'Delay tras cerrar pinzas', type: 'delay', delayKey: 'grippersOnMs', defaultDurationMs: 100 },
-  { id: 7, title: 'OM ref (Stage2 RESET)', type: 'action' },
-  { id: 8, title: 'Holder+Encoder OFF (abre para lineal)', type: 'action' },
-  { id: 9, title: 'Delay Holder/Encoder OFF', type: 'delay', delayKey: 'holderOpenMs', defaultDurationMs: 100 },
-  { id: 10, title: 'Stage2 lineal ASDA (0→ABS)', type: 'action' },
-  { id: 11, title: 'Delay antes del corte', type: 'delay', delayKey: 'linearDoneMs', defaultDurationMs: 100 },
-  { id: 12, title: 'Holder ON / Encoder ON (pre-corte)', type: 'action' },
-  { id: 13, title: 'Delay tras cerrar holder', type: 'delay', delayKey: 'holderOnMs', defaultDurationMs: 200 },
-  { id: 14, title: 'Cortador ON (+ All OK PreFeeder)', type: 'action' },
-  { id: 15, title: 'Delay entre Set y Res cortador', type: 'delay', delayKey: 'cutterPulseMs', defaultDurationMs: 200 },
-  { id: 16, title: 'Cortador OFF', type: 'action' },
-  { id: 17, title: 'Delay post-corte', type: 'delay', delayKey: 'cutterPostMs', defaultDurationMs: 100 },
+  { id: 1, title: 'Holder+Encoder ON (solo 1ª pieza)', type: 'action', sbsPause: false },
+  { id: 2, title: 'Delay Holder ON', type: 'delay', delayKey: 'holderOnMs', defaultDurationMs: 200, sbsPause: true },
+  { id: 3, title: 'Alimentación (feed / handoff)', type: 'action', sbsPause: true },
+  { id: 4, title: 'Offset alimentación (si hay)', type: 'action', sbsPause: false },
+  { id: 5, title: 'Pinzas cierran', type: 'action', sbsPause: false },
+  { id: 6, title: 'Delay tras cerrar pinzas', type: 'delay', delayKey: 'grippersOnMs', defaultDurationMs: 100, sbsPause: false },
+  { id: 7, title: 'OM ref (Stage2 RESET)', type: 'action', sbsPause: true },
+  { id: 8, title: 'Holder+Encoder OFF (abre para lineal)', type: 'action', sbsPause: false },
+  { id: 9, title: 'Delay Holder/Encoder OFF', type: 'delay', delayKey: 'holderOpenMs', defaultDurationMs: 100, sbsPause: true },
+  { id: 10, title: 'Stage2 lineal ASDA (0→ABS)', type: 'action', sbsPause: false },
+  { id: 11, title: 'Delay antes del corte', type: 'delay', delayKey: 'linearDoneMs', defaultDurationMs: 100, sbsPause: true },
+  { id: 12, title: 'Holder ON / Encoder ON (pre-corte)', type: 'action', sbsPause: false },
+  { id: 13, title: 'Delay tras cerrar holder', type: 'delay', delayKey: 'holderOnMs', defaultDurationMs: 200, sbsPause: true },
+  { id: 14, title: 'Cortador ON (+ All OK PreFeeder)', type: 'action', sbsPause: false },
+  { id: 15, title: 'Delay entre Set y Res cortador', type: 'delay', delayKey: 'cutterPulseMs', defaultDurationMs: 200, sbsPause: false },
+  { id: 16, title: 'Cortador OFF', type: 'action', sbsPause: false },
+  { id: 17, title: 'Delay post-corte', type: 'delay', delayKey: 'cutterPostMs', defaultDurationMs: 100, sbsPause: true },
   {
     id: 18,
     title: 'Prefetch feed — arranca en background',
     type: 'background',
     badge: 'background',
     note: 'Prefetch sigue en background; abajo la secuencia principal continúa (depósito → pinzas → HOME), no son "todas a la vez".',
+    sbsPause: false,
   },
-  { id: 19, title: 'Extra / depósito lineal', type: 'action' },
-  { id: 20, title: 'Delay tras depósito', type: 'delay', delayKey: 'dwellAtDestMs', defaultDurationMs: 150 },
-  { id: 21, title: 'Pinzas abren', type: 'action' },
-  { id: 22, title: 'Trigger PreFeeder (Tfeed)', type: 'action' },
-  { id: 23, title: 'Delay antes de HOME', type: 'delay', delayKey: 'gripperReleaseMs', defaultDurationMs: 350 },
-  { id: 24, title: 'Lineal HOME + WIP blower', type: 'action' },
-  { id: 25, title: 'Join — espera fin del prefetch (handoff)', type: 'join', badge: 'join' },
-  { id: 26, title: 'Delay asentar', type: 'delay', delayKey: 'asentarMs', defaultDurationMs: 50 },
-  { id: 27, title: 'Post-pieza (safety / peer / holgura)', type: 'action' },
+  { id: 19, title: 'Extra / depósito lineal', type: 'action', sbsPause: false },
+  { id: 20, title: 'Delay tras depósito', type: 'delay', delayKey: 'dwellAtDestMs', defaultDurationMs: 150, sbsPause: true },
+  { id: 21, title: 'Pinzas abren', type: 'action', sbsPause: false },
+  { id: 22, title: 'Trigger PreFeeder (Tfeed)', type: 'action', sbsPause: false },
+  { id: 23, title: 'Delay antes de HOME', type: 'delay', delayKey: 'gripperReleaseMs', defaultDurationMs: 350, sbsPause: true },
+  { id: 24, title: 'HOME: mid + WIP blower + 0', type: 'action', sbsPause: true },
+  { id: 25, title: 'Join — espera fin del prefetch (handoff)', type: 'join', badge: 'join', sbsPause: false },
+  { id: 26, title: 'Delay asentar', type: 'delay', delayKey: 'asentarMs', defaultDurationMs: 50, sbsPause: false },
+  { id: 27, title: 'Post-pieza (safety / peer / holgura)', type: 'action', sbsPause: false },
 ];
 
 function stepsFromFlow(flow: BackendFlowStep[]): CycleStep[] {
@@ -86,6 +87,7 @@ function stepsFromFlow(flow: BackendFlowStep[]): CycleStep[] {
       delayKey && typeof DEFAULT_CYCLE_CONFIG[delayKey] === 'number'
         ? (DEFAULT_CYCLE_CONFIG[delayKey] as number)
         : undefined;
+    const sbsPause = s.sbsPause === true;
     if (s.kind === 'wait') {
       return {
         id: s.id,
@@ -93,6 +95,7 @@ function stepsFromFlow(flow: BackendFlowStep[]): CycleStep[] {
         type: 'delay' as const,
         delayKey,
         defaultDurationMs,
+        sbsPause,
       };
     }
     if (s.kind === 'parallel') {
@@ -105,9 +108,15 @@ function stepsFromFlow(flow: BackendFlowStep[]): CycleStep[] {
         note: isJoin
           ? undefined
           : 'Prefetch sigue en background; la secuencia principal continúa (depósito → pinzas → HOME).',
+        sbsPause,
       };
     }
-    return { id: s.id, title: s.label, type: 'action' as const };
+    return {
+      id: s.id,
+      title: s.label,
+      type: 'action' as const,
+      sbsPause,
+    };
   });
 }
 
@@ -478,49 +487,6 @@ export const CycleTab: React.FC<CycleTabProps> = ({
         </div>
       )}
 
-      {/* Helpers: refill params */}
-      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:px-6 shadow-2xs">
-        <div className="mb-3 flex items-center gap-2">
-          <Droplets className="h-4 w-4 text-sky-600 dark:text-sky-400" />
-          <h2 className="text-sm font-bold tracking-wider uppercase text-slate-900 dark:text-slate-100">
-            {t('refill_helpers_title')}
-          </h2>
-        </div>
-        <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">
-          {t('refill_helpers_subtitle')}
-        </p>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-lg">
-          <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-              {t('cfg_refill_mm')}
-            </label>
-            <input
-              type="number"
-              min={1}
-              step={0.5}
-              value={config.refillMm ?? 55}
-              onChange={(e) => updateConfigField('refillMm', Number(e.target.value))}
-              className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 focus:border-teal-500 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
-            />
-          </div>
-          <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-              {t('cfg_refill_asda')}
-            </label>
-            <input
-              type="number"
-              step={1}
-              value={config.refillAsdaMm ?? -300}
-              onChange={(e) => updateConfigField('refillAsdaMm', Number(e.target.value))}
-              className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 focus:border-teal-500 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
-            />
-          </div>
-        </div>
-        <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-2">
-          {t('cfg_refill_hint')}
-        </p>
-      </div>
-
       {/* SECTION 1: CYCLE SEQUENCE */}
       <div className="rounded-xl border border-slate-200 dark:border-slate-800/80 bg-white dark:bg-slate-900 shadow-2xs">
         <div className="border-b border-slate-200 dark:border-slate-800 p-4 sm:px-6 flex flex-wrap items-center justify-between gap-3">
@@ -736,6 +702,18 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                         </span>
                       )}
 
+                      {stepModeActive && step.sbsPause && (
+                        <span className="rounded bg-teal-600/15 text-teal-800 dark:text-teal-300 border border-teal-500/25 px-1.5 py-0.2 font-mono text-[10px] font-bold uppercase">
+                          {t('step_sbs_checkpoint')}
+                        </span>
+                      )}
+
+                      {stepModeActive && !step.sbsPause && (
+                        <span className="rounded bg-slate-500/10 text-slate-500 dark:text-slate-400 border border-slate-400/20 px-1.5 py-0.2 font-mono text-[10px] font-bold uppercase">
+                          {t('step_sbs_auto')}
+                        </span>
+                      )}
+
                       {isCurrent && (
                         <span className="inline-flex items-center gap-1 rounded bg-teal-500 text-white px-2 py-0.2 font-mono text-[10px] font-bold animate-pulse">
                           EN EJECUCIÓN
@@ -793,6 +771,49 @@ export const CycleTab: React.FC<CycleTabProps> = ({
             );
           })}
         </div>
+      </div>
+
+      {/* Helpers: refill params (debajo de la secuencia) */}
+      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:px-6 shadow-2xs">
+        <div className="mb-3 flex items-center gap-2">
+          <Droplets className="h-4 w-4 text-sky-600 dark:text-sky-400" />
+          <h2 className="text-sm font-bold tracking-wider uppercase text-slate-900 dark:text-slate-100">
+            {t('refill_helpers_title')}
+          </h2>
+        </div>
+        <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">
+          {t('refill_helpers_subtitle')}
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-lg">
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+              {t('cfg_refill_mm')}
+            </label>
+            <input
+              type="number"
+              min={1}
+              step={0.5}
+              value={config.refillMm ?? 55}
+              onChange={(e) => updateConfigField('refillMm', Number(e.target.value))}
+              className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 focus:border-teal-500 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+              {t('cfg_refill_asda')}
+            </label>
+            <input
+              type="number"
+              step={1}
+              value={config.refillAsdaMm ?? -300}
+              onChange={(e) => updateConfigField('refillAsdaMm', Number(e.target.value))}
+              className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 focus:border-teal-500 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
+            />
+          </div>
+        </div>
+        <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-2">
+          {t('cfg_refill_hint')}
+        </p>
       </div>
 
       {/* SECTIONS 2 & 3: MATERIAL HANDLING & TIMEOUTS */}
