@@ -2,17 +2,19 @@
   "holderOnMs": 120,
   "holderOpenMs": 60,
   "grippersOnMs": 60,
-  "gripperReleaseMs": 200,
+  "gripperReleaseMs": 250,
   "cutterPulseMs": 200,
   "cutterPostMs": 100,
   "linearDoneMs": 60,
   "asentarMs": 30,
   "dwellAtDestMs": 100,
   "depositBatchSize": 50,
-  "depositExtraMm": 30.0,
-  "cutOffsetMm": 0.0,
+  "depositExtraMm": 60.0,
+  "cutOffsetMm": -2.0,
   "motionWaitTimeoutS": 120.0,
   "feedWaitTimeoutS": 30.0,
   "pfReadyTimeoutS": 10.0,
-  "feedSides": "L"
+  "feedSides": "L",
+  "refillMm": 55.0,
+  "refillAsdaMm": -300.0
 }

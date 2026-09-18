@@ -345,6 +345,26 @@ def api_cycle_ignore_prefeeder():
     return jsonify(get_state().cmd_cycle_ignore_prefeeder(bool(body.get("on", True))))
 
 
+@app.post("/api/cycle/refill")
+def api_cycle_refill():
+    body = request.get_json(silent=True) or {}
+    feed_mm = body.get("mm", body.get("feedMm"))
+    asda_mm = body.get("asdaMm")
+    return jsonify(
+        get_state().cmd_cycle_refill(
+            feed_mm=float(feed_mm) if feed_mm is not None else None,
+            asda_mm=float(asda_mm) if asda_mm is not None else None,
+        )
+    )
+
+
+@app.post("/api/cycle/refill/confirm")
+def api_cycle_refill_confirm():
+    body = request.get_json(silent=True) or {}
+    ok = body.get("ok", body.get("confirm", True))
+    return jsonify(get_state().cmd_cycle_refill_confirm(bool(ok)))
+
+
 @app.get("/api/cycle/config")
 def api_cycle_config_get():
     return jsonify({"ok": True, "config": get_state().get_cycle_config()})

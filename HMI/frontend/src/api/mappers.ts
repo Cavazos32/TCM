@@ -108,10 +108,12 @@ export function mapMachineState(
     cycleStep: cycle.step ?? 0,
     cycleStepLabel: cycle.stepLabel ?? '',
     cycleMaterialist: cycle.materialist ?? false,
+    refillActive: !!cycle.refillActive,
+    refillAwaitingConfirm: !!cycle.refillAwaitingConfirm,
     stepByStep: cycle.stepByStep ?? false,
     trialMode: cycle.trialMode ?? false,
     ignorePrefeeder: cycle.ignorePrefeeder ?? false,
-    pauseEnabled: cycle.active && !cycle.paused,
+    pauseEnabled: cycle.active && !cycle.paused && !cycle.refillAwaitingConfirm,
     progress: cycle.completed
       ? 100
       : cycle.active && targetReps > 0

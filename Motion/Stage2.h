@@ -6,9 +6,9 @@
 #include "FeederCan.h"
 
 // =============================================================================
-// Stage 2 — un solo MOVE ABS al target (ASDA)
+// Stage 2 — MOVE ABS al target (ASDA), siempre desde referencia 0
 //
-//   PREPARE → ABS(target) → WAIT REACHED → SETTLE → DONE_OK
+//   PREPARE → [si |pos|>tol: ABS(0) → WAIT ZERO] → ABS(target) → WAIT → SETTLE
 //
 // Sin Approach / Fine / OM / remaining / correcciones.
 // OM en status = diagnóstico opcional al terminar.
@@ -40,6 +40,10 @@
 #ifndef STAGE2_SETTLE_MS
 #define STAGE2_SETTLE_MS             FEED_OM_SETTLE_MS
 #endif
+// |pos| ≤ tol → ya en 0; no emitir MOVE_ZERO
+#ifndef STAGE2_AT_ZERO_MM
+#define STAGE2_AT_ZERO_MM            0.5f
+#endif
 
 #define STAGE2_FAULT_REASON_MAX  96
 #define STAGE2_PREFS_NS          ASDA_PREFS_NS
@@ -47,6 +51,8 @@
 enum Stage2Phase : uint8_t {
   S2_IDLE = 0,
   S2_PREPARE,
+  S2_ZERO_ISSUE,
+  S2_WAIT_ZERO,
   S2_MOVE_ISSUE,
   S2_WAIT_REACHED,
   S2_SETTLE,

@@ -8,6 +8,9 @@ import {
   Pause,
   Settings2,
   AlertTriangle,
+  Droplets,
+  Check,
+  X,
 } from 'lucide-react';
 import { MachineState, LogEntry } from '../types';
 import { LogTerminal } from './LogTerminal';
@@ -26,8 +29,9 @@ interface MaquinaTabProps {
   onResume: () => void;
   onPause: () => void;
   onReset: () => void;
+  onRefill?: () => void;
+  onRefillConfirm?: (ok: boolean) => void;
   onGotoCycle?: () => void;
-  onToggleTrialMode?: (on: boolean) => void;
   showLogs?: boolean;
   logs: LogEntry[];
   onClearLogs: () => void;
@@ -46,8 +50,9 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
   onResume,
   onPause,
   onReset,
+  onRefill,
+  onRefillConfirm,
   onGotoCycle,
-  onToggleTrialMode,
   showLogs = true,
   logs,
   onClearLogs,
@@ -290,28 +295,12 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
             </button>
           )}
 
-          {debugMode && onToggleTrialMode && (
-            <button
-              id="btn-trial-mode-maquina"
-              type="button"
-              onClick={() => onToggleTrialMode(!machineState.trialMode)}
-              disabled={machineState.isRunning}
-              className={`flex items-center justify-center gap-1.5 rounded-lg border px-3.5 py-2 text-xs font-bold transition shadow-2xs disabled:opacity-40 ${
-                machineState.trialMode
-                  ? 'border-sky-400 bg-sky-100 dark:bg-sky-950/50 text-sky-800 dark:text-sky-200'
-                  : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200'
-              }`}
-            >
-              <span>{t('trial_mode')}</span>
-            </button>
-          )}
-
           <button
             id="btn-start-maquina"
             onClick={onStart}
-            disabled={machineState.isRunning}
+            disabled={machineState.isRunning || machineState.refillActive}
             className={`flex items-center justify-center gap-1.5 rounded-lg px-4 py-2 text-xs font-bold tracking-wide transition-all shadow-2xs ${
-              machineState.isRunning
+              machineState.isRunning || machineState.refillActive
                 ? 'bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed border border-slate-200 dark:border-slate-700'
                 : 'bg-emerald-600 hover:bg-emerald-700 text-white active:scale-95'
             }`}
@@ -344,7 +333,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
           <button
             id="btn-reanudar-maquina"
             onClick={onResume}
-            disabled={!resumeEnabled}
+            disabled={!resumeEnabled || machineState.refillAwaitingConfirm}
             className="group flex items-center justify-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 px-3.5 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 transition shadow-2xs disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <RotateCcw className="h-3.5 w-3.5 group-hover:rotate-45 transition-transform" />
@@ -365,7 +354,56 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
             <span>{t('btn_reset_cycle')}</span>
             <span className="font-mono text-[10px]">0x043</span>
           </button>
+
+          {onRefill && (
+            <button
+              id="btn-refill-maquina"
+              type="button"
+              onClick={onRefill}
+              disabled={machineState.isRunning || machineState.refillActive}
+              title={t('refill_helpers_subtitle')}
+              className={`flex items-center justify-center gap-1.5 rounded-lg border px-3.5 py-2 text-xs font-bold transition shadow-2xs ${
+                machineState.isRunning || machineState.refillActive
+                  ? 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed'
+                  : 'border-sky-300 dark:border-sky-800 bg-sky-50 dark:bg-sky-950/40 text-sky-800 dark:text-sky-200 hover:bg-sky-100 dark:hover:bg-sky-900/50 active:scale-95'
+              }`}
+            >
+              <Droplets className="h-3.5 w-3.5" />
+              <span>{t('btn_refill')}</span>
+            </button>
+          )}
         </div>
+
+        {machineState.refillAwaitingConfirm && onRefillConfirm && (
+          <div className="mt-4 flex flex-wrap items-center gap-3 rounded-lg border border-sky-300 dark:border-sky-700 bg-sky-50 dark:bg-sky-950/50 px-4 py-3">
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-bold text-sky-900 dark:text-sky-100">
+                {t('refill_confirm_title')}
+              </p>
+              <p className="text-[11px] text-sky-800/80 dark:text-sky-200/80 mt-0.5">
+                {t('refill_confirm_hint')}
+              </p>
+            </div>
+            <button
+              id="btn-refill-confirm-yes"
+              type="button"
+              onClick={() => onRefillConfirm(true)}
+              className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 text-xs font-bold text-white shadow-2xs active:scale-95"
+            >
+              <Check className="h-3.5 w-3.5" />
+              {t('btn_refill_confirm_yes')}
+            </button>
+            <button
+              id="btn-refill-confirm-no"
+              type="button"
+              onClick={() => onRefillConfirm(false)}
+              className="flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3.5 py-2 text-xs font-bold text-slate-700 dark:text-slate-200 shadow-2xs active:scale-95"
+            >
+              <X className="h-3.5 w-3.5" />
+              {t('btn_refill_confirm_no')}
+            </button>
+          </div>
+        )}
       </div>
 
       {showLogs && (

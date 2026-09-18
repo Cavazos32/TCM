@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   Timer,
-  Play,
   CheckCircle2,
   Save,
   RotateCcw,
@@ -15,45 +14,14 @@ import {
   ChevronRight,
   Footprints,
   X,
+  Droplets,
+  Check,
 } from 'lucide-react';
 import { CycleConfig, CycleStep, MachineState } from '../types';
 import { useApp } from '../context/AppContext';
 import type { BackendFlowStep } from '../api/backendTypes';
 
 export const DEFAULT_CYCLE_CONFIG: CycleConfig = {
-  holderOnMs: 200,
-  holderOpenMs: 100,
-  grippersOnMs: 100,
-  gripperReleaseMs: 350,
-  cutterPulseMs: 200,
-  cutterPostMs: 100,
-  linearDoneMs: 100,
-  asentarMs: 50,
-  dwellAtDestMs: 150,
-  depositBatchSize: 50,
-  depositExtraMm: 30,
-  cutOffsetMm: 0,
-  motionWaitTimeoutS: 120,
-  feedWaitTimeoutS: 30,
-  pfReadyTimeoutS: 10,
-  feedSides: 'LR',
-};
-
-const PRESET_COMPARE_KEYS: (keyof CycleConfig)[] = [
-  'holderOnMs',
-  'holderOpenMs',
-  'grippersOnMs',
-  'gripperReleaseMs',
-  'cutterPulseMs',
-  'cutterPostMs',
-  'linearDoneMs',
-  'asentarMs',
-  'dwellAtDestMs',
-  'depositExtraMm',
-];
-
-export const PRESET_FAST: CycleConfig = {
-  ...DEFAULT_CYCLE_CONFIG,
   holderOnMs: 120,
   holderOpenMs: 60,
   grippersOnMs: 60,
@@ -63,32 +31,16 @@ export const PRESET_FAST: CycleConfig = {
   linearDoneMs: 60,
   asentarMs: 30,
   dwellAtDestMs: 100,
+  depositBatchSize: 50,
+  depositExtraMm: 30,
+  cutOffsetMm: 0,
+  motionWaitTimeoutS: 120,
+  feedWaitTimeoutS: 30,
+  pfReadyTimeoutS: 10,
+  feedSides: 'L',
+  refillMm: 55,
+  refillAsdaMm: -300,
 };
-
-export const PRESET_HEAVY: CycleConfig = {
-  ...DEFAULT_CYCLE_CONFIG,
-  holderOnMs: 300,
-  holderOpenMs: 150,
-  grippersOnMs: 150,
-  gripperReleaseMs: 450,
-  cutterPulseMs: 150,
-  cutterPostMs: 150,
-  linearDoneMs: 150,
-  asentarMs: 80,
-  dwellAtDestMs: 220,
-  depositExtraMm: 40,
-};
-
-function presetMatches(cfg: CycleConfig, preset: CycleConfig): boolean {
-  return PRESET_COMPARE_KEYS.every((key) => cfg[key] === preset[key]);
-}
-
-export function detectCyclePreset(cfg: CycleConfig): 'default' | 'fast' | 'heavy' | 'custom' {
-  if (presetMatches(cfg, DEFAULT_CYCLE_CONFIG)) return 'default';
-  if (presetMatches(cfg, PRESET_FAST)) return 'fast';
-  if (presetMatches(cfg, PRESET_HEAVY)) return 'heavy';
-  return 'custom';
-}
 
 /** Fallback local si el backend aún no envió flow (arranque). */
 export const CYCLE_STEPS_DEFINITION: CycleStep[] = [
@@ -99,14 +51,14 @@ export const CYCLE_STEPS_DEFINITION: CycleStep[] = [
   { id: 5, title: 'Pinzas cierran', type: 'action' },
   { id: 6, title: 'Delay tras cerrar pinzas', type: 'delay', delayKey: 'grippersOnMs', defaultDurationMs: 100 },
   { id: 7, title: 'OM ref (Stage2 RESET)', type: 'action' },
-  { id: 8, title: 'Holder+Encoder se mantienen ON', type: 'action' },
-  { id: 9, title: 'Delay (holder se mantiene)', type: 'delay', delayKey: 'holderOpenMs', defaultDurationMs: 100 },
-  { id: 10, title: 'Stage2 lineal (approach+fine)', type: 'action' },
+  { id: 8, title: 'Holder+Encoder OFF (abre para lineal)', type: 'action' },
+  { id: 9, title: 'Delay Holder/Encoder OFF', type: 'delay', delayKey: 'holderOpenMs', defaultDurationMs: 100 },
+  { id: 10, title: 'Stage2 lineal ASDA (0→ABS)', type: 'action' },
   { id: 11, title: 'Delay antes del corte', type: 'delay', delayKey: 'linearDoneMs', defaultDurationMs: 100 },
-  { id: 12, title: 'Confirmar Holder+Encoder ON (pre-corte)', type: 'action' },
-  { id: 13, title: 'Delay tras confirmar holder', type: 'delay', delayKey: 'holderOnMs', defaultDurationMs: 200 },
+  { id: 12, title: 'Holder ON / Encoder ON (pre-corte)', type: 'action' },
+  { id: 13, title: 'Delay tras cerrar holder', type: 'delay', delayKey: 'holderOnMs', defaultDurationMs: 200 },
   { id: 14, title: 'Cortador ON (+ All OK PreFeeder)', type: 'action' },
-  { id: 15, title: 'Delay pulso de corte', type: 'delay', delayKey: 'cutterPulseMs', defaultDurationMs: 100 },
+  { id: 15, title: 'Delay entre Set y Res cortador', type: 'delay', delayKey: 'cutterPulseMs', defaultDurationMs: 200 },
   { id: 16, title: 'Cortador OFF', type: 'action' },
   { id: 17, title: 'Delay post-corte', type: 'delay', delayKey: 'cutterPostMs', defaultDurationMs: 100 },
   {
@@ -121,7 +73,7 @@ export const CYCLE_STEPS_DEFINITION: CycleStep[] = [
   { id: 21, title: 'Pinzas abren', type: 'action' },
   { id: 22, title: 'Trigger PreFeeder (Tfeed)', type: 'action' },
   { id: 23, title: 'Delay antes de HOME', type: 'delay', delayKey: 'gripperReleaseMs', defaultDurationMs: 350 },
-  { id: 24, title: 'Lineal HOME', type: 'action' },
+  { id: 24, title: 'Lineal HOME + WIP blower', type: 'action' },
   { id: 25, title: 'Join — espera fin del prefetch (handoff)', type: 'join', badge: 'join' },
   { id: 26, title: 'Delay asentar', type: 'delay', delayKey: 'asentarMs', defaultDurationMs: 50 },
   { id: 27, title: 'Post-pieza (safety / peer / holgura)', type: 'action' },
@@ -171,9 +123,11 @@ interface CycleTabProps {
   onReset?: () => void;
   onMaterialist?: () => void;
   onSetStepByStep?: (on: boolean) => void;
-  onToggleTrialMode?: (on: boolean) => void;
+  onStart?: () => void;
   onResume?: () => void;
   resumeEnabled?: boolean;
+  onRefill?: () => void;
+  onRefillConfirm?: (ok: boolean) => void;
 }
 
 export const CycleTab: React.FC<CycleTabProps> = ({
@@ -188,17 +142,16 @@ export const CycleTab: React.FC<CycleTabProps> = ({
   onReset,
   onMaterialist,
   onSetStepByStep,
-  onToggleTrialMode,
+  onStart,
   onResume,
   resumeEnabled = false,
+  onRefill,
+  onRefillConfirm,
 }) => {
   const { t } = useApp();
 
   const [config, setConfig] = useState<CycleConfig>(cycleConfig || DEFAULT_CYCLE_CONFIG);
   const [configDirty, setConfigDirty] = useState(false);
-  const [activePreset, setActivePreset] = useState<string>(() =>
-    detectCyclePreset(cycleConfig || DEFAULT_CYCLE_CONFIG),
-  );
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingSaveRef = useRef<CycleConfig | null>(null);
   const savingRef = useRef(false);
@@ -221,7 +174,6 @@ export const CycleTab: React.FC<CycleTabProps> = ({
     }
     confirmedFeedSidesRef.current = null;
     setConfig(cycleConfig);
-    setActivePreset(detectCyclePreset(cycleConfig));
   }, [cycleConfig, configDirty]);
 
   useEffect(() => {
@@ -231,14 +183,13 @@ export const CycleTab: React.FC<CycleTabProps> = ({
   }, []);
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const [searchQuery, setSearchQuery] = useState<string>('');
   const [filterType, setFilterType] = useState<'all' | 'action' | 'delay' | 'parallel'>('all');
   const [activeStepNum, setActiveStepNum] = useState<number | null>(null);
 
   const stepModeActive = machineState.stepByStep;
 
   const persistConfig = useCallback(
-    async (next: CycleConfig, toastKey: 'cycle_saved_success' | 'cycle_delay_saved' | 'cycle_preset_applied') => {
+    async (next: CycleConfig, toastKey: 'cycle_saved_success' | 'cycle_delay_saved') => {
       savingRef.current = true;
       confirmedFeedSidesRef.current = next.feedSides;
       try {
@@ -251,7 +202,6 @@ export const CycleTab: React.FC<CycleTabProps> = ({
         confirmedFeedSidesRef.current = feedSides;
         setConfig(merged);
         setConfigDirty(false);
-        setActivePreset(detectCyclePreset(merged));
         setToastMessage(t(toastKey));
         setTimeout(() => setToastMessage(null), 2500);
         return merged;
@@ -271,16 +221,18 @@ export const CycleTab: React.FC<CycleTabProps> = ({
     }
   }, [cycleActive, cycleStep]);
 
-  const currentRunningStep = cycleActive
-    ? cycleStep
-    : activeStepNum;
+  const currentRunningStep = cycleActive ? cycleStep : activeStepNum;
 
+  /** Pausado en paso a paso → Resume ejecuta el siguiente paso real. */
   const showStepNext =
     stepModeActive && cycleActive && machineState.isPaused && resumeEnabled;
+  /** Idle en paso a paso → Siguiente arranca el lote (no solo cambia el highlight). */
+  const canStartStepRun = stepModeActive && !cycleActive && Boolean(onStart);
+  const canExecuteNext = showStepNext || canStartStepRun;
 
   const handleStartStepMode = () => {
     onSetStepByStep?.(true);
-    if (!cycleActive) setActiveStepNum(activeStepNum || 1);
+    if (!cycleActive) setActiveStepNum(1);
   };
 
   const handleNextStep = () => {
@@ -288,8 +240,12 @@ export const CycleTab: React.FC<CycleTabProps> = ({
       onResume?.();
       return;
     }
-    const nextStep = activeStepNum ? Math.min(maxStepId, activeStepNum + 1) : 1;
-    setActiveStepNum(nextStep);
+    if (canStartStepRun) {
+      setActiveStepNum(1);
+      onStart?.();
+      return;
+    }
+    // Ciclo corriendo (aún no pausó): no fingir avance de UI.
   };
 
   const handlePrevStep = () => {
@@ -301,12 +257,6 @@ export const CycleTab: React.FC<CycleTabProps> = ({
   const handleExitStepMode = () => {
     onSetStepByStep?.(false);
     if (!cycleActive) setActiveStepNum(null);
-  };
-
-  const handleJumpToStep = (stepId: number) => {
-    if (cycleActive) return;
-    onSetStepByStep?.(true);
-    setActiveStepNum(stepId);
   };
 
   const handleSave = async () => {
@@ -332,7 +282,6 @@ export const CycleTab: React.FC<CycleTabProps> = ({
       const cfg = await onReloadConfig();
       setConfig(cfg);
       setConfigDirty(false);
-      setActivePreset(detectCyclePreset(cfg));
       setToastMessage(t('cycle_reloaded_success'));
       setTimeout(() => setToastMessage(null), 3000);
     } catch {
@@ -342,7 +291,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
 
   /** Auto-guarda (debounce) para que Start (reload desde disco) aplique el valor. */
   const schedulePersist = useCallback(
-    (next: CycleConfig, toastKey: 'cycle_saved_success' | 'cycle_delay_saved' | 'cycle_preset_applied') => {
+    (next: CycleConfig, toastKey: 'cycle_saved_success' | 'cycle_delay_saved') => {
       pendingSaveRef.current = next;
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
       saveTimerRef.current = setTimeout(() => {
@@ -354,11 +303,9 @@ export const CycleTab: React.FC<CycleTabProps> = ({
     [persistConfig],
   );
 
-  // Inline delay: actualiza UI y auto-guarda (debounce) para que el ciclo sí lo aplique.
   const handleUpdateDelay = (delayKey?: keyof CycleConfig, value?: number) => {
     if (!delayKey || value === undefined) return;
     const cleanVal = Math.max(0, isNaN(value) ? 0 : value);
-    setActivePreset('custom');
     setConfigDirty(true);
     setConfig((prev) => {
       const next = { ...prev, [delayKey]: cleanVal };
@@ -368,7 +315,6 @@ export const CycleTab: React.FC<CycleTabProps> = ({
   };
 
   const handleFeedSides = (side: 'L' | 'R' | 'LR') => {
-    setActivePreset('custom');
     setConfigDirty(true);
     setConfig((prev) => {
       const next = { ...prev, feedSides: side };
@@ -377,26 +323,15 @@ export const CycleTab: React.FC<CycleTabProps> = ({
     });
   };
 
-  const handleSelectPreset = async (preset: 'default' | 'fast' | 'heavy') => {
-    const base =
-      preset === 'default' ? DEFAULT_CYCLE_CONFIG : preset === 'fast' ? PRESET_FAST : PRESET_HEAVY;
-    // Presets = timings; no pisar L/R/LR (evita volver a L+R y disparar feed R).
-    const next = { ...base, feedSides: config.feedSides };
-    setActivePreset(preset);
-    if (saveTimerRef.current) {
-      clearTimeout(saveTimerRef.current);
-      saveTimerRef.current = null;
-    }
-    pendingSaveRef.current = null;
-    try {
-      await persistConfig(next, 'cycle_preset_applied');
-    } catch {
-      setConfig(next);
-      setConfigDirty(true);
-    }
+  const updateConfigField = <K extends keyof CycleConfig>(key: K, value: CycleConfig[K]) => {
+    setConfigDirty(true);
+    setConfig((prev) => {
+      const next = { ...prev, [key]: value };
+      schedulePersist(next, 'cycle_saved_success');
+      return next;
+    });
   };
 
-  // Calculate estimated total cycle time (ms)
   const totalDelaysMs =
     config.holderOnMs * 2 +
     config.grippersOnMs +
@@ -410,14 +345,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
 
   const estimatedTotalTimeSec = ((totalDelaysMs + 2400) / 1000).toFixed(2);
 
-  // Filtered steps — misma secuencia que CycleRunner.FLOW_STEPS (vía cycleFlow)
   const filteredSteps = sequenceSteps.filter((step) => {
-    const matchesSearch =
-      step.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      step.id.toString().includes(searchQuery);
-
-    if (!matchesSearch) return false;
-
     if (filterType === 'action') return step.type === 'action';
     if (filterType === 'delay') return step.type === 'delay';
     if (filterType === 'parallel') return step.type === 'background' || step.type === 'join';
@@ -451,6 +379,11 @@ export const CycleTab: React.FC<CycleTabProps> = ({
         {stepModeActive && (
           <span className="rounded-md border border-teal-300 dark:border-teal-800 bg-teal-50 dark:bg-teal-950/40 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-teal-700 dark:text-teal-300">
             {t('step_by_step_active')}
+          </span>
+        )}
+        {stepModeActive && !cycleActive && (
+          <span className="text-[10px] text-slate-500 dark:text-slate-400 max-w-md">
+            {t('step_by_step_hint')}
           </span>
         )}
         {showStepNext ? (
@@ -496,26 +429,100 @@ export const CycleTab: React.FC<CycleTabProps> = ({
             <span className="font-mono text-[10px]">0x049</span>
           </button>
         )}
-        {onToggleTrialMode && (
+        {onRefill && (
           <button
-            id="btn-cycle-trial-mode"
+            id="btn-cycle-refill"
             type="button"
-            onClick={() => onToggleTrialMode(!machineState.trialMode)}
-            disabled={cycleActive}
-            className={`flex items-center gap-1 rounded-lg border px-3 py-1.5 text-xs font-bold disabled:opacity-40 ${
-              machineState.trialMode
-                ? 'border-sky-400 bg-sky-100 dark:bg-sky-950/50 text-sky-800 dark:text-sky-200'
-                : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200'
+            onClick={onRefill}
+            disabled={machineState.isRunning || machineState.refillActive}
+            className={`flex items-center gap-1 rounded-lg border px-3 py-1.5 text-xs font-bold ${
+              machineState.isRunning || machineState.refillActive
+                ? 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed'
+                : 'border-sky-300 dark:border-sky-800 bg-sky-50 dark:bg-sky-950/40 text-sky-800 dark:text-sky-200'
             }`}
           >
-            {t('trial_mode')}
+            <Droplets className="h-3.5 w-3.5" />
+            {t('btn_refill')}
           </button>
         )}
       </div>
 
+      {machineState.refillAwaitingConfirm && onRefillConfirm && (
+        <div className="flex flex-wrap items-center gap-3 rounded-xl border border-sky-300 dark:border-sky-700 bg-sky-50 dark:bg-sky-950/50 px-4 py-3 shadow-2xs">
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-bold text-sky-900 dark:text-sky-100">
+              {t('refill_confirm_title')}
+            </p>
+            <p className="text-[11px] text-sky-800/80 dark:text-sky-200/80 mt-0.5">
+              {t('refill_confirm_hint')}
+            </p>
+          </div>
+          <button
+            id="btn-cycle-refill-yes"
+            type="button"
+            onClick={() => onRefillConfirm(true)}
+            className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white"
+          >
+            <Check className="h-3.5 w-3.5" />
+            {t('btn_refill_confirm_yes')}
+          </button>
+          <button
+            id="btn-cycle-refill-no"
+            type="button"
+            onClick={() => onRefillConfirm(false)}
+            className="flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-200"
+          >
+            <X className="h-3.5 w-3.5" />
+            {t('btn_refill_confirm_no')}
+          </button>
+        </div>
+      )}
+
+      {/* Helpers: refill params */}
+      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:px-6 shadow-2xs">
+        <div className="mb-3 flex items-center gap-2">
+          <Droplets className="h-4 w-4 text-sky-600 dark:text-sky-400" />
+          <h2 className="text-sm font-bold tracking-wider uppercase text-slate-900 dark:text-slate-100">
+            {t('refill_helpers_title')}
+          </h2>
+        </div>
+        <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">
+          {t('refill_helpers_subtitle')}
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-lg">
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+              {t('cfg_refill_mm')}
+            </label>
+            <input
+              type="number"
+              min={1}
+              step={0.5}
+              value={config.refillMm ?? 55}
+              onChange={(e) => updateConfigField('refillMm', Number(e.target.value))}
+              className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 focus:border-teal-500 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+              {t('cfg_refill_asda')}
+            </label>
+            <input
+              type="number"
+              step={1}
+              value={config.refillAsdaMm ?? -300}
+              onChange={(e) => updateConfigField('refillAsdaMm', Number(e.target.value))}
+              className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 focus:border-teal-500 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
+            />
+          </div>
+        </div>
+        <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-2">
+          {t('cfg_refill_hint')}
+        </p>
+      </div>
+
       {/* SECTION 1: CYCLE SEQUENCE */}
       <div className="rounded-xl border border-slate-200 dark:border-slate-800/80 bg-white dark:bg-slate-900 shadow-2xs">
-        {/* Header */}
         <div className="border-b border-slate-200 dark:border-slate-800 p-4 sm:px-6 flex flex-wrap items-center justify-between gap-3">
           <div>
             <div className="flex items-center gap-2.5 flex-wrap">
@@ -532,43 +539,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
             </div>
           </div>
 
-          {/* Controls: Profiles + Filters + Simulation + Quick Save */}
           <div className="flex items-center gap-2 flex-wrap">
-            {/* Presets Selector in sequence bar */}
-            <div className="flex items-center bg-slate-100 dark:bg-slate-800 p-0.5 rounded-lg border border-slate-200 dark:border-slate-700 text-xs">
-              <button
-                onClick={() => handleSelectPreset('default')}
-                className={`px-2 py-1 rounded text-xs transition cursor-pointer ${
-                  activePreset === 'default'
-                    ? 'bg-white dark:bg-slate-700 font-bold text-teal-600 dark:text-teal-400 shadow-2xs'
-                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
-                }`}
-              >
-                {t('cycle_preset_default')}
-              </button>
-              <button
-                onClick={() => handleSelectPreset('fast')}
-                className={`px-2 py-1 rounded text-xs transition cursor-pointer ${
-                  activePreset === 'fast'
-                    ? 'bg-white dark:bg-slate-700 font-bold text-teal-600 dark:text-teal-400 shadow-2xs'
-                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
-                }`}
-              >
-                {t('cycle_preset_fast')}
-              </button>
-              <button
-                onClick={() => handleSelectPreset('heavy')}
-                className={`px-2 py-1 rounded text-xs transition cursor-pointer ${
-                  activePreset === 'heavy'
-                    ? 'bg-white dark:bg-slate-700 font-bold text-teal-600 dark:text-teal-400 shadow-2xs'
-                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
-                }`}
-              >
-                {t('cycle_preset_heavy')}
-              </button>
-            </div>
-
-            {/* Filter Pills */}
             <div className="flex items-center bg-slate-100 dark:bg-slate-800 p-0.5 rounded-lg border border-slate-200 dark:border-slate-700 text-xs">
               <button
                 onClick={() => setFilterType('all')}
@@ -578,7 +549,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                     : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
                 }`}
               >
-                Todos (27)
+                Todos ({sequenceSteps.length})
               </button>
               <button
                 onClick={() => setFilterType('action')}
@@ -612,7 +583,6 @@ export const CycleTab: React.FC<CycleTabProps> = ({
               </button>
             </div>
 
-            {/* Step by Step Controller */}
             {!stepModeActive ? (
               <button
                 id="btn-step-by-step"
@@ -642,11 +612,17 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                 <button
                   id="btn-step-next"
                   onClick={handleNextStep}
-                  disabled={!showStepNext && activeStepNum === maxStepId}
-                  title={showStepNext ? t('btn_next_step') : t('btn_next_step_preview')}
+                  disabled={!canExecuteNext}
+                  title={
+                    showStepNext
+                      ? t('btn_next_step')
+                      : canStartStepRun
+                      ? t('btn_next_step_start')
+                      : t('btn_next_step')
+                  }
                   className="flex items-center gap-0.5 px-2.5 py-1 rounded text-xs font-bold bg-teal-600 hover:bg-teal-500 text-white disabled:opacity-40 disabled:cursor-not-allowed transition cursor-pointer"
                 >
-                  <span>{showStepNext ? t('btn_next_step') : t('btn_next_step')}</span>
+                  <span>{t('btn_next_step')}</span>
                   <ChevronRight className="h-3.5 w-3.5" />
                 </button>
 
@@ -661,7 +637,6 @@ export const CycleTab: React.FC<CycleTabProps> = ({
               </div>
             )}
 
-            {/* Quick Save */}
             <button
               onClick={handleSave}
               title={t('btn_save')}
@@ -680,7 +655,6 @@ export const CycleTab: React.FC<CycleTabProps> = ({
           </div>
         )}
 
-        {/* Scrollable Sequence Container with Custom Industrial Scrollbar */}
         <div className="max-h-[500px] overflow-y-auto p-2 sm:p-4 space-y-1.5 divide-y divide-slate-100 dark:divide-slate-800/60 font-sans">
           {filteredSteps.map((step) => {
             const isCurrent = currentRunningStep === step.id;
@@ -701,9 +675,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                     : 'hover:bg-slate-50 dark:hover:bg-slate-800/40'
                 }`}
               >
-                {/* Left Side: Number & Icon & Title */}
                 <div className="flex items-start sm:items-center gap-2.5 sm:gap-3.5 min-w-0 flex-1">
-                  {/* Step Marker Badge */}
                   {step.type === 'action' && (
                     <div className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-mono font-bold border ${
                       isCurrent
@@ -736,12 +708,10 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                     </div>
                   )}
 
-                  {/* Step ID Label */}
                   <span className="font-mono text-xs font-semibold text-slate-400 dark:text-slate-500 min-w-[20px]">
                     {step.id}
                   </span>
 
-                  {/* Title & Subtext */}
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className={`text-xs sm:text-sm font-medium ${
@@ -754,14 +724,12 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                         {step.title}
                       </span>
 
-                      {/* Background Tag */}
                       {step.badge === 'background' && (
                         <span className="rounded bg-amber-500/20 text-amber-700 dark:text-amber-400 border border-amber-500/30 px-1.5 py-0.2 font-mono text-[10px] font-bold uppercase">
                           background
                         </span>
                       )}
 
-                      {/* Join Tag */}
                       {step.badge === 'join' && (
                         <span className="rounded bg-teal-500/20 text-teal-700 dark:text-teal-400 border border-teal-500/30 px-1.5 py-0.2 font-mono text-[10px] font-bold uppercase">
                           join
@@ -775,7 +743,6 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                       )}
                     </div>
 
-                    {/* Step Note for Prefetch */}
                     {step.note && (
                       <p className="mt-1 text-[11px] italic text-slate-500 dark:text-slate-400">
                         • {step.note}
@@ -784,9 +751,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                   </div>
                 </div>
 
-                {/* Right Side: INLINE DELAY MODIFIER OR STEP ACTION */}
                 <div className="flex items-center gap-2 shrink-0 ml-2">
-                  {/* If this step is a delay: Direct In-place Numeric Stepper & Input */}
                   {step.type === 'delay' && step.delayKey && (
                     <div className="flex items-center gap-1 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 hover:border-teal-500 dark:hover:border-teal-500 rounded-lg p-0.5 shadow-2xs transition">
                       <button
@@ -823,15 +788,6 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                       </button>
                     </div>
                   )}
-
-                  {/* Step test / jump button */}
-                  <button
-                    onClick={() => handleJumpToStep(step.id)}
-                    title={`Ejecutar / Probar paso #${step.id}`}
-                    className="hidden sm:inline-flex opacity-0 group-hover:opacity-100 transition px-2 py-1 rounded text-[11px] font-mono text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700 hover:text-slate-900 dark:hover:text-white cursor-pointer"
-                  >
-                    Probar #{step.id}
-                  </button>
                 </div>
               </div>
             );
@@ -841,10 +797,8 @@ export const CycleTab: React.FC<CycleTabProps> = ({
 
       {/* SECTIONS 2 & 3: MATERIAL HANDLING & TIMEOUTS */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-        {/* Module 1: Material Handling (5 cols on lg) */}
         <div className="lg:col-span-5 flex flex-col justify-between rounded-xl border border-slate-200 dark:border-slate-800/80 bg-white dark:bg-slate-900 p-4 sm:p-6 shadow-2xs">
           <div>
-            {/* Header */}
             <div className="mb-5 pb-3 border-b border-slate-100 dark:border-slate-800">
               <div className="flex items-center gap-2">
                 <Boxes className="h-4 w-4 text-teal-600 dark:text-teal-400" />
@@ -891,11 +845,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                   type="number"
                   min={1}
                   value={config.depositBatchSize}
-                  onChange={(e) => {
-                    setActivePreset('custom');
-                    setConfigDirty(true);
-                    setConfig({ ...config, depositBatchSize: Number(e.target.value) });
-                  }}
+                  onChange={(e) => updateConfigField('depositBatchSize', Number(e.target.value))}
                   className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 focus:border-teal-500 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
                 />
               </div>
@@ -908,11 +858,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                   type="number"
                   step={0.1}
                   value={config.depositExtraMm}
-                  onChange={(e) => {
-                    setActivePreset('custom');
-                    setConfigDirty(true);
-                    setConfig({ ...config, depositExtraMm: Number(e.target.value) });
-                  }}
+                  onChange={(e) => updateConfigField('depositExtraMm', Number(e.target.value))}
                   className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 focus:border-teal-500 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
                 />
               </div>
@@ -925,11 +871,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                   type="number"
                   step={0.1}
                   value={config.cutOffsetMm ?? 0}
-                  onChange={(e) => {
-                    setActivePreset('custom');
-                    setConfigDirty(true);
-                    setConfig({ ...config, cutOffsetMm: Number(e.target.value) });
-                  }}
+                  onChange={(e) => updateConfigField('cutOffsetMm', Number(e.target.value))}
                   className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 focus:border-teal-500 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
                 />
               </div>
@@ -937,10 +879,8 @@ export const CycleTab: React.FC<CycleTabProps> = ({
           </div>
         </div>
 
-        {/* Module 2: Timeouts (7 cols on lg) */}
         <div className="lg:col-span-7 flex flex-col justify-between rounded-xl border border-slate-200 dark:border-slate-800/80 bg-white dark:bg-slate-900 p-4 sm:p-6 shadow-2xs">
           <div>
-            {/* Header */}
             <div className="mb-5 pb-3 border-b border-slate-100 dark:border-slate-800">
               <div className="flex items-center gap-2">
                 <ShieldAlert className="h-4 w-4 text-teal-600 dark:text-teal-400" />
@@ -953,7 +893,6 @@ export const CycleTab: React.FC<CycleTabProps> = ({
               </p>
             </div>
 
-            {/* Inputs */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="space-y-1.5">
                 <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
@@ -963,11 +902,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                   type="number"
                   min={1}
                   value={config.motionWaitTimeoutS}
-                  onChange={(e) => {
-                    setActivePreset('custom');
-                    setConfigDirty(true);
-                    setConfig({ ...config, motionWaitTimeoutS: Number(e.target.value) });
-                  }}
+                  onChange={(e) => updateConfigField('motionWaitTimeoutS', Number(e.target.value))}
                   className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 focus:border-teal-500 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
                 />
               </div>
@@ -980,11 +915,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                   type="number"
                   min={1}
                   value={config.feedWaitTimeoutS}
-                  onChange={(e) => {
-                    setActivePreset('custom');
-                    setConfigDirty(true);
-                    setConfig({ ...config, feedWaitTimeoutS: Number(e.target.value) });
-                  }}
+                  onChange={(e) => updateConfigField('feedWaitTimeoutS', Number(e.target.value))}
                   className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 focus:border-teal-500 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
                 />
               </div>
@@ -997,11 +928,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                   type="number"
                   min={1}
                   value={config.pfReadyTimeoutS}
-                  onChange={(e) => {
-                    setActivePreset('custom');
-                    setConfigDirty(true);
-                    setConfig({ ...config, pfReadyTimeoutS: Number(e.target.value) });
-                  }}
+                  onChange={(e) => updateConfigField('pfReadyTimeoutS', Number(e.target.value))}
                   className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 focus:border-teal-500 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
                 />
               </div>
@@ -1010,7 +937,6 @@ export const CycleTab: React.FC<CycleTabProps> = ({
         </div>
       </div>
 
-      {/* Global Actions Footer for Config */}
       <div className="flex items-center gap-3">
         <button
           id="btn-save-cycle-config"

@@ -52,6 +52,8 @@ static const char* stage2PhaseName(Stage2Phase p) {
   switch (p) {
     case S2_IDLE: return "IDLE";
     case S2_PREPARE: return "PREPARE";
+    case S2_ZERO_ISSUE: return "ZERO_ISSUE";
+    case S2_WAIT_ZERO: return "WAIT_ZERO";
     case S2_MOVE_ISSUE: return "MOVE_ISSUE";
     case S2_WAIT_REACHED: return "WAIT_REACHED";
     case S2_SETTLE: return "SETTLE";
@@ -152,7 +154,7 @@ static void stage2StartActive(uint32_t now) {
   if (s2.targetMm < 0.0f) s2.targetMm = 0.0f;
   s2.phase = S2_PREPARE;
 
-  Serial.printf("STAGE2 START gen=%lu ABS target=%.1f rpm=%.0f (single move)\n",
+  Serial.printf("STAGE2 START gen=%lu ABS target=%.1f rpm=%.0f (zero-then-target)\n",
                 (unsigned long)s2.gen, (double)s2.targetMm,
                 (double)clampStage2Rpm(stage2FastRpm));
 }
@@ -179,9 +181,65 @@ static void stage2Service(uint32_t now) {
   String err;
 
   switch (s2.phase) {
-    case S2_PREPARE:
+    case S2_PREPARE: {
+      // Referencia conocida: si no está en 0, ir a 0 antes del ABS(target).
+      float cur = 0.0f;
+      if (!stage2HostCurrentMm(&cur)) {
+        Serial.printf("STAGE2 PREPARE: sin lectura pos — FORCE ZERO\n");
+        s2.phase = S2_ZERO_ISSUE;
+        break;
+      }
+      s2.asdaMm = cur;
+      if (fabsf(cur) <= STAGE2_AT_ZERO_MM) {
+        Serial.printf("STAGE2 PREPARE: ya en 0 (%.2f mm) — ABS target\n",
+                      (double)cur);
+        s2.phase = S2_MOVE_ISSUE;
+      } else {
+        Serial.printf("STAGE2 PREPARE: pos=%.2f mm ≠ 0 — ZERO primero\n",
+                      (double)cur);
+        s2.phase = S2_ZERO_ISSUE;
+      }
+      break;
+    }
+
+    case S2_ZERO_ISSUE: {
+      const float rpm = clampStage2Rpm(stage2FastRpm);
+      Serial.printf("STAGE2 ZERO ABS=0 @ %.0f RPM\n", (double)rpm);
+      if (!stage2HostStartAbsMm(0.0f, rpm, err)) {
+        stage2Finish(S2R_NG,
+                     err.length() ? err.c_str() : "STAGE2: ZERO fallo",
+                     MOT_ERR_ASDA_MODBUS);
+        break;
+      }
+      stage2BeginMoveWait(now);
+      s2.phase = S2_WAIT_ZERO;
+      break;
+    }
+
+    case S2_WAIT_ZERO: {
+      if (stage2MoveTimedOut(now)) {
+        String stopErr;
+        (void)stage2HostStop(stopErr);
+        stage2Finish(S2R_NG, "STAGE2: timeout ZERO", MOT_ERR_ACTUATOR_TARGET);
+        break;
+      }
+      bool ok = false;
+      if (!stage2PollMoveDone(&ok))
+        break;
+      if (!ok) {
+        stage2Finish(S2R_NG, "STAGE2: ZERO no Reached", MOT_ERR_ACTUATOR_TARGET);
+        break;
+      }
+      (void)stage2HostCurrentMm(&s2.asdaMm);
+      if (fabsf(s2.asdaMm) > STAGE2_AT_ZERO_MM) {
+        stage2Finish(S2R_NG, "STAGE2: ZERO no confirmado", MOT_ERR_ACTUATOR_TARGET);
+        break;
+      }
+      Serial.printf("STAGE2 ZERO OK asda=%.2f — continuar ABS target\n",
+                    (double)s2.asdaMm);
       s2.phase = S2_MOVE_ISSUE;
       break;
+    }
 
     case S2_MOVE_ISSUE: {
       const float rpm = clampStage2Rpm(stage2FastRpm);

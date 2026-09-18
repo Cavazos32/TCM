@@ -30,6 +30,8 @@ export interface BackendCycleConfig {
   feedWaitTimeoutS: number;
   pfReadyTimeoutS: number;
   feedSides?: 'L' | 'R' | 'LR' | string;
+  refillMm?: number;
+  refillAsdaMm?: number;
 }
 
 export interface BackendFlowStep {
@@ -50,6 +52,8 @@ export interface BackendCycleSnapshot {
   stepByStep: boolean;
   trialMode?: boolean;
   ignorePrefeeder?: boolean;
+  refillActive?: boolean;
+  refillAwaitingConfirm?: boolean;
   step: number;
   stepName: string;
   stepLabel: string;

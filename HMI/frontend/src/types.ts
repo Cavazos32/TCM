@@ -18,6 +18,10 @@ export interface CycleConfig {
   pfReadyTimeoutS: number;
   /** Feed / Stage2 OM: 'L' | 'R' | 'LR' */
   feedSides: 'L' | 'R' | 'LR';
+  /** Longitud de purga/refill (mm). Motion FEED físico = 55. */
+  refillMm?: number;
+  /** Posición park ASDA antes del refill (convención firmada HMI). */
+  refillAsdaMm?: number;
 }
 
 export type CycleStepType = 'action' | 'delay' | 'background' | 'join';
@@ -79,6 +83,8 @@ export interface MachineState {
   cycleStep: number;
   cycleStepLabel: string;
   cycleMaterialist: boolean;
+  refillActive: boolean;
+  refillAwaitingConfirm: boolean;
   stepByStep: boolean;
   trialMode: boolean;
   ignorePrefeeder: boolean;

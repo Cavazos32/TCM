@@ -486,6 +486,8 @@ static Preferences feedPrefs;
 struct FeedSideRt {
   bool pending = false;
   bool active = false;
+  // Purga/refill HMI: feed físico sin validar láser ni OM (LengthOK al fin de servo).
+  bool skipValidate = false;
   uint32_t gen = 0;
   FeedSidePhase phase = FSP_IDLE;
   float targetMm = FEED_TARGET_FIXED_MM;
@@ -849,6 +851,7 @@ static void feedSideFinish(bool sideR, FeedValResult result, uint8_t errByte, co
   const uint32_t gen = s.gen;
   s.result = result;
   s.errByte = errByte;
+  s.skipValidate = false;
   if (reason && reason[0]) {
     strncpy(s.fault, reason, sizeof(s.fault) - 1);
     s.fault[sizeof(s.fault) - 1] = '\0';
@@ -929,6 +932,9 @@ static void feedSideStartApproach(bool sideR)
   feedSideClearDiag(s);
   s.targetMm = FEED_TARGET_FIXED_MM;
   s.approachMm = FEED_TARGET_FIXED_MM * (feedApproachPct / 100.0f);
+  // Purga: un solo movimiento a target (sin corrección OM/láser).
+  if (s.skipValidate)
+    s.approachMm = s.targetMm;
   // approachMm = comando servo intermedio (p.ej. 44). No es medición OM ni pasa por PHYS 50–58.
   s.gen = feedGenCounter++;
   if (s.gen == 0) s.gen = feedGenCounter++;
@@ -1010,6 +1016,11 @@ static void feedSideService(bool sideR, uint32_t now)
     case FSP_SETTLE_FINAL:
       if (now < s.settleUntilMs) break;
       {
+        // Purga: servo terminó → LengthOK sin láser ni ventana OM.
+        if (s.skipValidate) {
+          feedSideFinish(sideR, FVR_OK, 0, "FEED_OK_PURGE");
+          break;
+        }
         float om = 0.0f;
         if (!feedOmReadOfficialMmSide(sideR, &om)) {
           if (++s.omReadMiss < FEED_OM_READ_RETRY_MAX) {
@@ -1244,7 +1255,7 @@ String feedStatusJson()
   return j;
 }
 
-bool feedQueueTestSide(int8_t onlySide, String& err)
+bool feedQueueTestSide(int8_t onlySide, String& err, bool skipValidate)
 {
   if (!servoCanReady) {
     // EXXX oficial E023 / 0x61 (no texto suelto sin código).
@@ -1256,11 +1267,13 @@ bool feedQueueTestSide(int8_t onlySide, String& err)
   if (onlySide == 0) {
     if (feedSides[0].active || feedSides[0].pending) { err = "Feed L ocupado"; return false; }
     feedSides[0].pending = true;
+    feedSides[0].skipValidate = skipValidate;
     return true;
   }
   if (onlySide == 1) {
     if (feedSides[1].active || feedSides[1].pending) { err = "Feed R ocupado"; return false; }
     feedSides[1].pending = true;
+    feedSides[1].skipValidate = skipValidate;
     return true;
   }
   // both
@@ -1270,6 +1283,8 @@ bool feedQueueTestSide(int8_t onlySide, String& err)
   }
   feedSides[0].pending = true;
   feedSides[1].pending = true;
+  feedSides[0].skipValidate = skipValidate;
+  feedSides[1].skipValidate = skipValidate;
   return true;
 }
 

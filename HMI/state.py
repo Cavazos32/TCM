@@ -33,7 +33,7 @@ class _PendingAsdaAck:
     ok: bool | None = None
     message: str = ""
 
-from cycle import CycleRunner, PROGRESS_STEPS
+from cycle import CycleConfig, CycleRunner, PROGRESS_STEPS
 from motion import (
     CMD_ENC_MEASURE_L,
     CMD_ENC_MEASURE_R,
@@ -64,6 +64,7 @@ from motion import (
     TX_LENGTH_OK,
     TX_LENGTH_OK_L,
     TX_LENGTH_OK_R,
+    motion_http_asda_position_mm,
     motion_http_stage2_start,
     motion_http_stage2_status,
     TX_REACHED,
@@ -125,9 +126,14 @@ MODELS_PATH = HMI_ROOT / "config" / "models.json"
 MAX_LOG_LINES = 400
 # No latchear E065–E067 en microcortes WiFi; solo si el enlace sigue caído.
 LINK_DOWN_CONFIRM_SEC = 8.0
-# Arranque ASDA: solo tras Motion listo (TCP + Init/Idle), luego Servo ON → Home.
+# Arranque ASDA: el MCU puede estar arriba antes que la fuente del drive.
+# Sonda = ack del propio Servo ON (0x04): si el ASDA no está alimentado, el
+# write Modbus falla y Motion contesta ok:false. Se reintenta sin tope hasta
+# que el drive responde; recién entonces Home (0x01).
 MOTION_BOOT_SETTLE_SEC = 2.5
-MOTION_BOOT_ON_RETRIES = 3
+MOTION_BOOT_RETRY_SEC = 4.0
+MOTION_BOOT_ACK_TIMEOUT_SEC = 6.0
+MOTION_BOOT_LOG_EVERY_SEC = 30.0
 MOTION_BOOT_READY_STATES = frozenset({TX_INIT, TX_IDLE})
 
 PLC_ERROR_BYTES = frozenset(
@@ -349,6 +355,7 @@ class HmiState:
         self._motion_boot_armed = False
         self._motion_boot_worker_launched = False
         self._motion_boot_on_fails = 0
+        self._motion_boot_last_wait_log = 0.0
 
         self._load_models()
         self._started = False
@@ -414,8 +421,12 @@ class HmiState:
         cycle_snap = self._cycle.snapshot()
         with self._lock:
             progress = self._cycle_live_progress(cycle_snap)
-            resume = self._stopped_pending_resume or bool(
-                cycle_snap.get("paused")
+            resume = (
+                self._stopped_pending_resume
+                or (
+                    bool(cycle_snap.get("paused"))
+                    and not bool(cycle_snap.get("refillAwaitingConfirm"))
+                )
             )
             return {
                 "models": self._models,
@@ -573,6 +584,54 @@ class HmiState:
         with self._lock:
             return self._last_state_byte
 
+    def asda_position_mm(self) -> float | None:
+        """Última posición ASDA conocida (mm magnitud / report Motion). None = sin dato."""
+        with self._lock:
+            pos = self._last_position_mm
+            if pos is not None:
+                return float(pos)
+            cached = self._motion.get("asdaPositionMm")
+            if cached is None:
+                return None
+            return float(cached)
+
+    def refresh_asda_position_mm(self) -> float | None:
+        """Posición ASDA live vía HTTP /api/status; actualiza caché.
+
+        None solo si el sondeo HTTP falla (no devuelve caché stale — el caller
+        de WIP Delivery debe poder caer a fallback temporal).
+        """
+        host = getattr(self._client, "_host", DEFAULT_HOST)
+        pos = motion_http_asda_position_mm(host=str(host), timeout=0.35)
+        if pos is None:
+            return None
+        with self._lock:
+            self._last_position_mm = float(pos)
+            self._motion["asdaPositionMm"] = float(pos)
+        return float(pos)
+
+    def plc_blower_sec(self) -> float:
+        with self._lock:
+            return float(self._plc.get("blowerSec", DEFAULT_BLOWER_SEC))
+
+    def cmd_plc_blower(
+        self, on: bool = True, duration_sec: float | None = None
+    ) -> bool:
+        """Blower ON con duración (UI plc.blowerSec) → OFF automático en PLC."""
+        use_sec: float | None = None
+        if on:
+            if duration_sec is None:
+                use_sec = self.plc_blower_sec()
+            else:
+                use_sec = max(0.2, min(300.0, float(duration_sec)))
+        ok = bool(self._plc_client.cmd_blower(on, duration_sec=use_sec))
+        if ok and on and use_sec is not None:
+            with self._lock:
+                key = str(CMD_BLOWER)
+                if key in self._plc["valves"]:
+                    self._plc["valves"][key]["on"] = True
+        return ok
+
     def pf_state_byte(self) -> int | None:
         with self._lock:
             return self._pf.get("last_state_byte")
@@ -611,7 +670,7 @@ class HmiState:
     def cmd_motion_stage2_start(
         self, piece_mm: float | None = None, sides: str = "LR", *, target_abs_mm: float | None = None
     ) -> bool:
-        """START Stage2. CYCLE debe pasar target_abs_mm=abs(model.mm)."""
+        """START Stage2. CYCLE pasa target_abs_mm=abs(model.mm)+cutOffsetMm."""
         if not self._stage2_armed:
             self.arm_stage2()
         host = getattr(self._client, "_host", DEFAULT_HOST)
@@ -956,21 +1015,21 @@ class HmiState:
     def cmd_motion_stop(self) -> bool:
         return self._client.cmd_stop()
 
-    def cmd_motion_feed_l(self) -> bool:
+    def cmd_motion_feed_l(self, *, skip_validate: bool = False) -> bool:
         self._feed_ok_l.clear()
         self._feed_ng_l.clear()
         self._feed_fault_l = ""
         self._feed_gen_l += 1
         self._feed_armed_l = True
-        return self._client.cmd_feed_l()
+        return self._client.cmd_feed_l(skip_validate=skip_validate)
 
-    def cmd_motion_feed_r(self) -> bool:
+    def cmd_motion_feed_r(self, *, skip_validate: bool = False) -> bool:
         self._feed_ok_r.clear()
         self._feed_ng_r.clear()
         self._feed_fault_r = ""
         self._feed_gen_r += 1
         self._feed_armed_r = True
-        return self._client.cmd_feed_r()
+        return self._client.cmd_feed_r(skip_validate=skip_validate)
 
     def cmd_motion_enc_set0_r(self) -> bool:
         return self._client.cmd_enc_set0_r()
@@ -1015,20 +1074,47 @@ class HmiState:
     def cmd_plc_gripper(self, on: bool) -> bool:
         return self._plc_client.cmd_gripper(on)
 
-    def cmd_plc_cutters(self, on: bool) -> bool:
-        ok_r = self._plc_client.cmd_cutter_r(on)
-        ok_l = self._plc_client.cmd_cutter_l(on)
-        return ok_r and ok_l
+    def cmd_plc_cutters(self, on: bool, *, sides: str | None = None) -> bool:
+        """Pulso KEEP de cortadores.
+
+        sides: ``L`` | ``R`` | ``LR``. ``None`` = ambos (safe / manual).
+        Con LR usa un solo setOut CUTTERS (PLC pulsa R+L en paralelo).
+        """
+        mode = "LR" if not sides else CycleConfig.normalize_feed_sides(sides)
+        if mode == "LR":
+            cur_r = self.plc_valve_is_on(CMD_CUTTER_R)
+            cur_l = self.plc_valve_is_on(CMD_CUTTER_L)
+            if cur_r is not None and cur_l is not None and cur_r == on and cur_l == on:
+                return True
+            ok = self._plc_client.cmd_set_out("CUTTERS", on)
+            if ok:
+                with self._lock:
+                    for code in (CMD_CUTTER_R, CMD_CUTTER_L):
+                        key = str(code)
+                        if key in self._plc["valves"]:
+                            self._plc["valves"][key]["on"] = on
+            return ok
+        if mode == "L":
+            return self._cmd_plc_valve_desired(
+                CMD_CUTTER_L, on, self._plc_client.cmd_cutter_l
+            )
+        return self._cmd_plc_valve_desired(
+            CMD_CUTTER_R, on, self._plc_client.cmd_cutter_r
+        )
 
     def cmd_plc_cutter_r(self, on: bool) -> bool:
-        return self._plc_client.cmd_cutter_r(on)
+        return self._cmd_plc_valve_desired(
+            CMD_CUTTER_R, on, self._plc_client.cmd_cutter_r
+        )
 
     def cmd_plc_cutter_l(self, on: bool) -> bool:
-        return self._plc_client.cmd_cutter_l(on)
+        return self._cmd_plc_valve_desired(
+            CMD_CUTTER_L, on, self._plc_client.cmd_cutter_l
+        )
 
     def cmd_plc_tools_safe(self) -> bool:
         """Cutters + grippers OFF. No toca holder/encoder (deben quedar cerrados)."""
-        ok_c = self.cmd_plc_cutters(False)
+        ok_c = self.cmd_plc_cutters(False)  # ambos OFF
         ok_g = self.cmd_plc_gripper(False)
         return ok_c and ok_g
 
@@ -1317,6 +1403,20 @@ class HmiState:
 
     def cmd_cycle_ignore_prefeeder(self, on: bool = True) -> dict:
         return self._cycle.set_ignore_prefeeder(on)
+
+    def cmd_cycle_refill(
+        self,
+        *,
+        feed_mm: float | None = None,
+        asda_mm: float | None = None,
+    ) -> dict:
+        """Purga/refill material: ASDA park → feed → corte → confirm → HOME."""
+        with self._lock:
+            rpm = self._rpm
+        return self._cycle.request_refill(rpm, feed_mm=feed_mm, asda_mm=asda_mm)
+
+    def cmd_cycle_refill_confirm(self, ok: bool = True) -> dict:
+        return self._cycle.confirm_refill(ok)
 
     def cmd_motion(self, action: str, **kwargs) -> dict:
         handlers = {
@@ -1796,6 +1896,7 @@ class HmiState:
                     self._motion_boot_worker_launched = False
                     self._motion_boot_awaiting_on_ack = False
                     self._motion_boot_on_fails = 0
+                    self._motion_boot_last_wait_log = 0.0
             else:
                 self._last_state_byte = None
                 self._stopped_pending_resume = False
@@ -1812,6 +1913,7 @@ class HmiState:
                 self._motion_boot_armed = False
                 self._motion_boot_worker_launched = False
                 self._motion_boot_on_fails = 0
+                self._motion_boot_last_wait_log = 0.0
                 self._banner = {
                     "text": f"Reconectando Motion ({DEFAULT_HOST}:{DEFAULT_PORT})…",
                     "kind": "warn",
@@ -1857,13 +1959,47 @@ class HmiState:
             ).start()
 
     def _motion_boot_retry_after_on_fail(self) -> None:
-        """Tras rechazo de Servo ON en arranque, reintenta si sigue armado."""
-        time.sleep(MOTION_BOOT_SETTLE_SEC)
+        """Reintenta Servo ON: el drive puede alimentarse después del MCU."""
+        time.sleep(MOTION_BOOT_RETRY_SEC)
         self._motion_boot_try_launch()
 
+    def _motion_boot_attempt_failed(self, reason: str) -> None:
+        """Servo ON no aceptado: ASDA aún sin alimentación/Modbus. Reintenta."""
+        notify = False
+        with self._lock:
+            if self._motion_boot_prep_done or not self._motion_boot_armed:
+                return
+            self._motion_boot_awaiting_on_ack = False
+            self._motion_boot_worker_launched = False
+            self._motion_boot_on_fails += 1
+            fails = self._motion_boot_on_fails
+            now = time.monotonic()
+            if (
+                fails == 1
+                or (now - self._motion_boot_last_wait_log) >= MOTION_BOOT_LOG_EVERY_SEC
+            ):
+                self._motion_boot_last_wait_log = now
+                _append_log(
+                    self._motion_log,
+                    f"Arranque lineal: esperando alimentación del ASDA — {reason} "
+                    f"(intento {fails})",
+                )
+                self._set_motion_status(
+                    "Esperando alimentación ASDA (Servo ON)…", "warn"
+                )
+                notify = True
+        if notify:
+            self._notify()
+        threading.Thread(
+            target=self._motion_boot_retry_after_on_fail,
+            daemon=True,
+            name="motion-boot-retry",
+        ).start()
+
     def _motion_boot_prep_worker(self, gen: int) -> None:
-        """TCP+Init/Idle listos → settle → 0x04 Servo ON; Home al ack OK."""
+        """TCP+Init/Idle → settle → Servo ON (sonda Modbus); Home al ack OK."""
         time.sleep(MOTION_BOOT_SETTLE_SEC)
+        first_try = False
         with self._lock:
             if gen != self._motion_boot_prep_gen or self._motion_boot_prep_done:
                 return
@@ -1874,38 +2010,29 @@ class HmiState:
                 self._motion_boot_prep_done = True
                 self._motion_boot_armed = False
                 return
-            _append_log(
-                self._motion_log,
-                "Arranque lineal: TCP OK → Servo ON (0x004)…",
-            )
-            self._set_motion_status("Arranque lineal: Servo ON (0x004)…", "info")
+            first_try = self._motion_boot_on_fails == 0
+            if first_try:
+                _append_log(
+                    self._motion_log,
+                    "Arranque lineal: TCP OK → Servo ON (0x004)…",
+                )
+                self._set_motion_status("Arranque lineal: Servo ON (0x004)…", "info")
             self._motion_boot_awaiting_on_ack = True
-        self._notify()
-        ok = self._client.cmd_on()
-        if ok:
+        if first_try:
+            self._notify()
+        if not self._client.cmd_on():
+            self._motion_boot_attempt_failed("Servo ON no enviado")
             return
-        with self._lock:
-            if gen != self._motion_boot_prep_gen:
-                return
-            self._motion_boot_awaiting_on_ack = False
-            self._motion_boot_worker_launched = False
-            self._motion_boot_on_fails += 1
-            _append_log(self._motion_log, "Arranque lineal: Servo ON no enviado")
-            self._set_motion_status("Arranque lineal: Servo ON no enviado", "error")
-            can_retry = (
-                self._motion_boot_armed
-                and not self._motion_boot_prep_done
-                and self._motion_boot_on_fails < MOTION_BOOT_ON_RETRIES
-            )
-            if can_retry:
-                threading.Thread(
-                    target=self._motion_boot_retry_after_on_fail,
-                    daemon=True,
-                    name="motion-boot-retry",
-                ).start()
-            else:
-                self._motion_boot_armed = False
-        self._notify()
+        # Sin ack (Motion mudo / ack perdido) el arranque quedaba colgado: reintentar.
+        deadline = time.monotonic() + MOTION_BOOT_ACK_TIMEOUT_SEC
+        while time.monotonic() < deadline:
+            time.sleep(0.2)
+            with self._lock:
+                if gen != self._motion_boot_prep_gen:
+                    return
+                if self._motion_boot_prep_done or not self._motion_boot_awaiting_on_ack:
+                    return
+        self._motion_boot_attempt_failed("sin respuesta al Servo ON")
 
     def _motion_boot_send_home(self) -> None:
         """Home (0x01) tras ack OK de Servo ON (servo ya habilitado)."""
@@ -2279,27 +2406,15 @@ class HmiState:
                         and byte_code == CMD_ON
                         and self._motion_boot_awaiting_on_ack
                     ):
-                        # Servo ON de arranque rechazado: reintentar con tope.
-                        self._motion_boot_awaiting_on_ack = False
-                        self._motion_boot_worker_launched = False
-                        self._motion_boot_on_fails += 1
-                        can_retry = (
-                            self._motion_boot_armed
-                            and not self._motion_boot_prep_done
-                            and self._motion_boot_on_fails < MOTION_BOOT_ON_RETRIES
-                        )
-                        if can_retry:
-                            threading.Thread(
-                                target=self._motion_boot_retry_after_on_fail,
-                                daemon=True,
-                                name="motion-boot-retry",
-                            ).start()
-                        else:
-                            self._motion_boot_armed = False
-                            _append_log(
-                                self._motion_log,
-                                "Arranque lineal: Servo ON agotó reintentos",
-                            )
+                        # Drive sin alimentación: el write Modbus falla. No es
+                        # error de operación — reintentar sin spam de banner.
+                        threading.Thread(
+                            target=self._motion_boot_attempt_failed,
+                            args=(detail or "Servo ON rechazado",),
+                            daemon=True,
+                            name="motion-boot-fail",
+                        ).start()
+                        return True
                     text = detail or "Comando rechazado"
                     _append_log(self._main_log, text)
                     _append_log(self._motion_log, text)
@@ -2322,6 +2437,12 @@ class HmiState:
                     ):
                         self._motion_boot_awaiting_on_ack = False
                         self._motion_boot_prep_done = True
+                        if self._motion_boot_on_fails:
+                            _append_log(
+                                self._motion_log,
+                                "Arranque lineal: ASDA alimentado — Servo ON OK "
+                                f"tras {self._motion_boot_on_fails} intentos",
+                            )
                         threading.Thread(
                             target=self._motion_boot_send_home,
                             daemon=True,

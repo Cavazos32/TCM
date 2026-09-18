@@ -42,6 +42,9 @@ function AppMain() {
     if (view.machineState.trialMode) {
       void hmi.setCycleTrialMode(false);
     }
+    if (view.machineState.stepByStep) {
+      void hmi.setCycleStepByStep(false);
+    }
     if (view.machineState.ignorePrefeeder) {
       void hmi.setCycleIgnorePrefeeder(false);
     }
@@ -49,7 +52,13 @@ function AppMain() {
       setCurrentTab('maquina');
       hmi.onTabChange('maquina');
     }
-  }, [currentTab, hmi, view.machineState.trialMode, view.machineState.ignorePrefeeder]);
+  }, [
+    currentTab,
+    hmi,
+    view.machineState.trialMode,
+    view.machineState.stepByStep,
+    view.machineState.ignorePrefeeder,
+  ]);
 
   useEffect(() => {
     if (!debugMode && currentTab !== 'maquina') {
@@ -127,8 +136,13 @@ function AppMain() {
             onResume={hmi.resume}
             onPause={hmi.pauseCycle}
             onReset={hmi.resetCycleCmd}
+            onRefill={() => {
+              void hmi.startRefill();
+            }}
+            onRefillConfirm={(ok) => {
+              void hmi.confirmRefill(ok);
+            }}
             onGotoCycle={debugMode ? () => handleTabChange('cycle') : undefined}
-            onToggleTrialMode={debugMode ? hmi.setCycleTrialMode : undefined}
             showLogs={logsVisible}
             logs={logsVisible ? hmi.filterLogs('ALL') : []}
             onClearLogs={() => hmi.clearLogs('all')}
@@ -149,9 +163,15 @@ function AppMain() {
               onReset={hmi.resetCycleCmd}
               onMaterialist={hmi.toggleCycleMaterialist}
               onSetStepByStep={hmi.setCycleStepByStep}
-              onToggleTrialMode={hmi.setCycleTrialMode}
+              onStart={hmi.start}
               onResume={hmi.resume}
               resumeEnabled={view.resumeEnabled}
+              onRefill={() => {
+                void hmi.startRefill();
+              }}
+              onRefillConfirm={(ok) => {
+                void hmi.confirmRefill(ok);
+              }}
             />
           </div>
         )}

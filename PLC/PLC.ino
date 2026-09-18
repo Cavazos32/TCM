@@ -155,9 +155,8 @@ static void valveIdleAll()
   valveWritePin(PIN_OUT_RESET,    false);
 }
 
-static void valvePulsePin(uint8_t pin)
+static void valvePulseWait()
 {
-  valveWritePin(pin, true);
   const unsigned long t0 = millis();
   while ((millis() - t0) < VALVE_PULSE_MS) {
     // No bloquear el timeout del blower con delay() a secas.
@@ -165,7 +164,28 @@ static void valvePulsePin(uint8_t pin)
       blowerStop();
     yield();
   }
+}
+
+static void valvePulsePin(uint8_t pin)
+{
+  valveWritePin(pin, true);
+  valvePulseWait();
   valveWritePin(pin, false);
+}
+
+/** Pulso KEEP en varios pines a la vez (p.ej. cortadores R+L sin escalonar). */
+static void valvePulsePins(const uint8_t* pins, uint8_t n)
+{
+  if (!pins || n == 0) return;
+  if (n == 1) {
+    valvePulsePin(pins[0]);
+    return;
+  }
+  for (uint8_t i = 0; i < n; i++)
+    valveWritePin(pins[i], true);
+  valvePulseWait();
+  for (uint8_t i = 0; i < n; i++)
+    valveWritePin(pins[i], false);
 }
 
 static void syncCuttersFlag()
@@ -234,8 +254,20 @@ static bool setPlcOutputByName(const String& outName, bool state)
   n.toUpperCase();
   bool changed = false;
   if (n == "CUTTER" || n == "CUTTERS") {
-    changed |= valveSetPulse(stCutterR, PIN_OUT_CUTTER_R, state);
-    changed |= valveSetPulse(stCutterL, PIN_OUT_CUTTER_L, state);
+    // Un solo pulso de VALVE_PULSE_MS para R+L (antes: 200 ms escalonados).
+    const bool needR = (stCutterR != state);
+    const bool needL = (stCutterL != state);
+    if (needR || needL) {
+      stCutterR = state;
+      stCutterL = state;
+      syncCuttersFlag();
+      uint8_t pins[2];
+      uint8_t np = 0;
+      if (needR) pins[np++] = PIN_OUT_CUTTER_R;
+      if (needL) pins[np++] = PIN_OUT_CUTTER_L;
+      valvePulsePins(pins, np);
+      changed = true;
+    }
   }
   else if (n == "CUTTER_R" || n == "CUTTERS_R")
     changed = valveSetPulse(stCutterR, PIN_OUT_CUTTER_R, state);

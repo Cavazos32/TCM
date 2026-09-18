@@ -96,6 +96,17 @@ export function setCycleIgnorePrefeeder(on: boolean) {
   );
 }
 
+export function startCycleRefill(opts?: { mm?: number; asdaMm?: number }) {
+  const body: Record<string, unknown> = {};
+  if (opts?.mm != null) body.mm = opts.mm;
+  if (opts?.asdaMm != null) body.asdaMm = opts.asdaMm;
+  return post<{ ok: boolean; error?: string }>('/api/cycle/refill', body);
+}
+
+export function confirmCycleRefill(ok: boolean = true) {
+  return post<{ ok: boolean; error?: string }>('/api/cycle/refill/confirm', { ok });
+}
+
 export function getCycleConfig() {
   return api<{ ok: boolean; config: CycleConfig }>('/api/cycle/config');
 }

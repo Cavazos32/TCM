@@ -60,6 +60,8 @@ const DEFAULT_MACHINE: MachineState = {
   cycleStep: 0,
   cycleStepLabel: '',
   cycleMaterialist: false,
+  refillActive: false,
+  refillAwaitingConfirm: false,
   stepByStep: false,
   trialMode: false,
   ignorePrefeeder: false,
@@ -243,7 +245,15 @@ export function useHmiState() {
   }, [applySnapshot]);
 
   const start = useCallback(() => {
-    api.startCycle(targetQtyRef.current).catch(() => {});
+    // Trial quitado de la UI: forzar OFF. Paso a paso se respeta si está activo.
+    void (async () => {
+      try {
+        await api.setCycleTrialMode(false);
+      } catch {
+        // ignore
+      }
+      api.startCycle(targetQtyRef.current).catch(() => {});
+    })();
   }, []);
 
   const stop = useCallback(() => {
@@ -317,7 +327,14 @@ export function useHmiState() {
   }, []);
 
   const setCycleStepByStep = useCallback((on: boolean) => {
-    api.setCycleStepByStep(on).catch(() => {});
+    api
+      .setCycleStepByStep(on)
+      .then((res) => {
+        if (res && res.ok === false && res.error) {
+          window.alert(res.error);
+        }
+      })
+      .catch(() => {});
   }, []);
 
   const setCycleTrialMode = useCallback((on: boolean) => {
@@ -326,6 +343,28 @@ export function useHmiState() {
 
   const setCycleIgnorePrefeeder = useCallback((on: boolean) => {
     api.setCycleIgnorePrefeeder(on).catch(() => {});
+  }, []);
+
+  const startRefill = useCallback(async (opts?: { mm?: number; asdaMm?: number }) => {
+    try {
+      const res = await api.startCycleRefill(opts);
+      if (res && res.ok === false && res.error) {
+        window.alert(res.error);
+      }
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const confirmRefill = useCallback(async (ok: boolean) => {
+    try {
+      const res = await api.confirmCycleRefill(ok);
+      if (res && res.ok === false && res.error) {
+        window.alert(res.error);
+      }
+    } catch {
+      /* ignore */
+    }
   }, []);
 
   const reloadFeedOffset = useCallback(async () => {
@@ -584,6 +623,8 @@ export function useHmiState() {
     setCycleStepByStep,
     setCycleTrialMode,
     setCycleIgnorePrefeeder,
+    startRefill,
+    confirmRefill,
     reloadFeedOffset,
     saveCycleConfig,
     reloadCycleConfig,

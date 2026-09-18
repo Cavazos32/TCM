@@ -91,7 +91,8 @@ float clampFeedMoveSpeedPct(float pct);
 String feedStatusJson();
 
 bool feedQueueTest(const FeedTestReq& req, String& err);
-bool feedQueueTestSide(int8_t onlySide, String& err);
+// skipValidate: purga/refill — LengthOK al fin de servo, sin láser ni ventana OM.
+bool feedQueueTestSide(int8_t onlySide, String& err, bool skipValidate = false);
 bool feedResetRuntime();
 
 void motionTcpOnEncoderError();

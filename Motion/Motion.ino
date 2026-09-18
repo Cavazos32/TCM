@@ -2495,6 +2495,18 @@ static int asdaTcpJInt(const char* j, const char* k, int d) {
   return i < 0 ? d : String(j).substring(i + n.length()).toInt();
 }
 
+static bool asdaTcpJBool(const char* j, const char* k, bool d) {
+  String n = String("\"") + k + "\":";
+  String s(j);
+  int i = s.indexOf(n);
+  if (i < 0) return d;
+  String rest = s.substring(i + n.length());
+  rest.trim();
+  if (rest.startsWith("true") || rest.startsWith("1")) return true;
+  if (rest.startsWith("false") || rest.startsWith("0")) return false;
+  return d;
+}
+
 static String asdaTcpJStr(const char* j, const char* k) {
   String n = String("\"") + k + "\":\"";
   String s(j);
@@ -2643,17 +2655,18 @@ static bool encoderTcpDoByte(uint8_t cmdByte, const char* line) {
 }
 
 static bool feederTcpDoByte(uint8_t cmdByte, const char* line) {
-  (void)line;
   String err;
   bool ok = false;
   const bool sideR = (cmdByte == FEED_CMD_FEED_R);
+  // Purga HMI: skipValidate=true → LengthOK sin láser/OM. Ciclo normal no lo envía.
+  const bool skipValidate = asdaTcpJBool(line, "skipValidate", false);
 
   switch (cmdByte) {
     case FEED_CMD_FEED_R:
-      ok = feedQueueTestSide(1, err);
+      ok = feedQueueTestSide(1, err, skipValidate);
       break;
     case FEED_CMD_FEED_L:
-      ok = feedQueueTestSide(0, err);
+      ok = feedQueueTestSide(0, err, skipValidate);
       break;
     default:
       err = "byte/cmd feeder desconocido";

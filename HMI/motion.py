@@ -154,6 +154,49 @@ def motion_http_stage2_status(
     return data
 
 
+def motion_http_asda_status(
+    host: str = DEFAULT_HOST,
+    port: int = MOTION_HTTP_PORT,
+    timeout: float = 3.0,
+) -> dict[str, Any]:
+    """GET /api/status — ok=true solo si Modbus ASDA responde (P5.007 + pos).
+
+    Con drive sin alimentación Motion suele devolver HTTP 503 y ok=false.
+    """
+    url = f"http://{host}:{port}/api/status"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        try:
+            data = json.loads(raw) if raw else {"ok": False}
+        except json.JSONDecodeError:
+            data = {"ok": False, "error": raw or f"HTTP {exc.code}"}
+    if not isinstance(data, dict):
+        raise ValueError("Respuesta /api/status invalida")
+    return data
+
+
+def motion_http_asda_position_mm(
+    host: str = DEFAULT_HOST,
+    port: int = MOTION_HTTP_PORT,
+    timeout: float = 0.4,
+) -> float | None:
+    """GET /api/status → positionMm (live). None si no hay dato usable."""
+    try:
+        data = motion_http_asda_status(host=host, port=port, timeout=timeout)
+    except Exception:  # noqa: BLE001 — sondeo best-effort durante HOME
+        return None
+    raw = data.get("positionMm")
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def motion_http_stage2_start(
     piece_mm: float | None = None,
     sides: str = "LR",
@@ -271,10 +314,14 @@ class MotionClient(ModuleTcpClient):
         ok = self.cmd_enc_measure_r()
         return self.cmd_enc_measure_l() and ok
 
-    def cmd_feed_r(self) -> bool:
+    def cmd_feed_r(self, *, skip_validate: bool = False) -> bool:
+        if skip_validate:
+            return self.cmd_byte(CMD_FEED_R, skipValidate=True)
         return self.cmd_byte(CMD_FEED_R)
 
-    def cmd_feed_l(self) -> bool:
+    def cmd_feed_l(self, *, skip_validate: bool = False) -> bool:
+        if skip_validate:
+            return self.cmd_byte(CMD_FEED_L, skipValidate=True)
         return self.cmd_byte(CMD_FEED_L)
 
     def cmd_reset_errors(self) -> bool:
