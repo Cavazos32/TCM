@@ -25,7 +25,9 @@ export interface BackendCycleConfig {
   dwellAtDestMs: number;
   depositBatchSize: number;
   depositExtraMm: number;
+  gripperClearanceMm?: number;
   cutOffsetMm?: number;
+  wipBlowerInicioOffsetMm?: number;
   motionWaitTimeoutS: number;
   feedWaitTimeoutS: number;
   pfReadyTimeoutS: number;
@@ -54,7 +56,6 @@ export interface BackendCycleSnapshot {
   busy?: boolean;
   stepByStep: boolean;
   trialMode?: boolean;
-  ignorePrefeeder?: boolean;
   refillActive?: boolean;
   refillAwaitingConfirm?: boolean;
   refillPrompt?: string;

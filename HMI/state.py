@@ -117,13 +117,14 @@ from prefeeder import (
     TX_PF_BUSY,
     TX_PF_ERROR,
     TX_PF_IDLE,
+    TX_PF_INIT,
     TX_PF_RETURN,
     TX_PF_STOP,
 )
 from error_catalog import CLASS_C1, CLASS_C2, CLASS_C3, format_ui, lookup
 from error_policy import ErrorPolicy
 from andon import AndonClient, DEFAULT_HOST as ANDON_HOST, DEFAULT_PORT as ANDON_PORT
-from machine_states import MACH_ERROR, MACH_IDLE, MACH_RESET
+from machine_states import MACH_BUSY, MACH_ERROR, MACH_IDLE, MACH_PAUSE, MACH_RESET
 from latency_debug import mark as lat_mark
 
 MODELS_PATH = HMI_ROOT / "config" / "models.json"
@@ -167,7 +168,7 @@ PLC_STATE_TEXT = {
 }
 
 PF_STATE_TEXT = {
-    0x39: "Inicializando PreFeeder (0x039)",
+    TX_PF_INIT: "Inicializando PreFeeder (0x039)",
     TX_PF_IDLE: "PreFeeder en espera (0x03A)",
     TX_PF_BUSY: "PreFeeder ocupado (0x03B)",
     TX_PF_ERROR: "PreFeeder — ErrorState (0x03C)",
@@ -312,6 +313,11 @@ class HmiState:
             # Fallo enclavado para opcodes con sensor OK-when-active (Buffer/Holgura).
             "fault_active": {
                 str(b): False for b in _PF_OK_WHEN_ACTIVE
+            },
+            # Runtime L/R desde status Master (relleno / Tfeed / helper).
+            "sides": {
+                "L": {"autoState": None, "triggerActive": None},
+                "R": {"autoState": None, "triggerActive": None},
             },
         }
 
@@ -674,6 +680,49 @@ class HmiState:
             if active is None:
                 return None
             return bool(active)
+
+    def pf_buffer_full(self, side: str) -> bool | None:
+        """Buffer Full (home) L/R: True=lleno, False=no, None=sin dato."""
+        side_u = str(side or "").strip().upper()
+        byte = (
+            TX_BUFFER_FULL_L
+            if side_u == "L"
+            else TX_BUFFER_FULL_R
+            if side_u == "R"
+            else 0
+        )
+        if not byte:
+            return None
+        with self._lock:
+            info = self._pf.get("errors", {}).get(str(byte)) or {}
+            active = info.get("active")
+            if active is None:
+                return None
+            return bool(active)
+
+    def pf_trigger_active(self, side: str) -> bool | None:
+        """Motor2 Tfeed / helper holgura en curso (Master triggerActive)."""
+        side_u = str(side or "").strip().upper()
+        if side_u not in ("L", "R"):
+            return None
+        with self._lock:
+            info = (self._pf.get("sides") or {}).get(side_u) or {}
+            val = info.get("triggerActive")
+            if val is None:
+                return None
+            return bool(val)
+
+    def pf_auto_filling(self, side: str) -> bool | None:
+        """True si autoState está rellenando buffer (cw / servo_lead)."""
+        side_u = str(side or "").strip().upper()
+        if side_u not in ("L", "R"):
+            return None
+        with self._lock:
+            info = (self._pf.get("sides") or {}).get(side_u) or {}
+            st = str(info.get("autoState") or "").strip().lower()
+            if not st:
+                return None
+            return st in ("cw", "servo_lead")
 
     def pf_request_status(self) -> bool:
         """Sondea Master (byte Idle): responde con status L/R + holgura."""
@@ -1221,10 +1270,7 @@ class HmiState:
     def reload_cycle_config(self) -> dict:
         cfg = self._cycle.reload_config()
         with self._lock:
-            _append_log(
-                self._main_log,
-                f"Cycle config recargada · {CycleRunner._delay_summary(cfg)}",
-            )
+            _append_log(self._main_log, "Cycle config recargada")
         self._notify()
         return cfg.to_dict()
 
@@ -1259,7 +1305,7 @@ class HmiState:
         return self._cycle.request_pause()
 
     def cmd_cycle_reset(self) -> dict:
-        return self.cmd_error_reset(confirm=False, do_home=False)
+        return self.cmd_error_reset(confirm=False, do_home=True)
 
     def cmd_error_confirm(self) -> dict:
         """Confirma diálogo C1 (antes de Reset/home)."""
@@ -1270,11 +1316,75 @@ class HmiState:
         self._notify()
         return {"ok": True, "error": self._error_policy.snapshot()}
 
+    def _plc_reset_reflect_off(self, *, log_label: str = "Reset PLC") -> bool:
+        """Reset PLC 0x1E y refleja válvulas OFF en caché HMI. Soft C2/C3 no usa esto."""
+        if not self._plc_client.connected:
+            return False
+        ok = self._manual_plc(lambda: self._plc_client.cmd_reset())
+        if ok:
+            with self._lock:
+                self._plc_apply_home_valve_cache()
+                self._plc["status"] = {
+                    "text": f"{log_label} — estados OFF (0x01E)",
+                    "kind": "ok",
+                }
+                self._clear_latch_for_module("plc")
+        return bool(ok)
+
+    def cmd_machine_home(self) -> dict:
+        """
+        Home de máquina (control de máquina):
+        ASDA → posición 0 + encoders Set0 L/R + All Off neumática.
+        No es Buscar HOME (0x01) ni Reset HMI.
+        """
+        if self._cycle.is_active():
+            return {"ok": False, "error": "Ciclo activo — detén o Reset antes de Home"}
+
+        home_ok = self.cmd_motion_move_zero()
+        enc_r = bool(self.cmd_motion_enc_set0_r())
+        enc_l = bool(self.cmd_motion_enc_set0_l())
+
+        all_off_ok = False
+        if self._plc_client.connected:
+            all_off_ok = bool(self._manual_plc(lambda: self._plc_client.cmd_all_off()))
+            if all_off_ok:
+                with self._lock:
+                    self._plc_apply_home_valve_cache()
+                    self._plc["status"] = {
+                        "text": "All Off — Home máquina",
+                        "kind": "ok",
+                    }
+
+        ok = bool(home_ok) and enc_r and enc_l and (
+            all_off_ok if self._plc_client.connected else True
+        )
+        _append_log(
+            self._main_log,
+            f"Home máquina · ASDA→0={'OK' if home_ok else 'FALLÓ'} · "
+            f"EncR={'OK' if enc_r else 'FALLÓ'} · EncL={'OK' if enc_l else 'FALLÓ'} · "
+            f"AllOff={'OK' if all_off_ok else ('N/A' if not self._plc_client.connected else 'FALLÓ')}",
+        )
+        self._banner = {
+            "text": "Home máquina OK" if ok else "Home máquina con fallos",
+            "kind": "ok" if ok else "error",
+        }
+        self._notify()
+        return {
+            "ok": ok,
+            "asdaZero": bool(home_ok),
+            "encSet0R": enc_r,
+            "encSet0L": enc_l,
+            "allOff": all_off_ok,
+        }
+
     def cmd_error_reset(self, confirm: bool = False, do_home: bool = False) -> dict:
         """
         Res del flip-flop: limpia latch + reset Motion/PF + ciclo Idle.
-        No toca PLC (válvulas / 0x1E): usar Reset PLC o All Off en controles PLC.
+        Hard Reset también manda Reset PLC (0x1E) y refleja OFF en UI.
+        Soft-Res C2/C3 no toca PLC ni All Off.
         C1: requiere confirm=True (o ya confirmado) y opcional do_home.
+        Hard Reset + do_home/needs_home: ASDA CMD_MOVE_ZERO (posición 0).
+        C2/C3 con ciclo activo: soft-Res (no aborta lote, sin move-zero) → Pause → Resume.
         """
         latch = self._error_policy.latch
         if latch.active and latch.needs_confirm:
@@ -1290,18 +1400,62 @@ class HmiState:
                 }
 
         needs_home = latch.active and latch.needs_home
-        recovery = latch.recovery
+        recovery = latch.recovery or str(
+            self._cycle.snapshot().get("recovery") or ""
+        )
         ui = latch.ui_text
+        cycle_snap = self._cycle.snapshot()
+        soft_c2_c3 = self._cycle.is_active() and (
+            (
+                latch.active
+                and recovery in ("restart_from_0", "retry_process")
+            )
+            or bool(cycle_snap.get("paused"))
+            or bool(cycle_snap.get("c3Pending"))
+            or cycle_snap.get("recovery") in ("restart_from_0", "retry_process")
+        )
+
+        if soft_c2_c3:
+            # C2/C3: no matar el lote — Reset módulos + soft clear.
+            self._client.cmd_reset_errors()
+            if self._pf_client.connected:
+                self._pf_client.cmd_reset()
+            old = self._error_policy.clear()
+            soft = self._cycle.clear_error_for_resume(recovery)
+            finishing = bool(soft.get("finishingPiece"))
+            self._broadcast_machine_state(MACH_RESET)
+            if finishing and not soft.get("paused"):
+                self._broadcast_machine_state(MACH_BUSY)
+                self._banner = {
+                    "text": "Errores reseteados — terminando pieza",
+                    "kind": "ok",
+                }
+            else:
+                self._broadcast_machine_state(MACH_PAUSE)
+                self._banner = {"text": "Errores reseteados — Resume", "kind": "ok"}
+            if ui:
+                _append_log(self._main_log, f"Reset (soft C2/C3) · {ui}")
+            self._notify()
+            return {
+                "ok": True,
+                "cycle": soft,
+                "cleared": old.snapshot() if old.active else None,
+                "homeOk": None,
+                "recovery": recovery,
+                "soft": True,
+                "resumeEnabled": bool(soft.get("paused")),
+            }
 
         # Si el ciclo sigue active (p.ej. atrapado en Stage2 tras Stop visual),
         # abortar waits antes de pedir Reset Idle.
         if self._cycle.is_active():
             self._cycle.request_stop()
 
-        # Reset módulos (Res) — sin PLC.
+        # Reset módulos (Res) + Reset PLC hard (0x1E). Soft C2/C3 no llega aquí.
         self._client.cmd_reset_errors()
         if self._pf_client.connected:
             self._pf_client.cmd_reset()
+        plc_reset_ok = self._plc_reset_reflect_off(log_label="Reset máquina → PLC")
 
         old = self._error_policy.clear()
         with self._lock:
@@ -1319,17 +1473,19 @@ class HmiState:
                 "cycle": cycle_res,
                 "cleared": old.snapshot() if old.active else None,
                 "recovery": recovery,
+                "plcResetOk": plc_reset_ok,
             }
 
         self._broadcast_machine_state(MACH_RESET)
         self._broadcast_machine_state(MACH_IDLE)
 
+        # Homing general = ASDA CMD_MOVE_ZERO (0x07 → posición 0), no torque home 0x01.
         home_ok = None
-        if (do_home or needs_home) and needs_home:
+        if do_home or needs_home:
             home_ok = self.cmd_motion_move_zero()
             _append_log(
                 self._main_log,
-                f"Home general · {'OK' if home_ok else 'FALLÓ'}",
+                f"ASDA → 0 · {'OK' if home_ok else 'FALLÓ'}",
             )
 
         self._banner = {"text": "Errores reseteados", "kind": "ok"}
@@ -1342,6 +1498,7 @@ class HmiState:
             "cleared": old.snapshot() if old.active else None,
             "homeOk": home_ok,
             "recovery": recovery,
+            "plcResetOk": plc_reset_ok,
         }
 
     def _broadcast_machine_state(self, byte: int) -> None:
@@ -1499,9 +1656,6 @@ class HmiState:
 
     def cmd_cycle_trial_mode(self, on: bool = True) -> dict:
         return self._cycle.set_trial_mode(on)
-
-    def cmd_cycle_ignore_prefeeder(self, on: bool = True) -> dict:
-        return self._cycle.set_ignore_prefeeder(on)
 
     def cmd_cycle_refill(
         self,
@@ -1691,16 +1845,9 @@ class HmiState:
             sec = self.set_blower_sec(float(kwargs.get("blowerSec", kwargs.get("sec", DEFAULT_BLOWER_SEC))))
             return {"ok": True, "blowerSec": sec}
         elif action == "reset":
-            # Reset PLC propio: el esclavo deja estados en OFF; HMI solo refleja.
-            ok = self._manual_plc(lambda: self._plc_client.cmd_reset())
+            # Reset PLC propio (también lo dispara Reset HMI hard).
+            ok = self._plc_reset_reflect_off()
             if ok:
-                with self._lock:
-                    self._plc_apply_home_valve_cache()
-                    self._plc["status"] = {
-                        "text": "Reset PLC — estados OFF (0x01E)",
-                        "kind": "ok",
-                    }
-                    self._clear_latch_for_module("plc")
                 self._notify()
         elif action == "all_off":
             ok = self._manual_plc(lambda: self._plc_client.cmd_all_off())
@@ -2020,8 +2167,23 @@ class HmiState:
         self._banner = {"text": "Errores reseteados", "kind": "ok"}
         if src in ("prefeeder", "pre-feeder", "pf"):
             self._refresh_pf_status_from_state()
+        # Si el lote sigue vivo (C2/C3 Pause): soft clear, no mandar Idle a Andon.
+        soft = False
+        try:
+            if self._cycle.is_active() and (
+                self._cycle.snapshot().get("paused")
+                or old.recovery in ("restart_from_0", "retry_process")
+            ):
+                soft_res = self._cycle.clear_error_for_resume(old.recovery or "")
+                soft = bool(soft_res.get("ok"))
+        except Exception:
+            soft = False
         self._broadcast_machine_state(MACH_RESET)
-        self._broadcast_machine_state(MACH_IDLE)
+        if soft:
+            self._broadcast_machine_state(MACH_PAUSE)
+            self._banner = {"text": "Errores reseteados — Resume", "kind": "ok"}
+        else:
+            self._broadcast_machine_state(MACH_IDLE)
         return True
 
     def _cancel_link_down(self, key: str) -> None:
@@ -2269,6 +2431,12 @@ class HmiState:
                     e["active"] = None
                 for k in self._pf["fault_active"]:
                     self._pf["fault_active"][k] = False
+                for sk in ("L", "R"):
+                    self._pf.setdefault("sides", {}).setdefault(
+                        sk, {"autoState": None, "triggerActive": None}
+                    )
+                    self._pf["sides"][sk]["autoState"] = None
+                    self._pf["sides"][sk]["triggerActive"] = None
                 self._banner = {
                     "text": f"Reconectando PreFeeder ({PF_HOST}:{PF_PORT})…",
                     "kind": "warn",
@@ -2774,6 +2942,20 @@ class HmiState:
             if self._pf["errors"][key]["active"] != active:
                 self._pf["errors"][key]["active"] = active
                 changed = True
+        side_key = "L" if is_left else "R"
+        runtime = self._pf.setdefault("sides", {}).setdefault(
+            side_key, {"autoState": None, "triggerActive": None}
+        )
+        if "autoState" in side:
+            st = str(side.get("autoState") or "").strip().lower() or None
+            if runtime.get("autoState") != st:
+                runtime["autoState"] = st
+                changed = True
+        if "triggerActive" in side:
+            trig = bool(side.get("triggerActive"))
+            if runtime.get("triggerActive") != trig:
+                runtime["triggerActive"] = trig
+                changed = True
         return changed
 
     def _apply_pf_side_fault(self, side: dict, is_left: bool) -> bool:
@@ -2805,7 +2987,22 @@ class HmiState:
         return changed
 
     def _pf_primary_active_error_byte(self) -> int | None:
-        """EXXX PF activo de peor clase (C1>C2>C3). Solo para latch único."""
+        """EXXX PF activo de peor clase. Solo para latch único.
+
+        Fuera de lote: C1 > C2 > C3.
+        Con ciclo activo: C1 > C3 > C2 — así Buffer Max (C3) gana a Holgura (C2)
+        y el lote puede terminar/cortar la pieza antes de Pause/Resume.
+        """
+        prefer_c3 = False
+        try:
+            prefer_c3 = bool(self._cycle.is_active())
+        except Exception:
+            prefer_c3 = False
+        # rank más bajo gana
+        if prefer_c3:
+            rank_map = {CLASS_C1: 0, CLASS_C3: 1, CLASS_C2: 2}
+        else:
+            rank_map = _PF_CLASS_RANK
         best_byte: int | None = None
         best_rank = 99
         for key, info in self._pf["errors"].items():
@@ -2822,7 +3019,7 @@ class HmiState:
             entry = lookup(byte)
             if entry is None:
                 continue
-            rank = _PF_CLASS_RANK.get(str(entry.get("class") or ""), 50)
+            rank = rank_map.get(str(entry.get("class") or ""), 50)
             if rank < best_rank or (rank == best_rank and (best_byte is None or byte < best_byte)):
                 best_rank = rank
                 best_byte = byte

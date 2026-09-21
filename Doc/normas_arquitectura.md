@@ -65,14 +65,17 @@ En el esclavo PLC, cada comando de válvula (`on` / `off`) genera **un pulso** e
 El enclavado lo hace el PLC neumático (KEEP: Set / Res).  
 - Querer **ON** (Set) → un pulso (solo si el estado lógico cambia a on).  
 - Querer **OFF** (Res) → otro pulso (solo si cambia a off).  
-- **Boot / All Off** = pulsos OFF de cada válvula lógica ON (holder incluido). El holder lo activa rutina o manual. Solo bajo demanda (UI All Off / ciclo), **no** desde C1/C2/C3, Stop, Pause ni Reset HMI.  
-- **Reset PLC (`0x1E`):** comando **solo** del control PLC. Tras Reset, el esclavo deja estados lógicos en OFF; HMI refleja OFF (no inventa All Off previo ni pulsos extra).  
+- **Boot / All Off** = pulsos OFF de cada válvula lógica ON (holder incluido). El holder lo activa rutina o manual. Solo bajo demanda (UI All Off / ciclo / **Home de máquina**), **no** desde C1/C2/C3, Stop, Pause ni Reset HMI.  
+- **Reset PLC (`0x1E`):** desde control PLC **o** desde **Reset HMI hard** (machine controls). Tras Reset, el esclavo deja estados lógicos en OFF; HMI refleja OFF (no inventa All Off previo ni pulsos extra). Soft-Res C2/C3 **no** manda Reset PLC.  
 - Ancho de pulso: `VALVE_PULSE_MS` (100 ms) para que el KEEP lea bien.  
 No pulsar si el estado lógico ya coincide (un pulso de más invertiría el KEEP).  
 El estado lógico (JSON/status/UI) refleja la posición pretendida; el pin físico solo es impulso.  
 HMI/ciclo siguen enviando `on: true|false` como hasta ahora.
 
-**Límite máquina ↔ PLC:** error general de máquina, Stop, Pause, C3 y Reset HMI (machine controls) **no** mandan válvulas ni Reset PLC. Operar PLC = pulso ON/OFF, All Off, o Reset PLC.
+**Límite máquina ↔ PLC:** error general de máquina, Stop, Pause y soft-Res C2/C3 **no** mandan válvulas ni Reset PLC.  
+**Reset HMI hard** sí manda **Reset PLC (`0x1E`)** (UI refleja OFF).  
+**Home de máquina** (control de máquina): ASDA → posición 0 + encoders Set0 L/R + **All Off** neumática.  
+Operar PLC manual = pulso ON/OFF, All Off, o Reset PLC.
 
 **Excepción Blower:** no es KEEP. El pin queda **ON (nivel)** durante `durationSec` (ajustable en UI PLC; el esclavo debe respetar ese valor, no un default fijo si viene en el comando) y luego **OFF** automático.
 
@@ -108,7 +111,7 @@ Los errores de detalle se clasifican en **C1**, **C2** y **C3**. La clase define
 |-------|------------------|--------|
 | **C1** | Stop inmediato Motion/PF (+ ciclo); **no** PLC/válvulas | Secuencia C1 fija |
 | **C2** | Pausar; **no** lanzar el siguiente step; **no** PLC | Secuencia C2 fija |
-| **C3** | Terminar el paso en curso de forma segura, luego detener; **no** PLC | Secuencia C3 fija |
+| **C3** | En lote: terminar la **pieza en curso** (incl. corte) de forma segura, luego Pause; fuera de lote: terminar el paso en curso; **no** PLC | Secuencia C3 fija |
 
 ### Forma en UI
 
@@ -158,40 +161,49 @@ Cambiar un paso u orden = cambiar **este documento** primero.
 2. Corregir causa física si aplica.  
 3. UI muestra EXXX y exige **confirmación**.  
 4. Operador confirma.  
-5. **Reset HMI** (Res): limpia latch + reset Motion/PF/ciclo (sin PLC). Si el fallo fue de PLC, usar **Reset PLC**.  
+5. **Reset HMI** (Res): limpia latch + reset Motion/PF/ciclo + **Reset PLC (`0x1E`)**. HMI refleja válvulas OFF.  
 6. **Validar** estados coherentes.  
 7. **Homing general** obligatorio.  
 8. Idle / aceptar Start.
 
-Prohibido: Reset sin confirmación; Start sin home; saltar validación; mandar All Off/Reset PLC desde C1.
+Prohibido: Reset sin confirmación; Start sin home; saltar validación; mandar **All Off** desde C1 (All Off = Home de máquina / control PLC).
 
 #### Secuencia C2
 
 1. Proceso pausado; no hubo siguiente step. **PLC no se toca.**  
 2. Corregir causa si aplica.  
-3. **Reset HMI** (Res).  
+3. **Reset HMI** (Res) — **soft**: limpia latch + reset Motion/PF; **no** aborta el lote ni va a Idle.  
 4. **Resume**.  
 5. Proceso desde **step 0**.
 
-Prohibido: Resume sin Reset; continuar “donde iba”; tocar válvulas desde C2.
+Prohibido: Resume sin Reset; matar el ciclo en el Reset C2; tocar válvulas desde C2.
 
 #### Secuencia C3
 
-1. Paso en curso terminó seguro; luego pausa/detención. **PLC no se toca.**  
+1. En lote productivo: completar la **pieza en curso** (avance + corte) de forma segura; luego Pause.  
+   Fuera de lote / paso suelto: terminar el paso en curso; luego Pause. **PLC no se toca.**  
 2. Corregir causa si aplica.  
-3. **Reset HMI** (Res).  
+3. **Reset HMI** (Res) — **soft** (igual que C2: no aborta el lote). Si la pieza aún no terminó, el soft-Res deja seguir hasta el corte.  
 4. **Resume**.  
-5. **Reintentar el proceso actual** (no home C1 ni “desde step 0” C2).
+5. **Reintentar el proceso / continuar lote** (no home C1 ni “desde step 0” C2).
 
-Prohibido: cortar el paso seguro con atajos; tratar C3 como C1 o C2 sin cambiar esta norma; tocar válvulas desde C3.
+Con varios EXXX PF a la vez en lote activo: priorizar **C3** sobre **C2** (p. ej. Buffer Max + Holgura → terminar/cortar pieza). C1 sigue ganando.
+
+Prohibido: abortar el lote en el Pause C3 (debe quedar resumible); Resume sin Reset; tratar C3 como C1 o C2 sin cambiar esta norma; tocar válvulas desde C3.
 
 Orden resumido:
 
 - **C1:** Confirmación → Reset → Validar → Homing → Idle/Start  
-- **C2:** Reset → Resume → desde step 0  
-- **C3:** (paso seguro OK) → Reset → Resume → reintentar proceso  
+- **C2:** Reset (soft) → Resume → desde step 0  
+- **C3:** (pieza/paso seguro OK) → Reset (soft) → Resume → reintentar/continuar  
 
 ---
+
+### Feed / láser (Motion) — aceptación y post-corrección
+
+**FEED_OK** si OM oficial está en ventana PHYS **50–58 mm** y el láser está ON (p. ej. encoder 50 mm + láser OK → continúa; no exige 54–56). Fuera de PHYS → LengthNG; láser OFF en ventana → seek o E004/E005.
+
+Si tras approach + corrección el OM está ~target y el láser sigue OFF: **LASER_SEEK** avanza hasta flanco ON. El halt usa **GPIO crudo** (sin debounce HMI de 150 ms), re-prime QSDec y ráfaga de CW Halt. Tras halt → **FEED_OK** sin exigir ventana PHYS OM (50–58). El seek puede sacar el encoder de rango; eso no es LengthNG.
 
 ## 5. Andon / torre
 
@@ -344,7 +356,7 @@ Prohibido aprovechar correcciones de rutina, Motion, PreFeeder, PLC, encoder, fe
 | Cómo se dice qué falló | EXXX (mismo en Main y HTML local del módulo) |
 | Quién aplica C1/C2/C3 | Solo Main |
 | Cómo se activa/limpia | Flip-flop Set / Res — no polling |
-| PLC válvulas | Pulso ON/OFF, All Off o Reset PLC propio — no desde C1/C2/C3/Stop/Pause/Reset HMI |
+| PLC válvulas | Pulso ON/OFF / All Off / Reset PLC; Reset HMI hard → Reset PLC; Home máquina → All Off; no desde Stop/Pause/soft C2/C3 |
 | Cómo se sale de un fallo | Secuencia fija C1 / C2 / C3 |
 | De dónde salen códigos | Excel + GPIO doc |
 | Debug | Solo si se pide |

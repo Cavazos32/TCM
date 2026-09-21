@@ -33,7 +33,9 @@ export const DEFAULT_CYCLE_CONFIG: CycleConfig = {
   dwellAtDestMs: 100,
   depositBatchSize: 50,
   depositExtraMm: 30,
+  gripperClearanceMm: 10,
   cutOffsetMm: 0,
+  wipBlowerInicioOffsetMm: 8,
   motionWaitTimeoutS: 120,
   feedWaitTimeoutS: 30,
   pfReadyTimeoutS: 10,
@@ -58,7 +60,16 @@ export const CYCLE_STEPS_DEFINITION: CycleStep[] = [
   { id: 12, title: 'Holder ON / Encoder ON (pre-corte)', type: 'action', sbsPause: false },
   { id: 13, title: 'Delay tras cerrar holder', type: 'delay', delayKey: 'holderOnMs', defaultDurationMs: 200, sbsPause: true },
   { id: 14, title: 'Cortador ON (+ All OK PreFeeder)', type: 'action', sbsPause: false },
-  { id: 15, title: 'Delay entre Set y Res cortador', type: 'delay', delayKey: 'cutterPulseMs', defaultDurationMs: 200, sbsPause: false },
+  {
+    id: 15,
+    title: 'Delay entre Set y Res cortador',
+    type: 'delay',
+    delayKey: 'cutterPulseMs',
+    defaultDurationMs: 200,
+    sbsPause: false,
+    delayEditable: false,
+    note: 'Fijo ≥150 ms (pulso PLC KEEP) — no editable',
+  },
   { id: 16, title: 'Cortador OFF', type: 'action', sbsPause: false },
   { id: 17, title: 'Delay post-corte', type: 'delay', delayKey: 'cutterPostMs', defaultDurationMs: 100, sbsPause: true },
   { id: 18, title: 'Extra / depósito lineal', type: 'action', sbsPause: false },
@@ -73,11 +84,12 @@ export const CYCLE_STEPS_DEFINITION: CycleStep[] = [
   },
   { id: 21, title: 'Pinzas abren', type: 'action', sbsPause: false },
   { id: 22, title: 'Trigger PreFeeder (Tfeed)', type: 'action', sbsPause: false },
-  { id: 23, title: 'Delay antes de HOME', type: 'delay', delayKey: 'gripperReleaseMs', defaultDurationMs: 350, sbsPause: true },
-  { id: 24, title: 'HOME: WIP blower fin/inicio + 0', type: 'action', sbsPause: true },
-  { id: 25, title: 'Join — espera fin del prefetch (handoff)', type: 'join', badge: 'join', sbsPause: false },
-  { id: 26, title: 'Delay asentar', type: 'delay', delayKey: 'asentarMs', defaultDurationMs: 50, sbsPause: false },
-  { id: 27, title: 'Post-pieza (safety / peer / holgura)', type: 'action', sbsPause: false },
+  { id: 23, title: 'Delay tras abrir pinzas', type: 'delay', delayKey: 'gripperReleaseMs', defaultDurationMs: 350, sbsPause: true },
+  { id: 24, title: 'Despeje ASDA post-pinzas (+clearance)', type: 'action', sbsPause: true },
+  { id: 25, title: 'HOME: WIP blower fin(+offset) → inicio → 0', type: 'action', sbsPause: true },
+  { id: 26, title: 'Join — espera fin del prefetch (handoff)', type: 'join', badge: 'join', sbsPause: false },
+  { id: 27, title: 'Delay asentar', type: 'delay', delayKey: 'asentarMs', defaultDurationMs: 50, sbsPause: false },
+  { id: 28, title: 'Post-pieza (safety / peer / holgura)', type: 'action', sbsPause: false },
 ];
 
 function stepsFromFlow(flow: BackendFlowStep[]): CycleStep[] {
@@ -314,8 +326,12 @@ export const CycleTab: React.FC<CycleTabProps> = ({
     [persistConfig],
   );
 
+  /** Delays fijados por contrato PLC/Motion — no editables en Cycle. */
+  const LOCKED_DELAY_KEYS = new Set<keyof CycleConfig>(['cutterPulseMs']);
+
   const handleUpdateDelay = (delayKey?: keyof CycleConfig, value?: number) => {
     if (!delayKey || value === undefined) return;
+    if (LOCKED_DELAY_KEYS.has(delayKey)) return;
     const cleanVal = Math.max(0, isNaN(value) ? 0 : value);
     setConfigDirty(true);
     setConfig((prev) => {
@@ -458,7 +474,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
         )}
       </div>
 
-      {machineState.refillAwaitingConfirm && onRefillConfirm && (
+      {machineState.refillActive && machineState.refillPrompt && onRefillConfirm && (
         <div className="flex flex-wrap items-center gap-3 rounded-xl border border-sky-300 dark:border-sky-700 bg-sky-50 dark:bg-sky-950/50 px-4 py-3 shadow-2xs">
           <div className="min-w-0 flex-1">
             <p className="text-xs font-bold text-sky-900 dark:text-sky-100">
@@ -477,7 +493,8 @@ export const CycleTab: React.FC<CycleTabProps> = ({
               id="btn-cycle-refill-retry"
               type="button"
               onClick={onRefillRetry}
-              className="flex items-center gap-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 px-3 py-1.5 text-xs font-bold text-white"
+              disabled={!machineState.refillAwaitingConfirm}
+              className="flex items-center gap-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <RotateCcw className="h-3.5 w-3.5" />
               {t('btn_refill_confirm_retry')}
@@ -487,7 +504,8 @@ export const CycleTab: React.FC<CycleTabProps> = ({
             id="btn-cycle-refill-yes"
             type="button"
             onClick={() => onRefillConfirm(true)}
-            className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white"
+            disabled={!machineState.refillAwaitingConfirm}
+            className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <Check className="h-3.5 w-3.5" />
             {machineState.refillPrompt === 'after_cut'
@@ -498,7 +516,8 @@ export const CycleTab: React.FC<CycleTabProps> = ({
             id="btn-cycle-refill-no"
             type="button"
             onClick={() => onRefillConfirm(false)}
-            className="flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-200"
+            disabled={!machineState.refillAwaitingConfirm}
+            className="flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-200 disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <X className="h-3.5 w-3.5" />
             {t('btn_refill_confirm_no')}
@@ -750,6 +769,20 @@ export const CycleTab: React.FC<CycleTabProps> = ({
 
                 <div className="flex items-center gap-2 shrink-0 ml-2">
                   {step.type === 'delay' && step.delayKey && (
+                    step.delayEditable === false ||
+                    (step.delayKey && LOCKED_DELAY_KEYS.has(step.delayKey)) ? (
+                      <div
+                        className="flex items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800/80 px-2.5 py-1 shadow-2xs"
+                        title="Fijo por pulso PLC KEEP (≥150 ms)"
+                      >
+                        <span className="font-mono font-bold text-xs sm:text-sm text-slate-600 dark:text-slate-300">
+                          {Math.max(150, Number(stepDelayVal) || 0)}
+                        </span>
+                        <span className="text-[11px] font-mono text-slate-400 dark:text-slate-500 select-none">
+                          ms
+                        </span>
+                      </div>
+                    ) : (
                     <div className="flex items-center gap-1 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 hover:border-teal-500 dark:hover:border-teal-500 rounded-lg p-0.5 shadow-2xs transition">
                       <button
                         type="button"
@@ -784,6 +817,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                         <Plus className="h-3 w-3" />
                       </button>
                     </div>
+                    )
                   )}
                 </div>
               </div>
@@ -905,6 +939,22 @@ export const CycleTab: React.FC<CycleTabProps> = ({
 
               <div className="space-y-1.5">
                 <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                  {t('cfg_gripper_clearance')}
+                </label>
+                <input
+                  type="number"
+                  step={0.1}
+                  min={0}
+                  value={config.gripperClearanceMm ?? 0}
+                  onChange={(e) =>
+                    updateConfigField('gripperClearanceMm', Number(e.target.value))
+                  }
+                  className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 focus:border-teal-500 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
                   {t('cfg_cut_offset')}
                 </label>
                 <input
@@ -912,6 +962,21 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                   step={0.1}
                   value={config.cutOffsetMm ?? 0}
                   onChange={(e) => updateConfigField('cutOffsetMm', Number(e.target.value))}
+                  className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 focus:border-teal-500 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                  {t('cfg_wip_blower_inicio_offset')}
+                </label>
+                <input
+                  type="number"
+                  step={0.1}
+                  value={config.wipBlowerInicioOffsetMm ?? 0}
+                  onChange={(e) =>
+                    updateConfigField('wipBlowerInicioOffsetMm', Number(e.target.value))
+                  }
                   className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 focus:border-teal-500 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
                 />
               </div>

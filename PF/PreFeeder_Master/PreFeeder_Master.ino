@@ -78,6 +78,7 @@ struct SideView {
   bool idleMode = false;
   bool inProcess = false;
   bool sensorsArmed = false;
+  bool triggerActive = false;  // Motor2 Tfeed / helper holgura en curso
   String machineState = "idle";
   uint32_t lastMsAgo = 99999;
 };
@@ -301,6 +302,7 @@ static void parseSideSnapshot(const char* j, SideView& s)
   s.idleMode = jBool(j, "idleMode", s.idleMode);
   s.inProcess = jBool(j, "inProcess", s.inProcess);
   s.sensorsArmed = jBool(j, "sensorsArmed", s.sensorsArmed);
+  s.triggerActive = jBool(j, "triggerActive", s.triggerActive);
   String ms = jStr(j, "machineState");
   if (ms.length()) s.machineState = ms;
   applySideError(s, jBool(j, "error", s.error),
@@ -322,6 +324,7 @@ static void parseSideEvent(const char* line, SideView& s)
   else if (field == "idleMode") s.idleMode = jBool(line, "value", s.idleMode);
   else if (field == "inProcess") s.inProcess = jBool(line, "value", s.inProcess);
   else if (field == "sensorsArmed") s.sensorsArmed = jBool(line, "value", s.sensorsArmed);
+  else if (field == "triggerActive") s.triggerActive = jBool(line, "value", s.triggerActive);
   else if (field == "machineState")
   {
     String ms = jStr(line, "value");
@@ -567,6 +570,7 @@ static void appendSideJson(String& j, const char* key, const SideView& s)
   j += ",\"idleMode\":"; j += s.idleMode ? "true" : "false";
   j += ",\"inProcess\":"; j += s.inProcess ? "true" : "false";
   j += ",\"sensorsArmed\":"; j += s.sensorsArmed ? "true" : "false";
+  j += ",\"triggerActive\":"; j += s.triggerActive ? "true" : "false";
   j += ",\"machineState\":"; jsonAppendStr(j, s.machineState);
   j += ",\"error\":"; j += s.error ? "true" : "false";
   j += ",\"errorCode\":"; j += s.errorCode;

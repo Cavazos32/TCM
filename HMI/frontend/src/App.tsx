@@ -45,9 +45,6 @@ function AppMain() {
     if (view.machineState.stepByStep) {
       void hmi.setCycleStepByStep(false);
     }
-    if (view.machineState.ignorePrefeeder) {
-      void hmi.setCycleIgnorePrefeeder(false);
-    }
     if (currentTab !== 'maquina') {
       setCurrentTab('maquina');
       hmi.onTabChange('maquina');
@@ -57,7 +54,6 @@ function AppMain() {
     hmi,
     view.machineState.trialMode,
     view.machineState.stepByStep,
-    view.machineState.ignorePrefeeder,
   ]);
 
   useEffect(() => {
@@ -139,6 +135,7 @@ function AppMain() {
             onResume={hmi.resume}
             onPause={hmi.pauseCycle}
             onReset={hmi.resetCycleCmd}
+            onMachineHome={hmi.machineHomeCmd}
             onRefill={() => {
               void hmi.startRefill();
             }}
@@ -149,11 +146,6 @@ function AppMain() {
               void hmi.retryRefill();
             }}
             onGotoCycle={debugMode ? () => handleTabChange('cycle') : undefined}
-            onMotionStop={hmi.motionStop}
-            onMotionReset={hmi.motionReset}
-            onMotionSearchHome={hmi.motionSearchHome}
-            onPlcReset={hmi.plcReset}
-            onPlcAllOff={hmi.plcAllOff}
             onPfStart={hmi.pfStart}
             onPfStop={hmi.pfStop}
             onPfReset={hmi.pfReset}
@@ -277,8 +269,6 @@ function AppMain() {
         andonConn={view.andonConn}
         andonBuzzerMute={view.andonBuzzerMute}
         onAndonBuzzerMute={hmi.setAndonBuzzerMute}
-        ignorePrefeeder={view.machineState.ignorePrefeeder}
-        onIgnorePrefeeder={debugMode ? hmi.setCycleIgnorePrefeeder : undefined}
         safetyExhaust={view.machineState.safetyExhaust}
         connected={view.connected}
         onReconnectNetwork={handleReconnectNetwork}

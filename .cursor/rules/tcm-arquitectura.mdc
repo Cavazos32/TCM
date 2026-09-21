@@ -27,8 +27,8 @@ Al cerrar el cambio: indicar qué archivos se alinearon.
 - Heartbeat TCP solo valida enlace; no sustituye eventos de aplicación.
 - Opcode = contrato (Excel / Opcodes). No inventar bytes sueltos.
 - PLC válvulas: pulso ON/OFF (KEEP); no enclavado en GPIO ESP. Excepción: Blower (nivel + durationSec del comando).
-- Reset PLC `0x1E`: solo desde control PLC; tras Reset estados lógicos OFF (HMI refleja). All Off solo bajo demanda.
-- C1/C2/C3, Stop, Pause y Reset HMI **no** mandan válvulas ni Reset PLC.
+- Reset PLC `0x1E`: control PLC **o** Reset HMI hard; tras Reset estados lógicos OFF (HMI refleja). All Off solo bajo demanda (UI / ciclo / Home máquina).
+- Stop, Pause y soft-Res C2/C3 **no** mandan válvulas ni Reset PLC. Reset HMI hard sí manda Reset PLC. Home máquina: ASDA→0 + encoders Set0 + All Off.
 - Andon: solo estado máquina `0x40–0x49` (no EXXX); TCP `:8769`; mute buzzer desde HMI Debug.
 
 ## M5 — Communication Core protegido

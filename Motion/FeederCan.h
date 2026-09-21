@@ -120,9 +120,9 @@
 
 // Ventanas Feed (TARGET fijo; no mezclar)
 #define FEED_TARGET_FIXED_MM        55.0f
-#define FEED_CONTROL_TOL_MM         1.0f   // 54–56 aceptación final / control interno
-#define FEED_GOOD_TOL_MM            2.0f   // 53–57 producción (corrige si fuera de control)
-#define FEED_OM_PHYS_MIN_MM         50.0f
+#define FEED_CONTROL_TOL_MM         1.0f   // 54–56 banda ideal (corrección apunta a 55)
+#define FEED_GOOD_TOL_MM            2.0f   // 53–57 (referencia; aceptación = PHYS)
+#define FEED_OM_PHYS_MIN_MM         50.0f  // aceptación producción + láser ON
 #define FEED_OM_PHYS_MAX_MM         58.0f
 #define FEED_OM_QUANTUM_MM          0.5f   // paso oficial omRoundMm; umbral OK |err|<=0.5 (no re-cuantizar)
 #define FEED_APPROACH_PCT_DEFAULT   80.0f
@@ -136,8 +136,9 @@
 #define FEED_LASER_SEEK_MS_DEFAULT  1000u
 #define FEED_LASER_SEEK_MS_MIN      200u
 #define FEED_LASER_SEEK_MS_MAX      5000u
-#define FEED_LASER_SEEK_POLL_MS     20u
+#define FEED_LASER_SEEK_POLL_MS     0u     // 0 = cada feedLoop (halt lo antes posible)
 #define FEED_LASER_SEEK_DIST_MARGIN 1.25f  // recorrido ≥ vel×t × margen
+#define FEED_LASER_HALT_BURST       2u     // reintentos CW Halt al flanco ON
 
 #define FEED_VELOCITY_PP_DEFAULT    FEED_SERVO_BASE_PP_DEFAULT
 #define FEED_PREFS_NS               "motion_feed"

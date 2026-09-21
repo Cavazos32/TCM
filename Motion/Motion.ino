@@ -1694,10 +1694,17 @@ float feedOmGetOffsetMmSide(bool sideR)
 bool feedLaserMaterialPresent(bool sideR)
 {
   // Keyence NPN/OC + pull-up: GPIO LOW = sensor ON = material presente.
-  // ioLaser*Active (motionSensorActiveLaser) = true → material OK en ventana.
+  // Debounced (HMI status): evita parpadeo fuera de seek.
   // GPIO HIGH / Active=false = sin material → E004/E005 en FSP_VALIDATE*
   // (salvo modo gated FSP_LASER_SEEK post-corrección).
   return sideR ? ioLaserRActive : ioLaserLActive;
+}
+
+bool feedLaserMaterialPresentRaw(bool sideR)
+{
+  // Lectura inmediata del pin (sin debounce 150 ms) — solo para halt en seek/corr.
+  const uint8_t pin = sideR ? PIN_LRX_LASER_R : PIN_LRX_LASER_L;
+  return digitalRead(pin) == LOW;  // NPN/OC + pull-up: LOW = material ON
 }
 
 bool feedOmReadLiveMm(float* mmSignedOut)

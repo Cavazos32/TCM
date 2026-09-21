@@ -1,12 +1,12 @@
 """Política de errores C1/C2/C3 — flip-flop Set / Res.
 
 Set: llega EXXX detalle → latchea + aplica acción según clase.
-Res: Reset HMI → limpia latch + reset módulos + (C1) exige confirm/home.
+Res: Reset HMI → limpia latch + reset módulos + (hard) Reset PLC + (C1) exige confirm/home.
 
 Clases (Doc/TCM - D.xlsx):
   C1 — Stop inmediato a todos; recovery: reset + validar + confirm + home
-  C2 — Pausar (no siguiente step); recovery: resume+reset → desde step 0
-  C3 — Terminar paso en curso; recovery: resume+reset → reintentar proceso
+  C2 — Pausar (no siguiente step); recovery: soft-Res + resume → desde step 0
+  C3 — Terminar pieza/paso en curso; recovery: soft-Res + resume → reintentar/continuar
 """
 
 from __future__ import annotations

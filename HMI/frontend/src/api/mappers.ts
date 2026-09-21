@@ -136,7 +136,6 @@ export function mapMachineState(
     refillPrompt: String(cycle.refillPrompt || ''),
     stepByStep: cycle.stepByStep ?? false,
     trialMode: cycle.trialMode ?? false,
-    ignorePrefeeder: cycle.ignorePrefeeder ?? false,
     pauseEnabled: cycle.active && !cycle.paused && !cycle.refillAwaitingConfirm,
     progress: cycle.completed
       ? 100

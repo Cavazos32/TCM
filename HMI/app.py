@@ -300,9 +300,16 @@ def api_cycle_reset():
     return jsonify(
         get_state().cmd_error_reset(
             confirm=bool(body.get("confirm", False)),
-            do_home=bool(body.get("doHome", False)),
+            # Hard Reset máquina → ASDA move to 0 (CMD_MOVE_ZERO) + Reset PLC.
+            do_home=bool(body.get("doHome", True)),
         )
     )
+
+
+@app.post("/api/machine/home")
+def api_machine_home():
+    """Home máquina: ASDA→0 + encoders Set0 + All Off (no Buscar HOME 0x01)."""
+    return jsonify(get_state().cmd_machine_home())
 
 
 @app.post("/api/error/confirm")
@@ -353,12 +360,6 @@ def api_cycle_step_by_step():
 def api_cycle_trial_mode():
     body = request.get_json(silent=True) or {}
     return jsonify(get_state().cmd_cycle_trial_mode(bool(body.get("on", True))))
-
-
-@app.post("/api/cycle/ignore-prefeeder")
-def api_cycle_ignore_prefeeder():
-    body = request.get_json(silent=True) or {}
-    return jsonify(get_state().cmd_cycle_ignore_prefeeder(bool(body.get("on", True))))
 
 
 @app.post("/api/cycle/refill")

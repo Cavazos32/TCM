@@ -12,7 +12,6 @@ import {
   Check,
   X,
   Home,
-  PowerOff,
   Zap,
   Package,
   Activity,
@@ -57,7 +56,6 @@ function operatorModuleStatus(
   if (lower.includes('idle') || lower.includes('listo') || lower.includes('ready')) {
     return t('state_ready');
   }
-  // Quitar "Comando …" y opcodes técnicos
   const cleaned = raw
     .replace(/^comando\s+[\w/-]+\s+/i, '')
     .replace(/\s*\(0x[0-9a-fA-F]+\)\s*/g, ' ')
@@ -84,15 +82,11 @@ interface MaquinaTabProps {
   onResume: () => void;
   onPause: () => void;
   onReset: () => void;
+  onMachineHome?: () => void;
   onRefill?: () => void;
   onRefillConfirm?: (ok: boolean) => void;
   onRefillRetry?: () => void;
   onGotoCycle?: () => void;
-  onMotionStop?: () => void;
-  onMotionReset?: () => void;
-  onMotionSearchHome?: () => void;
-  onPlcReset?: () => void;
-  onPlcAllOff?: () => void;
   onPfStart?: () => void;
   onPfStop?: () => void;
   onPfReset?: () => void;
@@ -121,15 +115,11 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
   onResume,
   onPause,
   onReset,
+  onMachineHome,
   onRefill,
   onRefillConfirm,
   onRefillRetry,
   onGotoCycle,
-  onMotionStop,
-  onMotionReset,
-  onMotionSearchHome,
-  onPlcReset,
-  onPlcAllOff,
   onPfStart,
   onPfStop,
   onPfReset,
@@ -169,8 +159,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
 
   const hasFault = !!(machineState.errorActive || machineState.fault);
   const modKind = faultModuleKind(machineState.faultModule);
-  const modulePanelError =
-    !!motionState.hasError || !!plcState.hasError || !!preFeederState.hasError;
+  const modulePanelError = !!preFeederState.hasError;
   const faultLabel =
     machineState.fault ||
     (machineState.faultCode
@@ -191,15 +180,18 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
   const btnBase =
     'flex items-center justify-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-bold transition shadow-2xs active:scale-95';
 
+  const toDisplayMm = (internalMm: number) => -internalMm;
+  const activeValvesCount = plcState.valves.filter((v) => v.active).length;
+  const pfConnected = preFeederState.connection.connected;
+  const pfHasError = !!preFeederState.hasError && pfConnected;
+
   const moduleCard = (
-    _kind: FaultModuleKind,
     title: string,
     statusText: string | undefined,
     connected: boolean,
     hasError: boolean,
     actions: React.ReactNode
   ) => {
-    // Solo el estado propio del módulo: no heredar EXXX/rojo de máquina.
     const showError = hasError && connected;
     return (
       <div
@@ -430,7 +422,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               </div>
             </div>
 
-            {machineState.refillAwaitingConfirm && onRefillConfirm && (
+            {machineState.refillActive && machineState.refillPrompt && onRefillConfirm && (
               <div className="flex flex-wrap items-center gap-3 rounded-lg border border-sky-300 dark:border-sky-700 bg-sky-50 dark:bg-sky-950/50 px-4 py-3">
                 <div className="min-w-0 flex-1">
                   <p className="text-xs font-bold text-sky-900 dark:text-sky-100">
@@ -449,7 +441,8 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     id="btn-refill-confirm-retry"
                     type="button"
                     onClick={onRefillRetry}
-                    className="flex items-center gap-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 px-3.5 py-2 text-xs font-bold text-white shadow-2xs active:scale-95"
+                    disabled={!machineState.refillAwaitingConfirm}
+                    className="flex items-center gap-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 px-3.5 py-2 text-xs font-bold text-white shadow-2xs active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
                   >
                     <RotateCcw className="h-3.5 w-3.5" />
                     {t('btn_refill_confirm_retry')}
@@ -459,7 +452,8 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                   id="btn-refill-confirm-yes"
                   type="button"
                   onClick={() => onRefillConfirm(true)}
-                  className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 text-xs font-bold text-white shadow-2xs active:scale-95"
+                  disabled={!machineState.refillAwaitingConfirm}
+                  className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 text-xs font-bold text-white shadow-2xs active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
                 >
                   <Check className="h-3.5 w-3.5" />
                   {machineState.refillPrompt === 'after_cut'
@@ -470,7 +464,8 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                   id="btn-refill-confirm-no"
                   type="button"
                   onClick={() => onRefillConfirm(false)}
-                  className="flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3.5 py-2 text-xs font-bold text-slate-700 dark:text-slate-200 shadow-2xs active:scale-95"
+                  disabled={!machineState.refillAwaitingConfirm}
+                  className="flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3.5 py-2 text-xs font-bold text-slate-700 dark:text-slate-200 shadow-2xs active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
                 >
                   <X className="h-3.5 w-3.5" />
                   {t('btn_refill_confirm_no')}
@@ -556,11 +551,173 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               </button>
             )}
 
+            <button
+              id="btn-home-maquina"
+              type="button"
+              onClick={onMachineHome}
+              disabled={!onMachineHome || machineState.isRunning || machineState.cycleActive}
+              title={t('btn_machine_home_hint')}
+              className={`flex w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-2.5 text-xs font-bold transition shadow-2xs ${
+                !onMachineHome || machineState.isRunning || machineState.cycleActive
+                  ? 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed'
+                  : 'border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 active:scale-[0.98]'
+              }`}
+            >
+              <Home className="h-3.5 w-3.5" />
+              <span>{t('btn_machine_home')}</span>
+            </button>
+
             <div
               id="ind-coming-soon"
               className="flex w-full items-center justify-center rounded-lg border border-dashed border-slate-300 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/40 px-3 py-2.5 text-[11px] font-semibold text-slate-400 dark:text-slate-500 select-none"
             >
               {t('coming_soon')}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Estados de módulo — debajo de Control de máquina */}
+      <div className="space-y-2">
+        <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-2.5 text-slate-800 dark:text-slate-200 shadow-2xs flex flex-wrap items-center justify-between gap-3 transition-colors">
+          <div className="flex items-center gap-3 min-w-0">
+            <span className="rounded bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 shrink-0">
+              {t('tab_motion')}
+            </span>
+            <div className="flex items-center gap-2 min-w-0">
+              <span
+                className={`h-2.5 w-2.5 rounded-full shrink-0 ${
+                  !motionState.connection.connected || motionState.hasError
+                    ? 'bg-red-500'
+                    : motionState.isMoving
+                      ? 'bg-amber-500 animate-ping'
+                      : 'bg-emerald-500'
+                }`}
+              />
+              <span className="text-sm font-semibold text-slate-900 dark:text-white tracking-tight truncate">
+                {motionState.statusText || (motionState.isMoving ? t('motor_moving') : t('state_ready'))}
+              </span>
+            </div>
+
+            <span className="text-slate-300 dark:text-slate-700 hidden sm:inline">|</span>
+
+            <div className="flex items-center gap-1.5 font-mono text-xs text-slate-600 dark:text-slate-400">
+              <span className="text-slate-400 dark:text-slate-500">{t('link_label')}:</span>
+              <span className={`font-semibold ${motionState.connection.connected ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
+                {motionState.connection.connected ? t('node_connected') : t('node_disconnected')}
+              </span>
+              <span className="text-slate-400 dark:text-slate-500 text-[11px]">
+                ({motionState.connection.ip}:{motionState.connection.port})
+              </span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1.5 text-xs font-mono">
+              <span className="text-slate-500 dark:text-slate-400">{t('current_position')}:</span>
+              <span className="font-bold text-slate-900 dark:text-white bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-md border border-slate-200 dark:border-slate-700">
+                {toDisplayMm(motionState.currentPositionMm).toFixed(2)} mm
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-2.5 text-slate-800 dark:text-slate-200 shadow-2xs flex flex-wrap items-center justify-between gap-3 transition-colors">
+          <div className="flex items-center gap-3 min-w-0">
+            <span className="rounded bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 shrink-0">
+              {t('tab_plc')}
+            </span>
+            <div className="flex items-center gap-2 min-w-0">
+              <span
+                className={`h-2.5 w-2.5 rounded-full shrink-0 ${
+                  plcState.connection.connected
+                    ? 'bg-emerald-500 animate-pulse'
+                    : 'bg-red-500'
+                }`}
+              />
+              <span className="text-sm font-semibold text-slate-900 dark:text-white tracking-tight truncate">
+                {plcState.statusText || (activeValvesCount > 0
+                  ? `${activeValvesCount} ${t('valves_active')}`
+                  : t('state_ready'))}
+              </span>
+            </div>
+
+            <span className="text-slate-300 dark:text-slate-700 hidden sm:inline">|</span>
+
+            <div className="flex items-center gap-1.5 font-mono text-xs text-slate-600 dark:text-slate-400">
+              <span className="text-slate-400 dark:text-slate-500">{t('link_label')}:</span>
+              <span className={`font-semibold ${plcState.connection.connected ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
+                {plcState.connection.connected ? t('node_connected') : t('node_disconnected')}
+              </span>
+              <span className="text-slate-400 dark:text-slate-500 text-[11px]">
+                ({plcState.connection.ip}:{plcState.connection.port})
+              </span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1.5 text-xs font-mono">
+              <span className="text-slate-500 dark:text-slate-400">{t('valves_status')}:</span>
+              <span className="font-bold text-slate-900 dark:text-white bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-md border border-slate-200 dark:border-slate-700">
+                {activeValvesCount} / {plcState.valves.length} ON
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-2.5 text-slate-800 dark:text-slate-200 shadow-2xs flex flex-wrap items-center justify-between gap-3 transition-colors">
+          <div className="flex items-center gap-3 min-w-0">
+            <span className="rounded bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 shrink-0">
+              {t('tab_prefeeder')}
+            </span>
+            <div className="flex items-center gap-2 min-w-0">
+              <span
+                className={`h-2.5 w-2.5 rounded-full shrink-0 ${
+                  !pfConnected
+                    ? 'bg-red-500'
+                    : pfHasError
+                      ? 'bg-red-500'
+                      : preFeederState.isRunning
+                        ? 'bg-emerald-500 animate-pulse'
+                        : 'bg-emerald-500'
+                }`}
+              />
+              <span
+                className={`text-sm font-semibold tracking-tight truncate ${
+                  pfHasError
+                    ? 'text-red-700 dark:text-red-300'
+                    : 'text-slate-900 dark:text-white'
+                }`}
+              >
+                {preFeederState.statusText || (preFeederState.isRunning ? t('prefeeder_active_desc') : t('state_ready'))}
+              </span>
+            </div>
+
+            <span className="text-slate-300 dark:text-slate-700 hidden sm:inline">|</span>
+
+            <div className="flex items-center gap-1.5 font-mono text-xs text-slate-600 dark:text-slate-400">
+              <span className="text-slate-400 dark:text-slate-500">{t('link_label')}:</span>
+              <span className={`font-semibold ${pfConnected ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
+                {pfConnected ? t('node_connected') : t('node_disconnected')}
+              </span>
+              <span className="text-slate-400 dark:text-slate-500 text-[11px]">
+                ({preFeederState.connection.ip}:{preFeederState.connection.port})
+              </span>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1.5 text-xs font-mono">
+              <span className="text-slate-500 dark:text-slate-400">{t('feed_status')}:</span>
+              <span
+                className={`font-bold px-2 py-0.5 rounded-md border text-xs ${
+                  preFeederState.isRunning
+                    ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
+                    : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-700'
+                }`}
+              >
+                {preFeederState.isRunning ? 'FEEDING' : 'IDLE'}
+              </span>
             </div>
           </div>
         </div>
@@ -588,79 +745,8 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
           </p>
         ) : null}
 
-        <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className="mt-4 grid grid-cols-1 gap-3">
           {moduleCard(
-            'motion',
-            t('tab_motion'),
-            motionState.statusText,
-            motionState.connection.connected,
-            !!motionState.hasError,
-            <>
-              <button
-                id="btn-main-motion-stop"
-                type="button"
-                onClick={onMotionStop}
-                disabled={!onMotionStop}
-                className={`${btnBase} border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 hover:bg-red-100 disabled:opacity-40`}
-              >
-                <Square className="h-3.5 w-3.5 fill-current" />
-                <span>{t('btn_stop')}</span>
-              </button>
-              <button
-                id="btn-main-motion-reset"
-                type="button"
-                onClick={onMotionReset}
-                disabled={!onMotionReset}
-                className={`${btnBase} border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 disabled:opacity-40`}
-              >
-                <RotateCcw className="h-3.5 w-3.5 text-amber-600" />
-                <span>{t('btn_reset')}</span>
-              </button>
-              <button
-                id="btn-main-motion-search-home"
-                type="button"
-                onClick={onMotionSearchHome}
-                disabled={!onMotionSearchHome || motionState.isMoving}
-                className={`${btnBase} border-emerald-200 dark:border-emerald-900/60 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-100 disabled:opacity-40`}
-              >
-                <Home className="h-3.5 w-3.5" />
-                <span>{t('btn_search_home')}</span>
-              </button>
-            </>
-          )}
-
-          {moduleCard(
-            'plc',
-            t('tab_plc'),
-            plcState.statusText,
-            plcState.connection.connected,
-            !!plcState.hasError,
-            <>
-              <button
-                id="btn-main-plc-reset"
-                type="button"
-                onClick={onPlcReset}
-                disabled={!onPlcReset}
-                className={`${btnBase} border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 disabled:opacity-40`}
-              >
-                <RotateCcw className="h-3.5 w-3.5 text-amber-600" />
-                <span>{t('btn_reset')}</span>
-              </button>
-              <button
-                id="btn-main-plc-all-off"
-                type="button"
-                onClick={onPlcAllOff}
-                disabled={!onPlcAllOff}
-                className={`${btnBase} border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 disabled:opacity-40`}
-              >
-                <PowerOff className="h-3.5 w-3.5 text-slate-500" />
-                <span>{t('btn_all_off')}</span>
-              </button>
-            </>
-          )}
-
-          {moduleCard(
-            'prefeeder',
             t('tab_prefeeder'),
             preFeederState.statusText,
             preFeederState.connection.connected,

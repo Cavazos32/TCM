@@ -65,7 +65,6 @@ const DEFAULT_MACHINE: MachineState = {
   refillPrompt: '',
   stepByStep: false,
   trialMode: false,
-  ignorePrefeeder: false,
   pauseEnabled: false,
   progress: 0,
   cycleTimeSec: 0,
@@ -320,8 +319,17 @@ export function useHmiState() {
       return;
     }
     try {
-      const res = await api.resetCycle({ confirm: true, doHome: false });
+      const res = await api.resetCycle({ confirm: true, doHome: true });
       showResetFail(res as { ok?: boolean; error?: string });
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const machineHomeCmd = useCallback(async () => {
+    try {
+      const res = await api.machineHome();
+      if (res.ok === false && res.error) window.alert(String(res.error));
     } catch {
       /* ignore */
     }
@@ -413,27 +421,6 @@ export function useHmiState() {
 
   const setCycleTrialMode = useCallback((on: boolean) => {
     api.setCycleTrialMode(on).catch(() => {});
-  }, []);
-
-  const setCycleIgnorePrefeeder = useCallback((on: boolean) => {
-    api
-      .setCycleIgnorePrefeeder(on)
-      .then((res) => {
-        if (res && res.ok === false && res.error) {
-          window.alert(res.error);
-          return;
-        }
-        if (res?.ok && typeof res.ignorePrefeeder === 'boolean') {
-          setView((prev) => ({
-            ...prev,
-            machineState: {
-              ...prev.machineState,
-              ignorePrefeeder: res.ignorePrefeeder!,
-            },
-          }));
-        }
-      })
-      .catch(() => {});
   }, []);
 
   const startRefill = useCallback(async (opts?: { mm?: number; asdaMm?: number }) => {
@@ -731,12 +718,12 @@ export function useHmiState() {
     resume,
     pauseCycle,
     resetCycleCmd,
+    machineHomeCmd,
     setCutOffset,
     toggleCycleMaterialist,
     toggleCycleBusy,
     setCycleStepByStep,
     setCycleTrialMode,
-    setCycleIgnorePrefeeder,
     startRefill,
     confirmRefill,
     retryRefill,

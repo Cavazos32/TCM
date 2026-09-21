@@ -106,6 +106,7 @@ CYCLE_FAULT_TO_CODE: dict[str, str] = {
     "feed_cmd": "E011",
     "move_cmd": "E012",
     "deposit_cmd": "E013",
+    "clearance_cmd": "E013",
     "wip_blower": "E010",
     "wip_start": "E010",
     "feed_incomplete": "E014",

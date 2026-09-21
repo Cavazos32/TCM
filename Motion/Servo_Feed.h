@@ -24,9 +24,12 @@ bool feedOmIsSettled();
 float feedOmOfficialFromRaw(float mmAbs);
 
 // Laser en ventana Feed VALIDATE*: Active/ON = material OK; OFF = E004/E005.
-// Excepción gated: post-corrección, LASER_SEEK avanza hasta ON o timeout (luego fuera).
+// Excepción gated: post-corrección, LASER_SEEK avanza hasta ON o timeout;
+// al flanco ON → halt inmediato y FEED_OK (sin ventana PHYS OM 50–58).
 // ioLaser*Active = sensor ON (material presente). Fuera de ventana no genera EXXX.
 bool feedLaserMaterialPresent(bool sideR);
+// Pin crudo (sin debounce HMI) — halt en seek/corrección.
+bool feedLaserMaterialPresentRaw(bool sideR);
 
 // —— CAN servos ——
 extern bool canInitialized;

@@ -1,23 +1,38 @@
-[11:06:30] [PLC] [INFO] CMD Cutter L byte=0x1A (26) setOut=CUTTER_L → ON
-[11:06:30] [PLC] [INFO] CMD Cutter L byte=0x1A (26) setOut=CUTTER_L → OFF
-[11:06:41] [MAQUINA] [INFO] Delays — holderOn=120ms open=60ms grippers=60ms cutter=70ms postCut=60ms linear=60ms dwell=100ms gripRel=200ms asentar=30ms · feedSides=L
-[11:06:41] [MAQUINA] [ERROR] (0x040) Cycle Start (0x040) length=-255.0 mm qty=1
-[11:06:41] [MAQUINA] [INFO] prepareBeforeCut: cutters/grippers safe + Holder/Encoder cerrados
-[11:06:41] [MAQUINA] [INFO] PreFeeder: ignorado (debug bypass)
-[11:06:41] [MAQUINA] [INFO] Delay · Delay Holder ON: 120 ms
-[11:06:41] [MAQUINA] [CMD] Feed start lados=L
-[11:06:41] [ANDON] [INFO] BusyState
-[11:06:42] [MAQUINA] [INFO] Delay · Delay tras cerrar pinzas: 60 ms
-[11:06:42] [MAQUINA] [CMD] enc_set0: omitido (Stage2 RESET OM en Motion)
-[11:06:42] [MAQUINA] [INFO] Holder/Encoder: se mantienen cerrados (sin abrir mid-pieza)
-[11:06:42] [MAQUINA] [INFO] Delay · Delay (holder se mantiene): 60 ms
-[11:06:42] [MAQUINA] [CMD] Stage2 START modelMm=-255.0 → targetAbsMm=255.0 sides=L; deposit abs sigue 255.0 mm
-[11:06:43] [MAQUINA] [RX] Stage2 phase=WAIT_REACHED_1 gen=2
-[11:06:43] [MAQUINA] [INFO] Stage2 phase=SETTLE_1 gen=2
-[11:06:44] [MAQUINA] [RX] Stage2 phase=WAIT_REACHED_2 gen=2
-[11:06:44] [MAQUINA] [INFO] Stage2 phase=SETTLE_2 gen=2
-[11:06:45] [MAQUINA] [ERROR] Stage2 phase=DONE_NG gen=2
-[11:06:45] [MAQUINA] [ERROR] Stage2 NG gen=2 piece=310.0 target=255.0 apPct=80.0 apMm=204.0 fast=3000 fine=800 omL=178.5 omR=178.5 avg=178.5 rem=76.5 fOmL=222.5 fOmR=222.5 fAvg=222.5 fault=STAGE2: fuera de ventana final
-[11:06:45] [MAQUINA] [ERROR] Stage2 NG — STAGE2: fuera de ventana final
-[11:06:45] [MAQUINA] [INFO] Finish: Holder/Encoder cerrados; cutters/grippers OFF
-[11:06:45] [ANDON] [ERROR] ErrorState
+[18:55:42] [MAQUINA] [INFO] Modo prueba en vacío OFF (bypass sensores/encoder)
+[18:55:42] [MAQUINA] [INFO] Delays — holderOn=45ms open=20ms grippers=20ms cutter=150ms postCut=25ms linear=20ms dwell=35ms gripRel=50ms asentar=30ms · feedSides=L · refill=56mm asda=-300mm
+[18:55:42] [MAQUINA] [ERROR] (0x040) Cycle Start (0x040) length=-265.0 mm qty=1
+[18:55:42] [MAQUINA] [INFO] prepareBeforeCut: cutters/grippers safe + Holder/Encoder cerrados
+[18:55:42] [MAQUINA] [CMD] ASDA ya en 0 (pos=0.12 mm) — sin MOVE_ZERO al Start
+[18:55:42] [MAQUINA] [INFO] PreFeeder: In process ON (ciclo Busy)
+[18:55:42] [MAQUINA] [INFO] Delay · Delay Holder ON: 45 ms
+[18:55:42] [MAQUINA] [CMD] Feed start lados=L
+[18:55:42] [ANDON] [INFO] BusyState
+[18:55:43] [MAQUINA] [INFO] Delay · Delay tras cerrar pinzas: 20 ms
+[18:55:43] [MAQUINA] [INFO] enc_set0: omitido (lineal TCP no usa OM)
+[18:55:43] [MAQUINA] [INFO] Holder+Encoder OFF (abren para lineal)
+[18:55:43] [MAQUINA] [INFO] Delay · Delay Holder/Encoder OFF: 20 ms
+[18:55:43] [MAQUINA] [INFO] Lineal MOVE TCP modelMm=-265.0 cutOffset→targetAbsMm=257.5 sides=L rpm=3000
+[18:55:45] [MAQUINA] [RX] Lineal MOVE TCP OK targetAbsMm=257.5 rpm=3000
+[18:55:45] [MAQUINA] [INFO] Delay · Delay antes del corte: 20 ms
+[18:55:45] [MAQUINA] [INFO] Holder+Encoder ON (cierran pre-corte)
+[18:55:45] [MAQUINA] [INFO] Delay · Delay tras cerrar holder: 45 ms
+[18:55:45] [MAQUINA] [INFO] Cortador ON (Set) lados=L
+[18:55:45] [MAQUINA] [INFO] Delay · Delay entre Set y Res cortador: 150 ms
+[18:55:45] [MAQUINA] [INFO] Cortador OFF (Res) lados=L
+[18:55:45] [MAQUINA] [INFO] Delay · Delay post-corte: 25 ms
+[18:55:45] [MAQUINA] [CMD] WIP start ref=deposit_target 387.5 mm (post Idle/Reached)
+[18:55:45] [MAQUINA] [INFO] Delay · Delay tras depósito: 35 ms
+[18:55:45] [MAQUINA] [RX] (0x4C) trigger PreFeeder Tfeed lados=L — R(0x4C)=omit L(0x51)=ok
+[18:55:45] [MAQUINA] [INFO] Delay · Delay tras abrir pinzas: 50 ms
+[18:55:46] [MAQUINA] [INFO] Despeje post-pinzas → 392.5 mm (+|clearance|=5.0); WIP fin ref=392.5 mm
+[18:55:46] [MAQUINA] [INFO] WIP Delivery: fin(grippers)=392.5 → offset soplo=294.5 → inicio(cortador)=98.0 → HOME (0.25s c/u, offset=98.0)
+[18:55:47] [MAQUINA] [RX] WIP Delivery move ok @ fin_offset=294.5 mm
+[18:55:47] [MAQUINA] [INFO] WIP Delivery blower ON @ fin=294.5 mm hold=0.25s
+[18:55:47] [MAQUINA] [RX] WIP Delivery blower OFF ok @ fin=294.5 mm
+[18:55:48] [MAQUINA] [RX] WIP Delivery move ok @ inicio=98.0 mm
+[18:55:48] [MAQUINA] [INFO] WIP Delivery blower ON @ inicio=98.0 mm hold=0.25s
+[18:55:48] [MAQUINA] [RX] WIP Delivery blower OFF ok @ inicio=98.0 mm
+[18:55:48] [MAQUINA] [INFO] Delay · Delay asentar: 30 ms
+[18:55:49] [MAQUINA] [RX] Pieza 1/1 OK
+[18:55:49] [MAQUINA] [INFO] Finish: Holder/Encoder cerrados; cutters/grippers OFF
+[18:55:49] [MAQUINA] [INFO] PreFeeder: espera settled antes de Idle · L:buffer≠Full

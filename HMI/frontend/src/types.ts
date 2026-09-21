@@ -12,7 +12,11 @@ export interface CycleConfig {
   dwellAtDestMs: number;
   depositBatchSize: number;
   depositExtraMm: number;
+  /** Avance corto ASDA tras abrir pinzas; entra en ref WIP soplo fin. */
+  gripperClearanceMm?: number;
   cutOffsetMm?: number;
+  /** Offset blower desde cada punta hacia el centro (fin=start−off, inicio=+off). */
+  wipBlowerInicioOffsetMm?: number;
   motionWaitTimeoutS: number;
   feedWaitTimeoutS: number;
   pfReadyTimeoutS: number;
@@ -37,6 +41,8 @@ export interface CycleStep {
   badge?: string;
   /** Checkpoint físico en paso a paso (exige Next). Ausente/false = auto. */
   sbsPause?: boolean;
+  /** False = delay fijo (no editable en UI). Default true si hay delayKey. */
+  delayEditable?: boolean;
 }
 
 export interface LogEntry {
@@ -92,7 +98,6 @@ export interface MachineState {
   refillPrompt: string;
   stepByStep: boolean;
   trialMode: boolean;
-  ignorePrefeeder: boolean;
   pauseEnabled: boolean;
   progress: number;
   cycleTimeSec: number;

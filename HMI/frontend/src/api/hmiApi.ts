@@ -56,8 +56,19 @@ export function pauseCycle() {
 export function resetCycle(opts?: { confirm?: boolean; doHome?: boolean }) {
   return post('/api/cycle/reset', {
     confirm: !!opts?.confirm,
-    doHome: !!opts?.doHome,
+    doHome: opts?.doHome ?? true,
   });
+}
+
+export function machineHome() {
+  return post<{
+    ok: boolean;
+    error?: string;
+    asdaZero?: boolean;
+    encSet0R?: boolean;
+    encSet0L?: boolean;
+    allOff?: boolean;
+  }>('/api/machine/home');
 }
 
 export function confirmError() {
@@ -89,13 +100,6 @@ export function setCycleStepByStep(on: boolean) {
 export function setCycleTrialMode(on: boolean) {
   return post<{ ok: boolean; trialMode?: boolean; error?: string }>(
     '/api/cycle/trial-mode',
-    { on }
-  );
-}
-
-export function setCycleIgnorePrefeeder(on: boolean) {
-  return post<{ ok: boolean; ignorePrefeeder?: boolean; error?: string }>(
-    '/api/cycle/ignore-prefeeder',
     { on }
   );
 }
