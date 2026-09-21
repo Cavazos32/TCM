@@ -324,13 +324,29 @@ def api_error_reset():
 @app.post("/api/cycle/materialist")
 def api_cycle_materialist():
     body = request.get_json(silent=True) or {}
-    return jsonify(get_state().cmd_cycle_materialist(bool(body.get("on", True))))
+    return jsonify(get_state().cmd_cycle_materialist(_parse_on(body)))
+
+
+@app.post("/api/cycle/busy")
+def api_cycle_busy():
+    body = request.get_json(silent=True) or {}
+    return jsonify(get_state().cmd_cycle_busy(_parse_on(body)))
+
+
+def _parse_on(body: dict, default: bool = True) -> bool:
+    """Acepta on bool / 0-1 / true-false; no forzar True si viene false."""
+    if "on" not in body:
+        return default
+    v = body.get("on")
+    if isinstance(v, str):
+        return v.strip().lower() in ("1", "true", "yes", "on")
+    return bool(v)
 
 
 @app.post("/api/cycle/step-by-step")
 def api_cycle_step_by_step():
     body = request.get_json(silent=True) or {}
-    return jsonify(get_state().cmd_cycle_step_by_step(bool(body.get("on", True))))
+    return jsonify(get_state().cmd_cycle_step_by_step(_parse_on(body)))
 
 
 @app.post("/api/cycle/trial-mode")
@@ -363,6 +379,11 @@ def api_cycle_refill_confirm():
     body = request.get_json(silent=True) or {}
     ok = body.get("ok", body.get("confirm", True))
     return jsonify(get_state().cmd_cycle_refill_confirm(bool(ok)))
+
+
+@app.post("/api/cycle/refill/retry")
+def api_cycle_refill_retry():
+    return jsonify(get_state().cmd_cycle_refill_retry())
 
 
 @app.get("/api/cycle/config")

@@ -101,20 +101,39 @@ export function mapMachineState(
   const targetPieces =
     cycle.active && cycle.totalReps > 0 ? cycle.totalReps : qty;
 
+  const errorActive = !!snap.error?.active;
+  const faultModule = errorActive ? snap.error?.module || '' : '';
+  const modKey = faultModule.toLowerCase();
+  let faultModuleStatus = '';
+  if (modKey.includes('motion')) {
+    faultModuleStatus = snap.motion.status?.text ?? '';
+  } else if (modKey.includes('plc')) {
+    faultModuleStatus = snap.plc.status?.text ?? '';
+  } else if (modKey.includes('pre') || modKey.includes('feeder')) {
+    faultModuleStatus = snap.prefeeder.status?.text ?? '';
+  }
+
+  // Estado general de máquina: no mezclar EXXX (va al panel de recovery).
+  const generalStatus = errorActive
+    ? cycle.name || snap.banner.text
+    : snap.banner.text;
+
   return {
     model: model?.name ?? '—',
     offsetMm: cycle.config?.cutOffsetMm ?? 0,
     mm: snap.mm,
     rpm: snap.rpm,
-    statusText: snap.banner.text,
+    statusText: generalStatus,
     isRunning: cycle.active && !cycle.paused,
     isPaused: cycle.paused,
     cycleActive: cycle.active,
     cycleStep: cycle.step ?? 0,
     cycleStepLabel: cycle.stepLabel ?? '',
     cycleMaterialist: cycle.materialist ?? false,
+    cycleBusy: !!(cycle.busy ?? false),
     refillActive: !!cycle.refillActive,
     refillAwaitingConfirm: !!cycle.refillAwaitingConfirm,
+    refillPrompt: String(cycle.refillPrompt || ''),
     stepByStep: cycle.stepByStep ?? false,
     trialMode: cycle.trialMode ?? false,
     ignorePrefeeder: cycle.ignorePrefeeder ?? false,
@@ -135,8 +154,13 @@ export function mapMachineState(
     targetPieces,
     cycleCompleted: cycle.completed ?? false,
     safetyExhaust: !!snap.motion.safetyExhaust,
-    fault: snap.error?.active ? snap.error.ui : cycle.fault || undefined,
+    errorActive,
+    fault: errorActive ? snap.error?.ui : cycle.fault || undefined,
     faultClass: snap.error?.class || cycle.faultClass || undefined,
+    faultCode: errorActive ? snap.error?.code : undefined,
+    faultModule: faultModule || undefined,
+    faultDescription: errorActive ? snap.error?.description : undefined,
+    faultModuleStatus: faultModuleStatus || undefined,
     errorNeedsConfirm: !!snap.error?.needsConfirm && !snap.error?.confirmed,
     errorNeedsHome: !!snap.error?.needsHome,
   };
@@ -204,6 +228,7 @@ export function mapPlcState(snap: BackendSnapshot): PlcState {
       port: snap.plcLink.port,
     },
     statusText: snap.plc.status?.text ?? '',
+    hasError: snap.plc.status?.kind === 'error',
     blowerSec: Number(snap.plc.blowerSec ?? 2),
     valves,
   };
@@ -237,6 +262,7 @@ export function mapPreFeederState(snap: BackendSnapshot): PreFeederState {
     },
     isRunning: !!running,
     statusText: pf.status?.text ?? '',
+    hasError: pf.status?.kind === 'error',
     sensorsL: buildSensors(snap, 'L'),
     sensorsR: buildSensors(snap, 'R'),
   };

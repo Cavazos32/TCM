@@ -498,6 +498,7 @@ struct FeedSideRt {
   float errAbsBeforeCorr = 0.0f;
   bool laserState = false;
   uint8_t correctionCount = 0;
+  bool laserSeekDone = false;  // seek gated: solo una vez post-corrección
   FeedValResult result = FVR_NONE;
   uint16_t errByte = 0;
   char fault[FEED_FAULT_REASON_MAX] = "";
@@ -505,6 +506,8 @@ struct FeedSideRt {
   uint32_t moveStartMs = 0;
   uint32_t absDueMs = 0;
   uint32_t lastTrPollMs = 0;
+  uint32_t lastLaserPollMs = 0;
+  uint32_t seekDeadlineMs = 0;
   uint32_t settleUntilMs = 0;
   uint8_t omReadMiss = 0;
   bool dirChecked = false;
@@ -531,6 +534,7 @@ volatile uint16_t feedDecRampMsR = FEED_SERVO_DEC_RAMP_MS;
 volatile bool feedSkipEncoderConfirm = false;
 volatile float feedApproachPct = FEED_APPROACH_PCT_DEFAULT;
 volatile float feedMoveSpeedPct = FEED_MOVE_SPEED_PCT_DEFAULT;
+volatile uint32_t feedLaserSeekMs = FEED_LASER_SEEK_MS_DEFAULT;
 FeedTestReq feedTestReq = {};  // legacy HTTP both-sides; TCP usa feedSides[].pending
 
 bool feedCalibrationTest = false;
@@ -554,6 +558,9 @@ int32_t clampFeedTestChunkSteps(int32_t steps) { return clampVal(steps, (int32_t
 uint32_t clampFeedSsSpeedPp(uint32_t pp) { return clampVal(pp, (uint32_t)FEED_SERVO_BASE_PP_MIN, (uint32_t)FEED_SERVO_BASE_PP_MAX); }
 float clampFeedApproachPct(float pct) { return clampVal(pct, FEED_APPROACH_PCT_MIN, FEED_APPROACH_PCT_MAX); }
 float clampFeedMoveSpeedPct(float pct) { return clampVal(pct, FEED_MOVE_SPEED_PCT_MIN, FEED_MOVE_SPEED_PCT_MAX); }
+uint32_t clampFeedLaserSeekMs(uint32_t ms) {
+  return clampVal(ms, (uint32_t)FEED_LASER_SEEK_MS_MIN, (uint32_t)FEED_LASER_SEEK_MS_MAX);
+}
 
 static float feedCalibratedCountsPerMm(bool sideR) { return sideR ? feedCalCountsPerMmR : feedCalCountsPerMmL; }
 static float feedSpm(bool) { return FEED_STEPS_PER_MM_DEFAULT; }
@@ -715,6 +722,8 @@ static const char* feedSidePhaseName(FeedSidePhase p)
     case FSP_WAIT_SERVO_CORR: return "WAIT_SERVO_CORR";
     case FSP_SETTLE_FINAL: return "SETTLE_FINAL";
     case FSP_VALIDATE_FINAL: return "VALIDATE_FINAL";
+    case FSP_LASER_SEEK: return "LASER_SEEK";
+    case FSP_LASER_SEEK_HALT: return "LASER_SEEK_HALT";
     case FSP_DONE_OK: return "DONE_OK";
     case FSP_DONE_NG: return "DONE_NG";
     default: return "IDLE";
@@ -826,6 +835,9 @@ static void feedSideClearDiag(FeedSideRt& s)
   s.errAbsBeforeCorr = 0.0f;
   s.laserState = false;
   s.correctionCount = 0;
+  s.laserSeekDone = false;
+  s.lastLaserPollMs = 0;
+  s.seekDeadlineMs = 0;
   s.result = FVR_NONE;
   s.errByte = 0;
   s.fault[0] = '\0';
@@ -1087,6 +1099,27 @@ static void feedSideService(bool sideR, uint32_t now)
         }
 
         // Final tras corrección
+        // Seek gated: sensor OFF → avanzar hasta ON (independiente de ventana OM).
+        if (!s.laserState && s.correctionCount >= 1 && !s.laserSeekDone) {
+          const float mmS = feedPpToMmS(feedSideMovePp(sideR), sideR);
+          const float seekMm = mmS * ((float)feedLaserSeekMs / 1000.0f) * FEED_LASER_SEEK_DIST_MARGIN;
+          const int32_t steps = feedMmToCmdStepsSigned(seekMm, sideR);
+          if (steps <= 0) {
+            feedSideFinish(sideR, FVR_INCONSISTENT, laserErr, "FEED_INCONSISTENT");
+            break;
+          }
+          Serial.printf("FEED %c LASER_SEEK start %.1fmm timeout=%lums\n",
+                        sideR ? 'R' : 'L', (double)seekMm, (unsigned long)feedLaserSeekMs);
+          if (!feedSideIssueMove(sideR, steps, now)) {
+            feedSideFinish(sideR, FVR_NG, feedSideNoFbErr(sideR), "FEED: sin feedback 6064");
+            break;
+          }
+          s.laserSeekDone = true;
+          s.seekDeadlineMs = now + feedLaserSeekMs;
+          s.lastLaserPollMs = 0;
+          s.phase = FSP_LASER_SEEK;
+          break;
+        }
         if (vr == FVR_OK) {
           const float errAbs = fabsf(FEED_TARGET_FIXED_MM - om);
           if (errAbs > s.errAbsBeforeCorr + 1e-3f) {
@@ -1100,6 +1133,38 @@ static void feedSideService(bool sideR, uint32_t now)
                        (vr == FVR_INCONSISTENT) ? laserErr : MOT_ERR_TOLERANCE_WINDOW,
                        feedValResultName(vr));
       }
+      break;
+
+    case FSP_LASER_SEEK:
+      {
+        const uint8_t laserErr = sideR ? MOT_ERR_LASER_R : MOT_ERR_LASER_L;
+        if (s.lastLaserPollMs == 0 || (now - s.lastLaserPollMs) >= FEED_LASER_SEEK_POLL_MS) {
+          s.lastLaserPollMs = now;
+          if (feedLaserMaterialPresent(sideR)) {
+            s.laserState = true;
+            canHaltSide(sideR);
+            Serial.printf("FEED %c LASER_SEEK hit → halt\n", sideR ? 'R' : 'L');
+            s.settleUntilMs = now + FEED_HALT_SETTLE_MS;
+            s.phase = FSP_LASER_SEEK_HALT;
+            break;
+          }
+        }
+        if (now >= s.seekDeadlineMs) {
+          canHaltSide(sideR);
+          s.laserState = false;
+          Serial.printf("FEED %c LASER_SEEK timeout → %s\n",
+                        sideR ? 'R' : 'L', sideR ? "E004" : "E005");
+          feedSideFinish(sideR, FVR_INCONSISTENT, laserErr, "FEED_INCONSISTENT");
+          break;
+        }
+      }
+      break;
+
+    case FSP_LASER_SEEK_HALT:
+      if (now < s.settleUntilMs) break;
+      s.settleUntilMs = now + FEED_OM_SETTLE_MS;
+      s.omReadMiss = 0;
+      s.phase = FSP_SETTLE_FINAL;
       break;
 
     case FSP_CORRECTION:
@@ -1148,6 +1213,7 @@ void feedLoadConfig()
   feedSkipEncoderConfirm = feedPrefs.getBool("skipEnc", false);
   feedApproachPct = clampFeedApproachPct(feedPrefs.getFloat("apPct", FEED_APPROACH_PCT_DEFAULT));
   feedMoveSpeedPct = clampFeedMoveSpeedPct(feedPrefs.getFloat("mvPct", FEED_MOVE_SPEED_PCT_DEFAULT));
+  feedLaserSeekMs = clampFeedLaserSeekMs(feedPrefs.getUInt("seekMs", FEED_LASER_SEEK_MS_DEFAULT));
   feedPrefs.end();
 }
 
@@ -1167,6 +1233,7 @@ void feedSaveConfig()
   feedPrefs.putBool("skipEnc", feedSkipEncoderConfirm);
   feedPrefs.putFloat("apPct", feedApproachPct);
   feedPrefs.putFloat("mvPct", feedMoveSpeedPct);
+  feedPrefs.putUInt("seekMs", feedLaserSeekMs);
   feedPrefs.end();
 }
 
@@ -1218,6 +1285,7 @@ static void feedSideAppendJson(String& j, bool sideR)
   j += ",\"finalOmMm\":" + String(s.finalOmMm, 2);
   j += ",\"laser\":"; j += s.laserState ? "true" : "false";
   j += ",\"correctionCount\":" + String((unsigned)s.correctionCount);
+  j += ",\"laserSeekDone\":"; j += s.laserSeekDone ? "true" : "false";
   j += ",\"result\":\""; j += feedValResultName(s.result); j += "\"";
   j += ",\"errByte\":" + String((unsigned)s.errByte);
   j += ",\"fault\":\""; j += String(s.fault); j += "\"";
@@ -1246,6 +1314,7 @@ String feedStatusJson()
   j += ",\"targetMm\":" + String(FEED_TARGET_FIXED_MM, 1);
   j += ",\"approachPct\":" + String(feedApproachPct, 1);
   j += ",\"moveSpeedPct\":" + String(feedMoveSpeedPct, 1);
+  j += ",\"laserSeekMs\":" + String((unsigned long)feedLaserSeekMs);
   j += ",\"targetMmL\":" + String(feedTargetMmL, 1);
   j += ",\"targetMmR\":" + String(feedTargetMmR, 1);
   j += ",\"skipEnc\":"; j += feedSkipEncoderConfirm ? "true" : "false";
@@ -1378,6 +1447,8 @@ static void handleGetFeedTestConfig()
   if (server.hasArg("approachPct")) apPct = clampFeedApproachPct(server.arg("approachPct").toFloat());
   float mvPct = feedMoveSpeedPct;
   if (server.hasArg("moveSpeedPct")) mvPct = clampFeedMoveSpeedPct(server.arg("moveSpeedPct").toFloat());
+  uint32_t seekMs = feedLaserSeekMs;
+  if (server.hasArg("laserSeekMs")) seekMs = clampFeedLaserSeekMs((uint32_t)server.arg("laserSeekMs").toInt());
 
   FeedProfilePlan planL = feedProfilePlan(tMmL, vMmL, false, decRampMsL);
   FeedProfilePlan planR = feedProfilePlan(tMmR, vMmR, true, decRampMsR);
@@ -1394,6 +1465,9 @@ static void handleGetFeedTestConfig()
   response += ",\"decRampMsR\":" + String(decRampMsR);
   response += ",\"approachPct\":" + String(apPct, 1);
   response += ",\"moveSpeedPct\":" + String(mvPct, 1);
+  response += ",\"laserSeekMs\":" + String((unsigned long)seekMs);
+  response += ",\"laserSeekMsMin\":" + String((unsigned)FEED_LASER_SEEK_MS_MIN);
+  response += ",\"laserSeekMsMax\":" + String((unsigned)FEED_LASER_SEEK_MS_MAX);
   response += ",\"targetFixedMm\":" + String(FEED_TARGET_FIXED_MM, 1);
   response += ",\"approachMm\":" + String(FEED_TARGET_FIXED_MM * apPct / 100.0f, 1);
   response += ",\"speedMin\":" + String(FEED_MM_S_MIN, 1);
@@ -1419,6 +1493,8 @@ static void handleSetFeedTestConfig()
     feedApproachPct = clampFeedApproachPct(server.arg("approachPct").toFloat());
   if (server.hasArg("moveSpeedPct"))
     feedMoveSpeedPct = clampFeedMoveSpeedPct(server.arg("moveSpeedPct").toFloat());
+  if (server.hasArg("laserSeekMs"))
+    feedLaserSeekMs = clampFeedLaserSeekMs((uint32_t)server.arg("laserSeekMs").toInt());
   {
     uint16_t decRampMsL = feedDecRampMsL;
     uint16_t decRampMsR = feedDecRampMsR;
@@ -1503,6 +1579,8 @@ static void handleFeedTestSensor()
     feedApproachPct = clampFeedApproachPct(server.arg("approachPct").toFloat());
   if (server.hasArg("moveSpeedPct"))
     feedMoveSpeedPct = clampFeedMoveSpeedPct(server.arg("moveSpeedPct").toFloat());
+  if (server.hasArg("laserSeekMs"))
+    feedLaserSeekMs = clampFeedLaserSeekMs((uint32_t)server.arg("laserSeekMs").toInt());
   {
     uint16_t decRampMsL = feedDecRampMsL;
     uint16_t decRampMsR = feedDecRampMsR;

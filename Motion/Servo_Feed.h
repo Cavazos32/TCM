@@ -24,6 +24,7 @@ bool feedOmIsSettled();
 float feedOmOfficialFromRaw(float mmAbs);
 
 // Laser en ventana Feed VALIDATE*: Active/ON = material OK; OFF = E004/E005.
+// Excepción gated: post-corrección, LASER_SEEK avanza hasta ON o timeout (luego fuera).
 // ioLaser*Active = sensor ON (material presente). Fuera de ventana no genera EXXX.
 bool feedLaserMaterialPresent(bool sideR);
 
@@ -56,6 +57,7 @@ extern volatile uint16_t feedDecRampMsR;
 extern volatile bool feedSkipEncoderConfirm;
 extern volatile float feedApproachPct;
 extern volatile float feedMoveSpeedPct;
+extern volatile uint32_t feedLaserSeekMs;
 extern FeedTestReq feedTestReq;
 extern bool feedCalibrationTest;
 extern char feedFaultReason[FEED_FAULT_REASON_MAX];
@@ -88,6 +90,7 @@ float clampFeedOffsetMm(float mm);
 float clampFeedCalCountsPerMm(float spm);
 float clampFeedApproachPct(float pct);
 float clampFeedMoveSpeedPct(float pct);
+uint32_t clampFeedLaserSeekMs(uint32_t ms);
 String feedStatusJson();
 
 bool feedQueueTest(const FeedTestReq& req, String& err);

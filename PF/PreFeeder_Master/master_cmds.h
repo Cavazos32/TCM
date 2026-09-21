@@ -24,7 +24,6 @@ static inline PfCmdScope pfMasterCmdScope(const String& cmd)
       || cmd == "setInProcess" || cmd == "inProcess"
       || cmd == "refillMaterial" || cmd == "refillDereeler"
       || cmd == "refillServo" || cmd == "refillFeeder"
-      || cmd == "setBuzzerMute" || cmd == "buzzerMute" || cmd == "buzzerMuted"
       || cmd == "halt" || cmd == "motionStop" || cmd == "hardStop"
       || cmd == "ping")
     return PfCmdScope::Global;

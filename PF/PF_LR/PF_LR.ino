@@ -60,7 +60,6 @@ static bool peerServicesUp = false;
 static bool peerWasConnected = false;
 static volatile bool peerLinkOk = false;  // false = sin enlace TCP con TCM
 static volatile bool idleMode = false;      // Materialista ON (ex-Idle): bloquea buffer/holgura, omite GPIO27, solo refill manual; torre naranja
-static volatile bool buzzerMuted = false;   // silencia buzzer de torre (TCM/andon)
 static volatile bool tcmInProcess = false;  // ciclo/settle TCM: relleno continuo mientras ON
 static volatile bool fillUntilReady = false; // one-shot: rellenar hasta buffer+holgura OK, luego congelar
 static bool lastPeerHome = false, lastPeerEndstop = false, lastPeerTension = false;
@@ -68,7 +67,6 @@ static bool lastPeerCyl = false, lastPeerHose = false, lastPeerErr = false, last
 static bool lastPeerTrig = false, lastPeerAutoEn = false;
 static bool lastPeerRefillDer = false, lastPeerRefillSrv = false, lastPeerRefillFeed = false;
 static bool lastPeerIdleMode = false, lastPeerInProcess = false;
-static bool lastPeerBuzzerMuted = false;
 static uint8_t lastPeerFault = 255;
 static uint8_t lastPeerAutoState = 255;
 static uint8_t lastPeerPhase = 255;
@@ -173,7 +171,6 @@ static void saveSettings()
   prefs.putFloat("tens_cd", tensionCooldownSec);
   prefs.putUInt("servo_pwm", (uint32_t)servoActivePwmUs);
   prefs.putUInt("refill_ms", refillPulseMs);
-  prefs.putBool("buzz_mute", buzzerMuted);
   prefs.end();
 }
 
@@ -198,7 +195,6 @@ static void loadSettings()
   refillPulseMs = prefs.getUInt("refill_ms", REFILL_PULSE_MS_DEFAULT);
   if (refillPulseMs < REFILL_PULSE_MS_MIN) refillPulseMs = REFILL_PULSE_MS_MIN;
   if (refillPulseMs > REFILL_PULSE_MS_MAX) refillPulseMs = REFILL_PULSE_MS_MAX;
-  buzzerMuted = prefs.getBool("buzz_mute", false);
   prefs.end();
 
   if (!bufMigrated)
@@ -482,11 +478,6 @@ static void applyRefillPulseSec(float sec)
   refillPulseMs = (uint32_t)(sec * 1000.0f + 0.5f);
   if (refillPulseMs < REFILL_PULSE_MS_MIN) refillPulseMs = REFILL_PULSE_MS_MIN;
   if (refillPulseMs > REFILL_PULSE_MS_MAX) refillPulseMs = REFILL_PULSE_MS_MAX;
-}
-
-static void applyBuzzerMute(bool on)
-{
-  buzzerMuted = on;
 }
 
 static void applyRefillOutputs();
@@ -2127,8 +2118,6 @@ void handleStatus()
   appendErrorObject(json);
   json += ",\"idleMode\":";
   json += idleMode ? "true" : "false";
-  json += ",\"buzzerMuted\":";
-  json += buzzerMuted ? "true" : "false";
   json += ",\"inProcess\":";
   json += tcmInProcess ? "true" : "false";
   json += ",\"machineState\":\"";
@@ -2346,8 +2335,6 @@ void handleAuto()
   else if (server.hasArg("test_mode"))  // alias legacy
     applyIdleMode(server.arg("test_mode") == "1");
 
-  if (server.hasArg("buzzer_mute"))
-    applyBuzzerMute(server.arg("buzzer_mute") == "1");
   if (server.hasArg("refill_pulse_s"))
     applyRefillPulseSec(server.arg("refill_pulse_s").toFloat());
 
@@ -2366,8 +2353,6 @@ void handleAuto()
   appendErrorObject(json);
   json += ",\"idleMode\":";
   json += idleMode ? "true" : "false";
-  json += ",\"buzzerMuted\":";
-  json += buzzerMuted ? "true" : "false";
   json += ",\"inProcess\":";
   json += tcmInProcess ? "true" : "false";
   json += ",\"machineState\":\"";
@@ -2572,8 +2557,6 @@ static String peerStatusJson(const char* type)
   j += PREFEEDER_SIDE_TAG;
   j += "\",\"idleMode\":";
   j += idleMode ? "true" : "false";
-  j += ",\"buzzerMuted\":";
-  j += buzzerMuted ? "true" : "false";
   j += ",\"inProcess\":";
   j += tcmInProcess ? "true" : "false";
   j += ",\"machineState\":\"";
@@ -2655,8 +2638,6 @@ static String peerStatusJson(const char* type)
   j += refillFeederOn ? "true" : "false";
   j += ",\"refillPulseS\":";
   jsonAppendFloat(j, refillPulseNowMs() / 1000.0f, 1);
-  j += ",\"buzzerMuted\":";
-  j += buzzerMuted ? "true" : "false";
   j += ",\"errorAny\":";
   j += (systemFault != FAULT_NONE) ? "true" : "false";
   j += "}";
@@ -2758,11 +2739,6 @@ static void peerTxEvents()
     lastPeerInProcess = tcmInProcess;
     peerTx(String("{\"type\":\"event\",\"field\":\"inProcess\",\"value\":") + (tcmInProcess ? "true" : "false") + "}");
   }
-  if (buzzerMuted != lastPeerBuzzerMuted)
-  {
-    lastPeerBuzzerMuted = buzzerMuted;
-    peerTx(String("{\"type\":\"event\",\"field\":\"buzzerMuted\",\"value\":") + (buzzerMuted ? "true" : "false") + "}");
-  }
 }
 
 static void peerPushNow(bool fullStatus = true)
@@ -2863,12 +2839,6 @@ static bool peerDoCmd(const String& cmd, const String& val, int id)
   {
     const bool on = (val == "1" || val == "true" || val == "on");
     applyIdleMode(on);
-    ok = true;
-  }
-  else if (cmd == "setBuzzerMute" || cmd == "buzzerMute" || cmd == "buzzerMuted")
-  {
-    applyBuzzerMute(val == "1" || val == "true" || val == "on");
-    saveSettingsNow = true;
     ok = true;
   }
   else if (cmd == "setRefillPulseS" || cmd == "refillPulseS")
@@ -3213,7 +3183,6 @@ static void peerOnClientAccepted()
   lastPeerRefillFeed = refillFeederOn;
   lastPeerIdleMode = idleMode;
   lastPeerInProcess = tcmInProcess;
-  lastPeerBuzzerMuted = buzzerMuted;
   lastPeerFault = (uint8_t)systemFault;
   lastPeerAutoState = (uint8_t)autoState;
   lastPeerPhase = (uint8_t)motor2Phase;

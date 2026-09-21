@@ -102,8 +102,17 @@ class PreFeederClient(ModuleTcpClient):
     def cmd_reset(self) -> bool:
         return self.cmd_byte(CMD_RESET)
 
-    def cmd_materialist(self) -> bool:
-        return self.cmd_byte(CMD_MATERIALIST)
+    def cmd_materialist(self, on: bool = True) -> bool:
+        """Materialista L+R (0x3F). on=False sale del modo."""
+        return self.send_command(
+            byte=CMD_MATERIALIST, value="1" if on else "0"
+        )
+
+    def cmd_in_process(self, on: bool = True) -> bool:
+        """In process L+R (misma ruta peer que Master /api/auto?in_process=)."""
+        return self.send_command(
+            command="setInProcess", value="1" if on else "0"
+        )
 
     def cmd_trigger_r(self) -> bool:
         return self.cmd_byte(CMD_TRIGGER_R)

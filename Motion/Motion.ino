@@ -1695,7 +1695,8 @@ bool feedLaserMaterialPresent(bool sideR)
 {
   // Keyence NPN/OC + pull-up: GPIO LOW = sensor ON = material presente.
   // ioLaser*Active (motionSensorActiveLaser) = true → material OK en ventana.
-  // GPIO HIGH / Active=false = sin material → E004/E005 en FSP_VALIDATE*.
+  // GPIO HIGH / Active=false = sin material → E004/E005 en FSP_VALIDATE*
+  // (salvo modo gated FSP_LASER_SEEK post-corrección).
   return sideR ? ioLaserRActive : ioLaserLActive;
 }
 

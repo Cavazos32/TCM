@@ -85,8 +85,11 @@ export interface MachineState {
   cycleStep: number;
   cycleStepLabel: string;
   cycleMaterialist: boolean;
+  cycleBusy: boolean;
   refillActive: boolean;
   refillAwaitingConfirm: boolean;
+  /** after_feed | after_cut | "" */
+  refillPrompt: string;
   stepByStep: boolean;
   trialMode: boolean;
   ignorePrefeeder: boolean;
@@ -97,8 +100,15 @@ export interface MachineState {
   targetPieces: number;
   cycleCompleted: boolean;
   safetyExhaust: boolean;
+  /** EXXX UI completo; detalle del panel de recovery, no del estado general. */
   fault?: string;
   faultClass?: string;
+  faultCode?: string;
+  faultModule?: string;
+  faultDescription?: string;
+  errorActive?: boolean;
+  /** Status del módulo del EXXX (Motion/PLC/PreFeeder). */
+  faultModuleStatus?: string;
   errorNeedsConfirm?: boolean;
   errorNeedsHome?: boolean;
 }
@@ -127,6 +137,7 @@ export interface MotionState {
 export interface PlcState {
   connection: ConnectionState;
   statusText?: string;
+  hasError?: boolean;
   blowerSec: number;
   valves: ValveItem[];
 }
@@ -135,6 +146,7 @@ export interface PreFeederState {
   connection: ConnectionState;
   isRunning: boolean;
   statusText?: string;
+  hasError?: boolean;
   sensorsL: PreFeederSensor[];
   sensorsR: PreFeederSensor[];
 }

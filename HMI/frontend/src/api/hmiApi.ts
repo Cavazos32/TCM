@@ -75,6 +75,10 @@ export function cycleMaterialist(on: boolean) {
   return post('/api/cycle/materialist', { on });
 }
 
+export function cycleBusy(on: boolean) {
+  return post('/api/cycle/busy', { on });
+}
+
 export function setCycleStepByStep(on: boolean) {
   return post<{ ok: boolean; stepByStep?: boolean; error?: string }>(
     '/api/cycle/step-by-step',
@@ -105,6 +109,10 @@ export function startCycleRefill(opts?: { mm?: number; asdaMm?: number }) {
 
 export function confirmCycleRefill(ok: boolean = true) {
   return post<{ ok: boolean; error?: string }>('/api/cycle/refill/confirm', { ok });
+}
+
+export function retryCycleRefill() {
+  return post<{ ok: boolean; error?: string }>('/api/cycle/refill/retry', {});
 }
 
 export function getCycleConfig() {

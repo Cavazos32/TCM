@@ -82,6 +82,7 @@ export const PreFeederTab: React.FC<PreFeederTabProps> = ({
   };
 
   const connected = preFeederState.connection.connected;
+  const hasError = !!preFeederState.hasError && connected;
 
   return (
     <div className="space-y-4">
@@ -93,12 +94,20 @@ export const PreFeederTab: React.FC<PreFeederTabProps> = ({
               className={`h-2.5 w-2.5 rounded-full ${
                 !connected
                   ? 'bg-red-500'
-                  : preFeederState.isRunning
-                    ? 'bg-emerald-500 animate-pulse'
-                    : 'bg-emerald-500'
+                  : hasError
+                    ? 'bg-red-500'
+                    : preFeederState.isRunning
+                      ? 'bg-emerald-500 animate-pulse'
+                      : 'bg-emerald-500'
               }`}
             />
-            <span className="text-sm font-semibold text-slate-900 dark:text-white tracking-tight">
+            <span
+              className={`text-sm font-semibold tracking-tight ${
+                hasError
+                  ? 'text-red-700 dark:text-red-300'
+                  : 'text-slate-900 dark:text-white'
+              }`}
+            >
               {preFeederState.statusText || (preFeederState.isRunning ? t('prefeeder_active_desc') : t('state_ready'))}
             </span>
           </div>

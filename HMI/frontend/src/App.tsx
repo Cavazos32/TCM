@@ -123,6 +123,9 @@ function AppMain() {
         {currentTab === 'maquina' && (
           <MaquinaTab
             machineState={view.machineState}
+            motionState={view.motionState}
+            plcState={view.plcState}
+            preFeederState={view.preFeederState}
             models={view.models}
             selectedModelIndex={view.selectedModelIndex}
             resumeEnabled={view.resumeEnabled}
@@ -142,7 +145,22 @@ function AppMain() {
             onRefillConfirm={(ok) => {
               void hmi.confirmRefill(ok);
             }}
+            onRefillRetry={() => {
+              void hmi.retryRefill();
+            }}
             onGotoCycle={debugMode ? () => handleTabChange('cycle') : undefined}
+            onMotionStop={hmi.motionStop}
+            onMotionReset={hmi.motionReset}
+            onMotionSearchHome={hmi.motionSearchHome}
+            onPlcReset={hmi.plcReset}
+            onPlcAllOff={hmi.plcAllOff}
+            onPfStart={hmi.pfStart}
+            onPfStop={hmi.pfStop}
+            onPfReset={hmi.pfReset}
+            onPfJogL={hmi.pfTriggerL}
+            onPfJogR={hmi.pfTriggerR}
+            onBusy={hmi.toggleCycleBusy}
+            onMaterialist={hmi.toggleCycleMaterialist}
             showLogs={logsVisible}
             logs={logsVisible ? hmi.filterLogs('ALL') : []}
             onClearLogs={() => hmi.clearLogs('all')}
@@ -171,6 +189,9 @@ function AppMain() {
               }}
               onRefillConfirm={(ok) => {
                 void hmi.confirmRefill(ok);
+              }}
+              onRefillRetry={() => {
+                void hmi.retryRefill();
               }}
             />
           </div>
@@ -258,6 +279,7 @@ function AppMain() {
         onAndonBuzzerMute={hmi.setAndonBuzzerMute}
         ignorePrefeeder={view.machineState.ignorePrefeeder}
         onIgnorePrefeeder={debugMode ? hmi.setCycleIgnorePrefeeder : undefined}
+        safetyExhaust={view.machineState.safetyExhaust}
         connected={view.connected}
         onReconnectNetwork={handleReconnectNetwork}
         reconnecting={reconnecting}

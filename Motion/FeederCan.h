@@ -132,6 +132,13 @@
 #define FEED_MOVE_SPEED_PCT_MIN     10.0f
 #define FEED_MOVE_SPEED_PCT_MAX    100.0f
 
+// Tras corrección #1, si láser OFF: avanzar hasta ON o timeout (modo gated).
+#define FEED_LASER_SEEK_MS_DEFAULT  1000u
+#define FEED_LASER_SEEK_MS_MIN      200u
+#define FEED_LASER_SEEK_MS_MAX      5000u
+#define FEED_LASER_SEEK_POLL_MS     20u
+#define FEED_LASER_SEEK_DIST_MARGIN 1.25f  // recorrido ≥ vel×t × margen
+
 #define FEED_VELOCITY_PP_DEFAULT    FEED_SERVO_BASE_PP_DEFAULT
 #define FEED_PREFS_NS               "motion_feed"
 
@@ -169,6 +176,8 @@ enum FeedSidePhase : uint8_t {
   FSP_WAIT_SERVO_CORR,
   FSP_SETTLE_FINAL,
   FSP_VALIDATE_FINAL,
+  FSP_LASER_SEEK,       // post-corr: avance hasta láser ON o timeout
+  FSP_LASER_SEEK_HALT,  // halt por flanco ON; settle corto → SETTLE_FINAL
   FSP_DONE_OK,
   FSP_DONE_NG
 };

@@ -62,6 +62,7 @@ const DEFAULT_MACHINE: MachineState = {
   cycleMaterialist: false,
   refillActive: false,
   refillAwaitingConfirm: false,
+  refillPrompt: '',
   stepByStep: false,
   trialMode: false,
   ignorePrefeeder: false,
@@ -72,6 +73,7 @@ const DEFAULT_MACHINE: MachineState = {
   targetPieces: 1,
   cycleCompleted: false,
   safetyExhaust: false,
+  errorActive: false,
 };
 
 export function useHmiState() {
@@ -332,9 +334,71 @@ export function useHmiState() {
 
   const toggleCycleMaterialist = useCallback(() => {
     const snap = snapRef.current;
-    const next = !(snap?.cycle.materialist ?? false);
-    api.cycleMaterialist(next).catch(() => {});
-  }, []);
+    const cur =
+      view.machineState.cycleMaterialist || !!(snap?.cycle.materialist ?? false);
+    const next = !cur;
+    // Optimista: el botón refleja el clic al instante (SSE puede tardar).
+    setView((prev) => ({
+      ...prev,
+      machineState: {
+        ...prev.machineState,
+        cycleMaterialist: next,
+        cycleBusy: next ? false : prev.machineState.cycleBusy,
+      },
+    }));
+    if (snapRef.current) {
+      snapRef.current = {
+        ...snapRef.current,
+        cycle: {
+          ...snapRef.current.cycle,
+          materialist: next,
+          busy: next ? false : snapRef.current.cycle.busy,
+        },
+      };
+    }
+    api
+      .cycleMaterialist(next)
+      .then((res) => {
+        if (res && (res as { ok?: boolean }).ok === false) {
+          const err = (res as { error?: string }).error;
+          if (err) window.alert(err);
+        }
+      })
+      .catch(() => {});
+  }, [view.machineState.cycleMaterialist]);
+
+  const toggleCycleBusy = useCallback(() => {
+    const snap = snapRef.current;
+    const cur = view.machineState.cycleBusy || !!(snap?.cycle.busy ?? false);
+    const next = !cur;
+    setView((prev) => ({
+      ...prev,
+      machineState: {
+        ...prev.machineState,
+        cycleBusy: next,
+        cycleMaterialist: next ? false : prev.machineState.cycleMaterialist,
+      },
+    }));
+    if (snapRef.current) {
+      snapRef.current = {
+        ...snapRef.current,
+        cycle: {
+          ...snapRef.current.cycle,
+          busy: next,
+          materialist: next ? false : snapRef.current.cycle.materialist,
+        },
+      };
+    }
+    api
+      .cycleBusy(next)
+      .then((res) => {
+        if (res && (res as { ok?: boolean }).ok === false) {
+          const err = (res as { error?: string }).error;
+          if (err) window.alert(err);
+        }
+      })
+      .catch(() => {});
+  }, [view.machineState.cycleBusy]);
 
   const setCycleStepByStep = useCallback((on: boolean) => {
     api
@@ -386,6 +450,17 @@ export function useHmiState() {
   const confirmRefill = useCallback(async (ok: boolean) => {
     try {
       const res = await api.confirmCycleRefill(ok);
+      if (res && res.ok === false && res.error) {
+        window.alert(res.error);
+      }
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const retryRefill = useCallback(async () => {
+    try {
+      const res = await api.retryCycleRefill();
       if (res && res.ok === false && res.error) {
         window.alert(res.error);
       }
@@ -658,11 +733,13 @@ export function useHmiState() {
     resetCycleCmd,
     setCutOffset,
     toggleCycleMaterialist,
+    toggleCycleBusy,
     setCycleStepByStep,
     setCycleTrialMode,
     setCycleIgnorePrefeeder,
     startRefill,
     confirmRefill,
+    retryRefill,
     reloadFeedOffset,
     saveCycleConfig,
     reloadCycleConfig,

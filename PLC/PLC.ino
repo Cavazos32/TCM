@@ -39,6 +39,8 @@ uint8_t rawCandidateMask = 0xFF;
 unsigned long rawCandidateSinceMs = 0;
 unsigned long lastSnapshotTxMs = 0;
 unsigned long lastStatusPushMs = 0;
+// Grace de sensores desde fin de setup() (no desde power-on: WiFi puede > BOOT_GRACE).
+unsigned long bootGraceStartMs = 0;
 uint8_t sequence = 0;
 
 bool stCutterR   = false;
@@ -155,22 +157,38 @@ static void valveIdleAll()
   valveWritePin(PIN_OUT_RESET,    false);
 }
 
+static unsigned long lastValvePulseEndMs = 0;
+
+static void valveServiceDuringWait()
+{
+  // No bloquear el timeout del blower con delay() a secas.
+  if (blowerTimedActive && (millis() - blowerStartMs) >= blowerHoldMs)
+    blowerStop();
+  yield();
+}
+
 static void valvePulseWait()
 {
   const unsigned long t0 = millis();
-  while ((millis() - t0) < VALVE_PULSE_MS) {
-    // No bloquear el timeout del blower con delay() a secas.
-    if (blowerTimedActive && (millis() - blowerStartMs) >= blowerHoldMs)
-      blowerStop();
-    yield();
-  }
+  while ((millis() - t0) < VALVE_PULSE_MS)
+    valveServiceDuringWait();
+}
+
+/** Espera hueco LOW tras el último pulso para que el KEEP distinga Set/Res. */
+static void valvePulseGapWait()
+{
+  if (lastValvePulseEndMs == 0) return;
+  while ((millis() - lastValvePulseEndMs) < VALVE_PULSE_GAP_MS)
+    valveServiceDuringWait();
 }
 
 static void valvePulsePin(uint8_t pin)
 {
+  valvePulseGapWait();
   valveWritePin(pin, true);
   valvePulseWait();
   valveWritePin(pin, false);
+  lastValvePulseEndMs = millis();
 }
 
 /** Pulso KEEP en varios pines a la vez (p.ej. cortadores R+L sin escalonar). */
@@ -181,11 +199,13 @@ static void valvePulsePins(const uint8_t* pins, uint8_t n)
     valvePulsePin(pins[0]);
     return;
   }
+  valvePulseGapWait();
   for (uint8_t i = 0; i < n; i++)
     valveWritePin(pins[i], true);
   valvePulseWait();
   for (uint8_t i = 0; i < n; i++)
     valveWritePin(pins[i], false);
+  lastValvePulseEndMs = millis();
 }
 
 static void syncCuttersFlag()
@@ -303,8 +323,8 @@ static void plcGoHomePulse()
   logValveLogical();
 }
 
-// Reset PLC 0x1E: quitar señales activas, alinear lógica a OFF sin pulsos KEEP,
-// luego solo el pulso de Reset. Pulsar válvulas tras el reset reactivaría el KEEP.
+// Reset PLC 0x1E: idle GPIO + lógica OFF; el esclavo deja estados en OFF.
+// HMI/máquina no deben “arreglar” válvulas con All Off antes: Reset PLC es propio.
 static void plcDoHardwareReset()
 {
   blowerStop();
@@ -348,9 +368,15 @@ static bool tcpTx(const String& m)
   return true;
 }
 
+static bool plcInBootGrace()
+{
+  if (bootGraceStartMs == 0) return true;
+  return (millis() - bootGraceStartMs) < BOOT_GRACE_MS;
+}
+
 static bool plcHasSensorError()
 {
-  if (millis() < BOOT_GRACE_MS) return false;
+  if (plcInBootGrace()) return false;
   return currentStableMask() != 0;
 }
 
@@ -1053,7 +1079,9 @@ void setup()
   pinMode(PIN_CUTTER, INPUT_PULLUP);
   pinMode(PIN_GRIPPER, INPUT_PULLUP);
   pinMode(PIN_HOLDER, INPUT_PULLUP);
-  pinMode(PIN_ENCODER, INPUT_PULLUP);
+  // GPIO34: input-only ESP32, sin pull-up interno (INPUT_PULLUP no aplica).
+  // Requiere pull-up externa en hardware; sin ella el pin puede flotar.
+  pinMode(PIN_ENCODER, INPUT);
 
   pinMode(PIN_OUT_CUTTER_R, OUTPUT);
   pinMode(PIN_OUT_CUTTER_L, OUTPUT);
@@ -1089,6 +1117,8 @@ void setup()
   tcpEnsureServices();
   if (WiFi.status() != WL_CONNECTED)
     Serial.println("WiFi pendiente — reintentos en loop");
+  bootGraceStartMs = millis();
+  Serial.printf("Sensor boot grace %lums desde ahora\n", BOOT_GRACE_MS);
 }
 
 void loop()
@@ -1110,13 +1140,15 @@ void loop()
     return;
   }
 
-  uint8_t previousMask = (lastBitmask == 0xFF) ? 0 : lastBitmask;
-  const bool inBootGrace = (millis() < BOOT_GRACE_MS);
+  // Baseline (lastBitmask==0xFF): solo fijar máscara; no tratar bits presentes
+  // como flanco rising (E050/E047–E049 fantasma al primer sample / HMI connect).
+  const bool establishingBaseline = (lastBitmask == 0xFF);
+  uint8_t previousMask = establishingBaseline ? 0 : lastBitmask;
   logSensorMask(stable);
   if (tcpLinkOk())
   {
     sendSnapshot(stable);
-    if (!inBootGrace)
+    if (!establishingBaseline && !plcInBootGrace())
       sendAlertsForNewBits(previousMask, stable);
     peerTxEvents();
     tcpTx(statusJson("status"));

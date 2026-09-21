@@ -658,9 +658,6 @@ static bool pfBroadcastAutoFromQuery()
   else if (server.hasArg("inProcess"))
     pfBroadcastCmd("setInProcess", pfPeerOnOffVal(server.arg("inProcess")));
 
-  if (server.hasArg("buzzer_mute"))
-    pfBroadcastCmd("setBuzzerMute", pfPeerOnOffVal(server.arg("buzzer_mute")));
-
   if (server.hasArg("refill_pulse_s"))
     pfBroadcastCmd("setRefillPulseS", server.arg("refill_pulse_s"));
 
@@ -927,13 +924,15 @@ static void pfTcpPushStateIfChanged()
 static bool pfSideErrFlag(const SideView& s, uint8_t idx)
 {
   switch (idx) {
-    // home = Buffer Full (sensor); resto = bit sensor u error enclavado
-    case 0: return s.home || (s.error && pfErrorIdFromWireCode(s.errorCode) == PF_ERR_BUFFER);
+    // Buffer Full / Holgura: sensor ON = OK. EXXX solo con fallo enclavado
+    // (timeout). No publicar s.home / s.holgura como active del opcode E052/E058/E057/E063.
+    case 0: return s.error && pfErrorIdFromWireCode(s.errorCode) == PF_ERR_BUFFER;
+    case 5: return s.error && pfErrorIdFromWireCode(s.errorCode) == PF_ERR_HOLGURA;
+    // Resto: sensor activo = condición de fallo (misma polaridad que EXXX)
     case 1: return s.endstop || (s.error && pfErrorIdFromWireCode(s.errorCode) == PF_ERR_ENDSTOP);
     case 2: return s.tension || (s.error && pfErrorIdFromWireCode(s.errorCode) == PF_ERR_TENSION);
     case 3: return s.cylinderOpen || (s.error && pfErrorIdFromWireCode(s.errorCode) == PF_ERR_CYLINDER);
     case 4: return s.hoseAbsent || (s.error && pfErrorIdFromWireCode(s.errorCode) == PF_ERR_HOSE);
-    case 5: return s.holgura || (s.error && pfErrorIdFromWireCode(s.errorCode) == PF_ERR_HOLGURA);
     default: return false;
   }
 }
@@ -991,11 +990,17 @@ static String pfTcpStatusJson()
 
 static void pfTcpPushFullSnapshot()
 {
-  const uint8_t st = pfTcpResolveStateByte();
-  pfTcpTxState(st, pfTcpStateName(st));
+  // Orden: eventos + status antes de state. Así la HMI aplica status.error
+  // (fallo enclavado real) y puede descartar espejos viejos de sensor Buffer/Holgura
+  // antes de intentar Set al ver PF_ST_ERROR.
   pfTcpPushErrorEvents(true);
   pfTcpTx(pfTcpStatusJson());
+  const uint8_t st = pfTcpResolveStateByte();
+  pfTcpTxState(st, pfTcpStateName(st));
 }
+
+// Valor ON/OFF del último command TCP HMI (Materialist / InProcess).
+static String pfTcpCmdValue;
 
 static uint8_t pfTcpResolveCmdByte(const char* line)
 {
@@ -1016,6 +1021,37 @@ static uint8_t pfTcpResolveCmdByte(const char* line)
   if (cmd == "Trigger" || cmd == "trigger" || cmd == "TriggerFeed")
     return PF_CMD_TRIGGER_R;
   return 0;
+}
+
+static void pfTcpTxAck(uint8_t cmdByte, bool ok, const String& err)
+{
+  char buf[256];
+  snprintf(buf, sizeof(buf),
+           "{\"ver\":%u,\"type\":\"ack\",\"actuator\":\"prefeeder\",\"byte\":%u,"
+           "\"ok\":%s,\"message\":\"%s\"}",
+           (unsigned)PF_MASTER_PROTO_VER, (unsigned)cmdByte,
+           ok ? "true" : "false", pfTcpJsonEscape(err).c_str());
+  pfTcpTx(String(buf));
+  if (ok)
+    pfTcpPushStateIfChanged();
+}
+
+// InProcess vía command string (misma ruta peer que /api/auto?in_process=).
+// Sin opcode Excel dedicado: no inventar byte; HMI manda command+value.
+static bool pfTcpDoInProcess()
+{
+  String err;
+  bool ok = false;
+  const String v = pfPeerOnOffVal(
+      pfTcpCmdValue.length() ? pfTcpCmdValue : String("1"));
+  if (!pfGlobalLinkUp()) {
+    err = "InProcess sin enlace L/R";
+  } else {
+    ok = pfDispatchCmd("setInProcess", v, '-');
+    if (!ok) err = "InProcess no enviado a L/R";
+  }
+  pfTcpTxAck(0, ok, err);
+  return ok;
 }
 
 static bool pfTcpDoByte(uint8_t cmdByte)
@@ -1060,9 +1096,14 @@ static bool pfTcpDoByte(uint8_t cmdByte)
         } else err = "Reset no enviado a L/R";
       }
       break;
-    case PF_CMD_MATERIALIST:
-      ok = pfDispatchCmd("materialistaCall", "1", '-');
+    case PF_CMD_MATERIALIST: {
+      // value ausente → ON (compat HMI legacy). value 0/false/off → salir Materialista.
+      const String v = pfPeerOnOffVal(
+          pfTcpCmdValue.length() ? pfTcpCmdValue : String("1"));
+      ok = pfDispatchCmd("materialistaCall", v, '-');
+      if (!ok) err = "Materialist no enviado a L/R";
       break;
+    }
     case PF_CMD_TRIGGER_R:
       ok = pfDispatchCmd("trigger", "", 'R');
       if (!ok) err = "TriggerR sin enlace R";
@@ -1086,15 +1127,7 @@ static bool pfTcpDoByte(uint8_t cmdByte)
       break;
   }
 
-  char buf[256];
-  snprintf(buf, sizeof(buf),
-           "{\"ver\":%u,\"type\":\"ack\",\"actuator\":\"prefeeder\",\"byte\":%u,"
-           "\"ok\":%s,\"message\":\"%s\"}",
-           (unsigned)PF_MASTER_PROTO_VER, (unsigned)cmdByte,
-           ok ? "true" : "false", pfTcpJsonEscape(err).c_str());
-  pfTcpTx(String(buf));
-  if (ok)
-    pfTcpPushStateIfChanged();
+  pfTcpTxAck(cmdByte, ok, err);
   return ok;
 }
 
@@ -1102,6 +1135,14 @@ static void pfTcpOnLine(const char* line)
 {
   if (!line || !line[0]) return;
   if (!strstr(line, "\"type\":\"command\"")) return;
+
+  pfTcpCmdValue = jStr(line, "value");
+
+  const String cmdName = jStr(line, "command");
+  if (cmdName == "setInProcess" || cmdName == "inProcess" || cmdName == "InProcess") {
+    pfTcpDoInProcess();
+    return;
+  }
 
   const uint8_t cmdByte = pfTcpResolveCmdByte(line);
   if (!cmdByte) {

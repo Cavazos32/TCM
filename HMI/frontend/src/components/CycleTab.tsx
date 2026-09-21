@@ -74,7 +74,7 @@ export const CYCLE_STEPS_DEFINITION: CycleStep[] = [
   { id: 21, title: 'Pinzas abren', type: 'action', sbsPause: false },
   { id: 22, title: 'Trigger PreFeeder (Tfeed)', type: 'action', sbsPause: false },
   { id: 23, title: 'Delay antes de HOME', type: 'delay', delayKey: 'gripperReleaseMs', defaultDurationMs: 350, sbsPause: true },
-  { id: 24, title: 'HOME: mid + WIP blower + 0', type: 'action', sbsPause: true },
+  { id: 24, title: 'HOME: WIP blower fin/inicio + 0', type: 'action', sbsPause: true },
   { id: 25, title: 'Join — espera fin del prefetch (handoff)', type: 'join', badge: 'join', sbsPause: false },
   { id: 26, title: 'Delay asentar', type: 'delay', delayKey: 'asentarMs', defaultDurationMs: 50, sbsPause: false },
   { id: 27, title: 'Post-pieza (safety / peer / holgura)', type: 'action', sbsPause: false },
@@ -137,6 +137,7 @@ interface CycleTabProps {
   resumeEnabled?: boolean;
   onRefill?: () => void;
   onRefillConfirm?: (ok: boolean) => void;
+  onRefillRetry?: () => void;
 }
 
 export const CycleTab: React.FC<CycleTabProps> = ({
@@ -156,6 +157,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
   resumeEnabled = false,
   onRefill,
   onRefillConfirm,
+  onRefillRetry,
 }) => {
   const { t } = useApp();
 
@@ -460,12 +462,27 @@ export const CycleTab: React.FC<CycleTabProps> = ({
         <div className="flex flex-wrap items-center gap-3 rounded-xl border border-sky-300 dark:border-sky-700 bg-sky-50 dark:bg-sky-950/50 px-4 py-3 shadow-2xs">
           <div className="min-w-0 flex-1">
             <p className="text-xs font-bold text-sky-900 dark:text-sky-100">
-              {t('refill_confirm_title')}
+              {machineState.refillPrompt === 'after_cut'
+                ? t('refill_confirm_title_cut')
+                : t('refill_confirm_title_feed')}
             </p>
             <p className="text-[11px] text-sky-800/80 dark:text-sky-200/80 mt-0.5">
-              {t('refill_confirm_hint')}
+              {machineState.refillPrompt === 'after_cut'
+                ? t('refill_confirm_hint_cut')
+                : t('refill_confirm_hint_feed')}
             </p>
           </div>
+          {machineState.refillPrompt === 'after_feed' && onRefillRetry && (
+            <button
+              id="btn-cycle-refill-retry"
+              type="button"
+              onClick={onRefillRetry}
+              className="flex items-center gap-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 px-3 py-1.5 text-xs font-bold text-white"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              {t('btn_refill_confirm_retry')}
+            </button>
+          )}
           <button
             id="btn-cycle-refill-yes"
             type="button"
@@ -473,7 +490,9 @@ export const CycleTab: React.FC<CycleTabProps> = ({
             className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white"
           >
             <Check className="h-3.5 w-3.5" />
-            {t('btn_refill_confirm_yes')}
+            {machineState.refillPrompt === 'after_cut'
+              ? t('btn_refill_confirm_yes')
+              : t('btn_refill_confirm_next_cut')}
           </button>
           <button
             id="btn-cycle-refill-no"

@@ -1260,11 +1260,12 @@ canvas{width:100%;max-width:640px;height:160px;background:#151b21;border:1px sol
 
   <section>
     <h2>Test feed · L / R</h2>
-    <p style="color:var(--muted);font-size:.82rem;margin:0 0 .75rem">Target fijo 55 mm · Approach % (estrategia) · Vel nominal · Comp. vel % (Approach/corr).</p>
+    <p style="color:var(--muted);font-size:.82rem;margin:0 0 .75rem">Target fijo 55 mm · Approach % · Comp. vel % · Seek láser (ms) tras corrección si sensor OFF.</p>
     <div class="feed-side-row">
       <label>Approach %<input type="number" id="approachPct" min="50" max="95" step="1" value="80"></label>
       <span class="stats" id="approachMmHint">→ 44.0 mm</span>
       <label>Comp. vel %<input type="number" id="moveSpeedPct" min="10" max="100" step="1" value="50"></label>
+      <label>Seek láser (ms)<input type="number" id="laserSeekMs" min="200" max="5000" step="50" value="1000"></label>
     </div>
     <div class="feed-side-row">
       <span class="feed-side-tag">L</span>
@@ -1323,7 +1324,8 @@ function cfgQuery(){
     +'&decRampMsL='+encodeURIComponent($('decMsL').value)
     +'&decRampMsR='+encodeURIComponent($('decMsR').value)
     +'&approachPct='+encodeURIComponent($('approachPct').value)
-    +'&moveSpeedPct='+encodeURIComponent($('moveSpeedPct').value);
+    +'&moveSpeedPct='+encodeURIComponent($('moveSpeedPct').value)
+    +'&laserSeekMs='+encodeURIComponent($('laserSeekMs').value);
 }
 function applyFeedCfg(d){
   if(!d)return;
@@ -1335,6 +1337,9 @@ function applyFeedCfg(d){
   if(d.decRampMsR!=null)$('decMsR').value=d.decRampMsR;
   if(d.approachPct!=null)$('approachPct').value=d.approachPct;
   if(d.moveSpeedPct!=null)$('moveSpeedPct').value=d.moveSpeedPct;
+  if(d.laserSeekMs!=null)$('laserSeekMs').value=d.laserSeekMs;
+  if(d.laserSeekMsMin!=null)$('laserSeekMs').min=d.laserSeekMsMin;
+  if(d.laserSeekMsMax!=null)$('laserSeekMs').max=d.laserSeekMsMax;
   var apMm=d.approachMm!=null?d.approachMm:(55*Number($('approachPct').value)/100);
   $('approachMmHint').textContent='→ '+Number(apMm).toFixed(1)+' mm (target 55)';
   drawPlan('canvasL','statsL',d.planL,parseFloat(d.solidMm),parseFloat(d.velocityMmSL));
@@ -1403,7 +1408,8 @@ function runTest(side){
     +'&decRampMsL='+encodeURIComponent($('decMsL').value)
     +'&decRampMsR='+encodeURIComponent($('decMsR').value)
     +'&approachPct='+encodeURIComponent($('approachPct').value)
-    +'&moveSpeedPct='+encodeURIComponent($('moveSpeedPct').value);
+    +'&moveSpeedPct='+encodeURIComponent($('moveSpeedPct').value)
+    +'&laserSeekMs='+encodeURIComponent($('laserSeekMs').value);
   fetch(q).then(r=>r.json()).then(function(d){
     if(!d.ok){showMsg(d.error||'Fallo','bad');return;}
     showMsg('Moviendo servos '+side+'…','wait');
@@ -1459,7 +1465,7 @@ function loadCal(){
     $('scaleR').textContent='spm R: '+d.countsPerMmR.toFixed(2);
   });
 }
-['solidL','solidR','velL','velR','decMsL','decMsR','approachPct','moveSpeedPct'].forEach(function(id){
+['solidL','solidR','velL','velR','decMsL','decMsR','approachPct','moveSpeedPct','laserSeekMs'].forEach(function(id){
   $(id).addEventListener('change',function(){refreshProfile(false);});
 });
 $('approachPct').addEventListener('input',updateApproachHint);

@@ -65,12 +65,14 @@ En el esclavo PLC, cada comando de válvula (`on` / `off`) genera **un pulso** e
 El enclavado lo hace el PLC neumático (KEEP: Set / Res).  
 - Querer **ON** (Set) → un pulso (solo si el estado lógico cambia a on).  
 - Querer **OFF** (Res) → otro pulso (solo si cambia a off).  
-- **Boot / All Off** = pulsos OFF de cada válvula lógica ON (holder incluido). El holder lo activa rutina o manual.  
-- **Reset PLC (`0x1E`):** apagar blower (nivel), **idle de todos los GPIO** de válvula (sin dejar señales activas), limpiar estado lógico a OFF **sin** pulsos Set/Res, y luego **solo** el pulso de Reset. Prohibido pulsar válvulas tras el reset: el KEEP ya quedó en OFF y un pulso las reactivaría.  
+- **Boot / All Off** = pulsos OFF de cada válvula lógica ON (holder incluido). El holder lo activa rutina o manual. Solo bajo demanda (UI All Off / ciclo), **no** desde C1/C2/C3, Stop, Pause ni Reset HMI.  
+- **Reset PLC (`0x1E`):** comando **solo** del control PLC. Tras Reset, el esclavo deja estados lógicos en OFF; HMI refleja OFF (no inventa All Off previo ni pulsos extra).  
 - Ancho de pulso: `VALVE_PULSE_MS` (100 ms) para que el KEEP lea bien.  
 No pulsar si el estado lógico ya coincide (un pulso de más invertiría el KEEP).  
 El estado lógico (JSON/status/UI) refleja la posición pretendida; el pin físico solo es impulso.  
 HMI/ciclo siguen enviando `on: true|false` como hasta ahora.
+
+**Límite máquina ↔ PLC:** error general de máquina, Stop, Pause, C3 y Reset HMI (machine controls) **no** mandan válvulas ni Reset PLC. Operar PLC = pulso ON/OFF, All Off, o Reset PLC.
 
 **Excepción Blower:** no es KEEP. El pin queda **ON (nivel)** durante `durationSec` (ajustable en UI PLC; el esclavo debe respetar ese valor, no un default fijo si viene en el comando) y luego **OFF** automático.
 
@@ -104,9 +106,9 @@ Los errores de detalle se clasifican en **C1**, **C2** y **C3**. La clase define
 
 | Clase | Al Set (activar) | Salida |
 |-------|------------------|--------|
-| **C1** | Stop inmediato a **todos** los módulos | Secuencia C1 fija |
-| **C2** | Pausar; **no** lanzar el siguiente step | Secuencia C2 fija |
-| **C3** | Terminar el paso en curso de forma segura, luego detener | Secuencia C3 fija |
+| **C1** | Stop inmediato Motion/PF (+ ciclo); **no** PLC/válvulas | Secuencia C1 fija |
+| **C2** | Pausar; **no** lanzar el siguiente step; **no** PLC | Secuencia C2 fija |
+| **C3** | Terminar el paso en curso de forma segura, luego detener; **no** PLC | Secuencia C3 fija |
 
 ### Forma en UI
 
@@ -152,36 +154,36 @@ Cambiar un paso u orden = cambiar **este documento** primero.
 
 #### Secuencia C1
 
-1. Ya hubo stop a todos (Error/Stop de máquina).  
+1. Ya hubo stop de máquina (Motion/PF/ciclo). **PLC no se toca.**  
 2. Corregir causa física si aplica.  
 3. UI muestra EXXX y exige **confirmación**.  
 4. Operador confirma.  
-5. **Reset** (Res): limpia latch + reset de módulos.  
+5. **Reset HMI** (Res): limpia latch + reset Motion/PF/ciclo (sin PLC). Si el fallo fue de PLC, usar **Reset PLC**.  
 6. **Validar** estados coherentes.  
 7. **Homing general** obligatorio.  
 8. Idle / aceptar Start.
 
-Prohibido: Reset sin confirmación; Start sin home; saltar validación.
+Prohibido: Reset sin confirmación; Start sin home; saltar validación; mandar All Off/Reset PLC desde C1.
 
 #### Secuencia C2
 
-1. Proceso pausado; no hubo siguiente step.  
+1. Proceso pausado; no hubo siguiente step. **PLC no se toca.**  
 2. Corregir causa si aplica.  
-3. **Reset** (Res).  
+3. **Reset HMI** (Res).  
 4. **Resume**.  
 5. Proceso desde **step 0**.
 
-Prohibido: Resume sin Reset; continuar “donde iba”.
+Prohibido: Resume sin Reset; continuar “donde iba”; tocar válvulas desde C2.
 
 #### Secuencia C3
 
-1. Paso en curso terminó seguro; luego pausa/detención.  
+1. Paso en curso terminó seguro; luego pausa/detención. **PLC no se toca.**  
 2. Corregir causa si aplica.  
-3. **Reset** (Res).  
+3. **Reset HMI** (Res).  
 4. **Resume**.  
 5. **Reintentar el proceso actual** (no home C1 ni “desde step 0” C2).
 
-Prohibido: cortar el paso seguro con atajos; tratar C3 como C1 o C2 sin cambiar esta norma.
+Prohibido: cortar el paso seguro con atajos; tratar C3 como C1 o C2 sin cambiar esta norma; tocar válvulas desde C3.
 
 Orden resumido:
 
@@ -342,7 +344,7 @@ Prohibido aprovechar correcciones de rutina, Motion, PreFeeder, PLC, encoder, fe
 | Cómo se dice qué falló | EXXX (mismo en Main y HTML local del módulo) |
 | Quién aplica C1/C2/C3 | Solo Main |
 | Cómo se activa/limpia | Flip-flop Set / Res — no polling |
-| PLC válvulas | Pulso ON / pulso OFF — sin enclavado de GPIO; Reset 0x1E sin re-pulsar |
+| PLC válvulas | Pulso ON/OFF, All Off o Reset PLC propio — no desde C1/C2/C3/Stop/Pause/Reset HMI |
 | Cómo se sale de un fallo | Secuencia fija C1 / C2 / C3 |
 | De dónde salen códigos | Excel + GPIO doc |
 | Debug | Solo si se pide |

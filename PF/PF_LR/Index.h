@@ -492,11 +492,6 @@ const char index_html[] PROGMEM = R"rawliteral(
       border-color: rgba(226, 164, 29, 0.55);
     }
     .btn-toggle.test-mode.on:hover { border-color: rgba(226, 164, 29, 0.75); }
-    .btn-toggle.mute.on {
-      background: rgba(139, 148, 158, 0.22);
-      color: var(--text-primary);
-      border-color: rgba(139, 148, 158, 0.55);
-    }
     .btn-toggle:disabled {
       opacity: 0.45;
       cursor: not-allowed;
@@ -627,9 +622,6 @@ const char index_html[] PROGMEM = R"rawliteral(
       </div>
       <div class="btn-row cols-1" style="margin-top:10px">
         <button type="button" class="btn-toggle test-mode" id="idle-mode-btn" onclick="toggleIdleMode()">Idle</button>
-      </div>
-      <div class="btn-row cols-1" style="margin-top:10px">
-        <button type="button" class="btn-toggle mute" id="buzzer-mute-btn" onclick="toggleBuzzerMute()" title="Silencia el buzzer de la torre (las luces siguen)">Buzzer · ON</button>
       </div>
     </div>
 
@@ -1014,25 +1006,6 @@ const char index_html[] PROGMEM = R"rawliteral(
       }
       if (armedEl) armedEl.textContent = armed ? 'armados' : 'bloqueados';
     }
-    function applyBuzzerMute(muted) {
-      var btn = document.getElementById('buzzer-mute-btn');
-      if (!btn) return;
-      btn.className = 'btn-toggle mute' + (muted ? ' on' : '');
-      btn.textContent = muted ? 'Buzzer · silenciado' : 'Buzzer · ON';
-    }
-    function toggleBuzzerMute() {
-      var btn = document.getElementById('buzzer-mute-btn');
-      var nextMute = !(btn && btn.classList.contains('on'));
-      fetch('/api/auto?buzzer_mute=' + (nextMute ? '1' : '0'))
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-          applyBuzzerMute(!!(data.buzzerMuted !== undefined ? data.buzzerMuted : nextMute));
-          setStatus(true, nextMute ? 'Buzzer silenciado' : 'Buzzer activo');
-        })
-        .catch(function() {
-          setStatus(false, 'Error de conexión');
-        });
-    }
     function toggleIdleMode() {
       var btn = document.getElementById('idle-mode-btn');
       // class "on" = Materialista; sin "on" = Idle
@@ -1275,7 +1248,6 @@ const char index_html[] PROGMEM = R"rawliteral(
         document.getElementById('error-reason-line').hidden = !active;
       }
       applyModeFlags(data);
-      if (data.buzzerMuted !== undefined) applyBuzzerMute(!!data.buzzerMuted);
       var idleOnPoll = !!(data.idleMode !== undefined ? data.idleMode : data.testMode);
       if (data.refill) applyRefill(data.refill, idleOnPoll);
       if (data.trigger2) applyTrigger2(data.trigger2);

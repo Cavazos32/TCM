@@ -34,10 +34,11 @@ CONFIG_PATH = HMI_ROOT / "config" / "cycle_config.json"
 # El test HTML de Motion sigue usando pieceMm = L (target = L−55).
 # No modificar Feed / FEED_TARGET_FIXED_MM / Move ABS manual.
 
-# WIP Delivery (HOME): 1 soplo a mitad del viaje (ABS) hacia 0.
+# WIP Delivery (HOME): 2 soplos por pieza (ABS) en el viaje hacia 0.
 # start = magnitud ABS del depósito confirmado (o Stage2 si no hubo extra).
-# Ej. start=255 → mid≈127.5; start=315 (255+60) → mid≈157.5.
-# ON(blowerSec) → dwell → OFF explícito → HOME (sin carrera timer HMI/PLC).
+# 1) soplo en final de pieza (posición actual = start)
+# 2) HOME → soplo en inicio de pieza (0)
+# Cada soplo: ON(blowerSec) → dwell → OFF explícito (sin carrera timer HMI/PLC).
 WIP_BLOWER_MIN_TRAVEL_MM = 8.0
 # Si hay caché ASDA post-Reached, debe coincidir con la ref de depósito.
 WIP_START_CACHE_TOL_MM = 5.0
@@ -82,7 +83,7 @@ FLOW_STEPS: list[dict[str, Any]] = [
     {"id": 21, "key": "grippers_off", "label": "Pinzas abren", "kind": "action", "sbsPause": False},
     {"id": 22, "key": "pf_trigger", "label": "Trigger PreFeeder (Tfeed)", "kind": "action", "sbsPause": False},
     {"id": 23, "key": "wait_gripper_release", "label": "Delay antes de HOME", "kind": "wait", "delayKey": "gripperReleaseMs", "sbsPause": True},
-    {"id": 24, "key": "home", "label": "HOME: mid + WIP blower + 0", "kind": "action", "sbsPause": True},
+    {"id": 24, "key": "home", "label": "HOME: WIP blower fin/inicio + 0", "kind": "action", "sbsPause": True},
     {
         "id": 25,
         "key": "handoff",
@@ -215,10 +216,13 @@ class CycleConfig:
                     kw[attr] = raw
             except (TypeError, ValueError):
                 continue
-        # Pulso lógico Set→Res ≥ pulso eléctrico KEEP del PLC (100 ms).
+        # Pulso lógico Set→Res ≥ pulso eléctrico KEEP del PLC (100 ms) + gap.
         if "cutter_pulse_ms" in kw and kw["cutter_pulse_ms"] < 150:
             kw["cutter_pulse_ms"] = 150
-        return cls(**kw)
+        cfg = cls(**kw)
+        if cfg.cutter_pulse_ms < 150:
+            cfg.cutter_pulse_ms = 150
+        return cfg
     def to_dict(self) -> dict[str, Any]:
         inv = {v: k for k, v in self._key_map().items()}
         out: dict[str, Any] = {}
@@ -261,6 +265,8 @@ class CycleHost(Protocol):
     def motion_state_byte(self) -> int | None: ...
     def pf_state_byte(self) -> int | None: ...
     def pf_is_materialist(self) -> bool: ...
+    def pf_holgura_present(self, side: str) -> bool | None: ...
+    def pf_request_status(self) -> bool: ...
     def clear_motion_wait_flags(self) -> None: ...
     def clear_motion_reached_flag(self) -> None: ...
     def wait_motion_idle_or_reached(self, timeout_s: float) -> bool: ...
@@ -303,11 +309,14 @@ class CycleHost(Protocol):
     def cmd_plc_encoder(self, on: bool) -> bool: ...
     def cmd_plc_gripper(self, on: bool) -> bool: ...
     def cmd_plc_blower(self, on: bool = True, duration_sec: float | None = None) -> bool: ...
-    def cmd_plc_cutters(self, on: bool, *, sides: str | None = None) -> bool: ...
+    def cmd_plc_cutters(
+        self, on: bool, *, sides: str | None = None, force: bool = False
+    ) -> bool: ...
     def cmd_plc_tools_safe(self) -> bool: ...
     def cmd_plc_all_safe(self) -> bool: ...
     def cmd_pf_start(self) -> bool: ...
     def cmd_pf_stop(self) -> bool: ...
+    def cmd_pf_in_process(self, on: bool = True) -> bool: ...
     def cmd_pf_trigger_r(self) -> bool: ...
     def cmd_pf_trigger_l(self) -> bool: ...
     def apply_detail_error(self, code_or_byte: str | int) -> bool: ...
@@ -326,13 +335,16 @@ class CycleRunner:
         self._active = False
         self._aborted = False
         self._materialist = False
+        self._busy_mode = False
         self._step_by_step = False
         self._trial_mode = False
         self._ignore_prefeeder = False
         self._refill_mode = False
         self._refill_awaiting_confirm = False
+        self._refill_prompt = ""  # "" | after_feed | after_cut
         self._refill_confirm = threading.Event()
         self._refill_reject = threading.Event()
+        self._refill_retry = threading.Event()
         self._step = 0
         self._parallel_group = ""
         self._rep = 0
@@ -361,11 +373,15 @@ class CycleRunner:
                 "active": self._active,
                 "paused": self._pause.is_set(),
                 "materialist": self._materialist,
+                "busy": self._busy_mode or (
+                    self._state_byte == TX_BUSY and self._active
+                ),
                 "stepByStep": self._step_by_step,
                 "trialMode": self._trial_mode,
                 "ignorePrefeeder": self._ignore_prefeeder,
                 "refillActive": self._refill_mode and self._active,
                 "refillAwaitingConfirm": self._refill_awaiting_confirm,
+                "refillPrompt": self._refill_prompt if self._refill_awaiting_confirm else "",
                 "step": self._step,
                 "stepName": STEP_NAMES.get(self._step, ""),
                 "stepLabel": next(
@@ -459,6 +475,7 @@ class CycleRunner:
         with self._lock:
             self._refill_mode = False
             self._refill_awaiting_confirm = False
+            self._refill_prompt = ""
         self._set_state(TX_BUSY)
         self._host.cycle_log(
             f"Cycle Start (0x040) length={length_mm} mm qty={qty}"
@@ -476,13 +493,14 @@ class CycleRunner:
         self._refill_reject.set()
         with self._lock:
             self._refill_awaiting_confirm = False
+            self._refill_prompt = ""
         # Desarma waits Stage2/Feed/Reached — si no, el hilo queda active ~3 min
         # y Reset responde "Detener ciclo antes de Reset".
         self._host.clear_motion_wait_flags()
         self._host.cmd_motion_stop()
         if not self._ignore_prefeeder:
             self._host.cmd_pf_stop()
-        self._host.cmd_plc_all_safe()
+        # Stop no toca PLC (válvulas: All Off / Reset PLC propios).
         self._set_state(TX_STOP, "Stop (0x042)")
         self._host.cycle_log("Cycle Stop (0x041)")
         return {"ok": True}
@@ -515,8 +533,10 @@ class CycleRunner:
         feed_mm: float | None = None,
         asda_mm: float | None = None,
     ) -> dict[str, Any]:
-        """Purga/refill: ASDA park → holder+encoder → feed n mm → corte → confirm → HOME.
+        """Purga/refill: ASDA park → holder+encoder → feed → (retry|cut) → home.
 
+        Tras feed: operador Retry o Next Cutting.
+        Tras corte: Next Return ASDA to 0.
         Feed físico sin validación láser ni OM (skipValidate en Motion).
         Motion FEED físico = 55 mm fijo (FEED_TARGET_FIXED_MM).
         """
@@ -546,8 +566,10 @@ class CycleRunner:
         self._last_ok = False
         self._refill_confirm.clear()
         self._refill_reject.clear()
+        self._refill_retry.clear()
         with self._lock:
             self._refill_awaiting_confirm = False
+            self._refill_prompt = ""
             self._refill_mode = True
         self._set_state(TX_BUSY)
         self._host.cycle_log(
@@ -562,17 +584,33 @@ class CycleRunner:
         return {"ok": True}
 
     def confirm_refill(self, ok: bool = True) -> dict[str, Any]:
-        """Operador confirma (Sí → ASDA a 0) o cancela tras el corte del refill."""
+        """Next (ok) o cancelar (park) según el prompt actual del refill."""
         if not self._refill_awaiting_confirm:
             return {"ok": False, "error": "Sin refill pendiente de confirmación"}
+        prompt = self._refill_prompt
         if ok:
             self._refill_confirm.set()
-            self._host.cycle_log("Refill: operador confirmó OK → ASDA a 0")
+            if prompt == "after_feed":
+                self._host.cycle_log("Refill: Next → Cutting")
+            else:
+                self._host.cycle_log("Refill: Next → ASDA a 0")
         else:
             self._refill_reject.set()
             self._host.cycle_log("Refill: operador canceló (ASDA permanece en park)")
         self._host.cycle_notify()
         return {"ok": True}
+
+    def retry_refill(self) -> dict[str, Any]:
+        """Reintenta solo el feed (válido tras alimentar, antes del corte)."""
+        if not self._refill_awaiting_confirm:
+            return {"ok": False, "error": "Sin refill pendiente de confirmación"}
+        if self._refill_prompt != "after_feed":
+            return {"ok": False, "error": "Retry solo tras alimentar (antes del corte)"}
+        self._refill_retry.set()
+        self._host.cycle_log("Refill: operador pide reintentar alimentación")
+        self._host.cycle_notify()
+        return {"ok": True}
+
     def request_reset(self) -> dict[str, Any]:
         if self.is_active():
             # Stop ya pedido: dar tiempo a que salga del wait Stage2/Feed.
@@ -591,27 +629,49 @@ class CycleRunner:
         self._recovery = ""
         self._last_ok = False
         self._materialist = False
+        self._busy_mode = False
         self._refill_mode = False
         self._refill_awaiting_confirm = False
+        self._refill_prompt = ""
         self._refill_confirm.clear()
         self._refill_reject.clear()
+        self._refill_retry.clear()
         self._pieces_done = 0
         self._finished_elapsed = 0.0
         self._set_progress(0, 0, 0)
         self._set_state(TX_IDLE)
         self._host.cycle_log("Cycle Reset (0x043)")
         return {"ok": True}
+
     def set_materialist(self, on: bool) -> dict[str, Any]:
         if on and self.is_active():
             return {"ok": False, "error": "No Materialist con ciclo activo"}
-        self._materialist = on
-        if on:
+        self._materialist = bool(on)
+        self._busy_mode = False
+        if self._materialist:
             self._set_state(TX_MATERIALIST)
             self._host.cycle_log("Cycle Materialist ON (0x049)")
         else:
             self._set_state(TX_IDLE)
             self._host.cycle_log("Cycle Materialist OFF → Idle")
-        return {"ok": True}
+        return {"ok": True, "materialist": self._materialist, "busy": False}
+
+    def set_busy(self, on: bool) -> dict[str, Any]:
+        """Busy máquina (0x045) sin arrancar ciclo — Andon Green + PF In process."""
+        if on and self.is_active():
+            return {"ok": True, "busy": True, "materialist": False}
+        if not on and self.is_active():
+            return {"ok": False, "error": "Ciclo activo — usar Stop"}
+        self._busy_mode = bool(on)
+        if self._busy_mode:
+            self._materialist = False
+            self._set_state(TX_BUSY)
+            self._host.cycle_log("Cycle Busy ON (0x045)")
+        else:
+            self._set_state(TX_IDLE)
+            self._host.cycle_log("Cycle Busy OFF → Idle")
+        return {"ok": True, "busy": self._busy_mode, "materialist": False}
+
     def set_step_by_step(self, on: bool) -> dict[str, Any]:
         if on and self._materialist:
             return {"ok": False, "error": "No paso a paso en Materialist (0x049)"}
@@ -697,6 +757,9 @@ class CycleRunner:
         """
         Aplica Set C1/C2/C3 desde HmiState.
         action: stop_all | pause | finish_step
+
+        C1/C2/C3 no mandan válvulas ni Reset PLC: el PLC solo se opera con
+        pulso/pulso, All Off o su Reset propio.
         """
         self._fault = ui
         self._fault_class = err_class
@@ -710,11 +773,10 @@ class CycleRunner:
                 self._host.clear_motion_wait_flags()
             except Exception:
                 pass
-            # Best-effort: un módulo caído no debe tumbar la política.
+            # Best-effort Motion/PF; PLC intocable desde política de error.
             for fn in (
                 self._host.cmd_motion_stop,
                 self._host.cmd_pf_stop,
-                self._host.cmd_plc_all_safe,
             ):
                 try:
                     fn()
@@ -787,6 +849,9 @@ class CycleRunner:
         if self._enter(rep, qty, key):
             return True
         ms = int(getattr(self.get_config(), cfg_attr, 0) or 0)
+        # Set→Res cortador: ≥ VALVE_PULSE_MS(+gap) o el KEEP no ve el Res.
+        if cfg_attr == "cutter_pulse_ms" and ms < 150:
+            ms = 150
         meta = STEP_BY_KEY.get(key, {})
         label = meta.get("label", key)
         self._host.cycle_log(f"Delay · {label}: {ms} ms")
@@ -910,6 +975,34 @@ class CycleRunner:
         )
         return False
 
+    def _wip_blower_pulse(self, at_mm: float, blower_sec: float, tag: str) -> bool:
+        """ON → dwell → OFF explícito. False = abort/falla (no mover con blower ON)."""
+        if self._should_abort():
+            return False
+        if not self._host.cmd_plc_blower(True, duration_sec=blower_sec):
+            self._raise_fault("wip_blower")
+            self._host.cycle_log(
+                f"WIP Delivery blower ON FAIL @ {tag}={at_mm:.1f} mm "
+                f"— no dwell / no continuar"
+            )
+            return False
+        self._host.cycle_log(
+            f"WIP Delivery blower ON @ {tag}={at_mm:.1f} mm hold={blower_sec:g}s"
+        )
+        if not self._wait_duration_s(blower_sec):
+            # Abort a mitad: apagar blower best-effort; no continuar
+            self._host.cmd_plc_blower(False)
+            return False
+        if not self._host.cmd_plc_blower(False):
+            self._raise_fault("wip_blower")
+            self._host.cycle_log(
+                f"WIP Delivery blower OFF FAIL @ {tag}={at_mm:.1f} mm "
+                f"— no continuar (blower puede seguir activo)"
+            )
+            return False
+        self._host.cycle_log(f"WIP Delivery blower OFF ok @ {tag}={at_mm:.1f} mm")
+        return True
+
     def _home_with_wip_delivery(
         self,
         start_mm: float | None,
@@ -917,7 +1010,7 @@ class CycleRunner:
         *,
         prefetch_running: bool,
     ) -> bool:
-        """HOME + WIP: mid → blower ON → dwell → blower OFF → HOME 0.
+        """HOME + WIP: soplo final → HOME 0 → soplo inicio.
 
         `start_mm` = magnitud ABS del depósito confirmado (post Idle/Reached)
         o del target Stage2 si no hubo move de depósito. No es estimación.
@@ -946,15 +1039,18 @@ class CycleRunner:
                 return False
             return self._wait_motion()
 
-        mid_mm = start_abs * 0.5
         self._host.cycle_log(
-            f"WIP Delivery: start={start_abs:.1f} mm → mid={mid_mm:.1f} mm "
-            f"→ blower {blower_sec:g}s → OFF → HOME"
+            f"WIP Delivery: start={start_abs:.1f} mm → blower fin "
+            f"→ HOME → blower inicio ({blower_sec:g}s c/u)"
         )
 
-        # 1) Mitad del viaje hacia 0
+        # 1) Primer disparo: final de pieza (posición actual = start)
+        if not self._wip_blower_pulse(start_abs, blower_sec, "fin"):
+            return False
+
+        # 2) HOME a 0 (solo con blower OFF)
         self._arm_motion_leg(prefetch_running)
-        if not self._host.cmd_motion_move_mm(mid_mm, rpm):
+        if not self._host.cmd_motion_move_zero(rpm):
             if not self._should_abort() and not self._fault:
                 kind = ""
                 if hasattr(self._host, "last_move_fail_kind"):
@@ -964,37 +1060,8 @@ class CycleRunner:
         if not self._wait_motion():
             return False
 
-        # 2) Soplo: ON debe OK; dwell; OFF explícito antes de mover (anti-carrera)
-        if self._should_abort():
-            return False
-        if not self._host.cmd_plc_blower(True, duration_sec=blower_sec):
-            self._raise_fault("wip_blower")
-            self._host.cycle_log(
-                f"WIP Delivery blower ON FAIL @ mid={mid_mm:.1f} mm "
-                f"— no dwell / no HOME"
-            )
-            return False
-        self._host.cycle_log(
-            f"WIP Delivery blower ON @ mid={mid_mm:.1f} mm hold={blower_sec:g}s"
-        )
-        if not self._wait_duration_s(blower_sec):
-            # Abort a mitad: apagar blower best-effort; no continuar a HOME
-            self._host.cmd_plc_blower(False)
-            return False
-        if not self._host.cmd_plc_blower(False):
-            self._raise_fault("wip_blower")
-            self._host.cycle_log(
-                "WIP Delivery blower OFF FAIL — no HOME (blower puede seguir activo)"
-            )
-            return False
-        self._host.cycle_log("WIP Delivery blower OFF ok — HOME")
-
-        # 3) Completar HOME (solo con blower OFF confirmado a nivel de comando)
-        self._arm_motion_leg(prefetch_running)
-        if not self._host.cmd_motion_move_zero(rpm):
-            self._raise_fault("home_cmd")
-            return False
-        return self._wait_motion()
+        # 3) Segundo disparo: inicio de pieza (en 0)
+        return self._wip_blower_pulse(0.0, blower_sec, "inicio")
 
     def _wait_feed(self) -> bool:
         if self._trial_mode:
@@ -1022,6 +1089,50 @@ class CycleRunner:
         if mode == "R":
             return ["R"]
         return ["L", "R"]
+
+    def _force_pf_triggers_if_no_holgura(self, *, where: str) -> bool:
+        """Lee holgura L/R; si ausente en un lado de feed, manda Tfeed a ese lado.
+
+        Holgura sensor ON = presente (OK). Ausencia → trigger 0x4C/0x51.
+        Pide status fresco al Master (misma ruta que heartbeat) antes de decidir.
+        """
+        if not self._use_prefeeder():
+            return True
+        # Status L/R llega async; sondear y esperar un tick de RX.
+        self._host.pf_request_status()
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < 0.25:
+            if self._should_abort():
+                return False
+            time.sleep(0.05)
+        sides = self._feed_side_list()
+        need: list[str] = []
+        for s in sides:
+            present = self._host.pf_holgura_present(s)
+            if present is False:
+                need.append(s)
+            elif present is None:
+                self._host.cycle_log(
+                    f"Holgura {s}: sin dato ({where}) — no forzar trigger"
+                )
+        if not need:
+            return True
+        ok_r = True
+        ok_l = True
+        if "R" in need:
+            ok_r = self._host.cmd_pf_trigger_r()
+        if "L" in need:
+            ok_l = self._host.cmd_pf_trigger_l()
+        r_txt = ("ok" if ok_r else "fail") if "R" in need else "omit"
+        l_txt = ("ok" if ok_l else "fail") if "L" in need else "omit"
+        self._host.cycle_log(
+            f"Sin holgura → force trigger ({where}) lados={''.join(need)} "
+            f"R(0x4C)={r_txt} L(0x51)={l_txt}"
+        )
+        if ("R" in need and not ok_r) or ("L" in need and not ok_l):
+            self._raise_fault("pf_trigger")
+            return False
+        return True
 
     def _wait_stage2(self) -> bool:
         """Espera Stage2 Complete (OK/NG). No usa ASDA Reached intermedios.
@@ -1124,52 +1235,79 @@ class CycleRunner:
             return False
         return self._wait_feed()
 
-    def _wait_refill_operator_confirm(self) -> bool:
-        """True = operador confirmó; False = canceló / Stop."""
+    def _wait_refill_operator_decision(self, prompt: str) -> str:
+        """'ok' | 'reject' | 'retry'. Abort/Stop → 'reject'.
+
+        prompt: after_feed (Retry + Next Cutting) | after_cut (Next ASDA 0).
+        """
         with self._lock:
+            self._refill_prompt = prompt
             self._refill_awaiting_confirm = True
         self._refill_confirm.clear()
         self._refill_reject.clear()
+        self._refill_retry.clear()
         self._pause.set()
         self._enter_pause_andon()
-        self._host.cycle_log(
-            "Refill: corte listo — confirme que la manguera/pieza está OK"
-        )
+        if prompt == "after_feed":
+            self._host.cycle_log("Refill: feed listo — Retry o Next → Cutting")
+        else:
+            self._host.cycle_log("Refill: corte listo — Next → ASDA a 0")
         self._host.cycle_notify()
         try:
             while True:
                 if self._should_abort() or self._refill_reject.is_set():
-                    return False
+                    return "reject"
                 if self._refill_confirm.is_set():
-                    return True
+                    return "ok"
+                if prompt == "after_feed" and self._refill_retry.is_set():
+                    return "retry"
                 time.sleep(0.05)
         finally:
             self._pause.clear()
             self._leave_pause_andon()
             with self._lock:
                 self._refill_awaiting_confirm = False
+                self._refill_prompt = ""
             self._host.cycle_notify()
 
     def _run_cutter_pulse(self) -> bool:
         """Pulso Set/Res cortador según feedSides (sin PreFeeder All OK)."""
         cfg = self.get_config()
         cut_sides = CycleConfig.normalize_feed_sides(cfg.feed_sides)
-        self._host.cycle_log(f"Refill cortador ON (Set) lados={cut_sides}")
-        self._host.cmd_plc_cutters(True, sides=cut_sides)
-        if self._should_abort():
-            self._host.cmd_plc_cutters(False, sides=cut_sides)
-            return False
-        time.sleep(max(0, cfg.cutter_pulse_ms) / 1000.0)
-        if self._should_abort():
-            self._host.cmd_plc_cutters(False, sides=cut_sides)
-            return False
-        self._host.cycle_log(f"Refill cortador OFF (Res) lados={cut_sides}")
-        self._host.cmd_plc_cutters(False, sides=cut_sides)
-        time.sleep(max(0, cfg.cutter_post_ms) / 1000.0)
-        return not self._should_abort()
+        armed = False
+        try:
+            self._host.cycle_log(f"Refill cortador ON (Set) lados={cut_sides}")
+            self._host.cmd_plc_cutters(True, sides=cut_sides, force=True)
+            armed = True
+            if self._should_abort():
+                return False
+            time.sleep(max(150, int(cfg.cutter_pulse_ms or 0)) / 1000.0)
+            if self._should_abort():
+                return False
+            self._host.cycle_log(f"Refill cortador OFF (Res) lados={cut_sides}")
+            self._host.cmd_plc_cutters(False, sides=cut_sides, force=True)
+            armed = False
+            time.sleep(max(0, cfg.cutter_post_ms) / 1000.0)
+            return not self._should_abort()
+        finally:
+            if armed:
+                self._host.cycle_log(
+                    f"Refill cortador OFF (Res) emergencia lados={cut_sides}"
+                )
+                self._host.cmd_plc_cutters(False, sides=cut_sides, force=True)
+
+    def _refill_cancel_park(self) -> None:
+        if self._aborted or self._stop.is_set():
+            self._finish(False)
+            return
+        self._host.cycle_log(
+            "Refill cancelado — ASDA permanece en park; tools safe"
+        )
+        self._host.cmd_plc_tools_safe()
+        self._finish(False, soft_cancel=True)
 
     def _run_refill(self, rpm: float, feed_mm: float, asda_mm: float) -> None:
-        """ASDA park → holder+encoder → feed → corte → confirm operador → HOME."""
+        """ASDA park → holder → feed ↔ retry → cut → home (prompts operador)."""
         with self._lock:
             self._active = True
             self._refill_mode = True
@@ -1213,22 +1351,36 @@ class CycleRunner:
             with self._lock:
                 self._progress = 35
 
-            # 3) Alimentar n mm (purga: sin validación láser/OM)
-            if abs(float(feed_mm) - 55.0) > 0.05:
-                self._host.cycle_log(
-                    f"Refill: config feed={feed_mm:g} mm — Motion FEED físico=55 mm"
-                )
-            else:
-                self._host.cycle_log(
-                    f"Refill: alimentar {feed_mm:g} mm (sin validación láser/OM)"
-                )
-            if not self._run_feed(skip_validate=True):
-                self._finish(False)
-                return
-            with self._lock:
-                self._progress = 60
-            if self._should_abort():
-                self._finish(False)
+            # 3) Feed (+ Retry) hasta Next → Cutting
+            while True:
+                if abs(float(feed_mm) - 55.0) > 0.05:
+                    self._host.cycle_log(
+                        f"Refill: config feed={feed_mm:g} mm — Motion FEED físico=55 mm"
+                    )
+                else:
+                    self._host.cycle_log(
+                        f"Refill: alimentar {feed_mm:g} mm (sin validación láser/OM)"
+                    )
+                if not self._run_feed(skip_validate=True):
+                    self._finish(False)
+                    return
+                with self._lock:
+                    self._progress = 55
+                if self._should_abort():
+                    self._finish(False)
+                    return
+
+                decision = self._wait_refill_operator_decision("after_feed")
+                if decision == "ok":
+                    break
+                if decision == "retry":
+                    self._host.cycle_log(
+                        "Refill: reintento — solo feed (ASDA en park)"
+                    )
+                    with self._lock:
+                        self._progress = 35
+                    continue
+                self._refill_cancel_park()
                 return
 
             # 4) Cortar
@@ -1238,16 +1390,10 @@ class CycleRunner:
             with self._lock:
                 self._progress = 75
 
-            # 5) Confirmación operador
-            if not self._wait_refill_operator_confirm():
-                if self._aborted or self._stop.is_set():
-                    self._finish(False)
-                    return
-                self._host.cycle_log(
-                    "Refill cancelado — ASDA permanece en park; tools safe"
-                )
-                self._host.cmd_plc_tools_safe()
-                self._finish(False, soft_cancel=True)
+            # 5) Next → ASDA a 0
+            decision = self._wait_refill_operator_decision("after_cut")
+            if decision != "ok":
+                self._refill_cancel_park()
                 return
 
             # 6) Regresar ASDA a 0
@@ -1322,6 +1468,12 @@ class CycleRunner:
                     )
                     self._finish(False)
                     return
+                # Busy máquina → In process en Master/L+R (arma sensores + acepta Tfeed).
+                # Sin esto, PF_LR NACK el trigger TCP (sensorsMotionArmed=false).
+                if self._host.cmd_pf_in_process(True):
+                    self._host.cycle_log("PreFeeder: In process ON (ciclo Busy)")
+                else:
+                    self._host.cycle_log("PreFeeder: In process ON falló")
             elif self._ignore_prefeeder:
                 self._host.cycle_log("PreFeeder: ignorado (debug bypass)")
             target_mm = self._effective_mm(length_mm)
@@ -1332,6 +1484,11 @@ class CycleRunner:
                 if self._gate("listo" if rep == 1 else "rep-start"):
                     break
                 self._set_progress(rep, 0, qty)
+                # Antes de pieza: si un lado activo no tiene holgura → Tfeed a ese lado.
+                if not self._force_pf_triggers_if_no_holgura(
+                    where=f"pre-pieza {rep}/{qty}"
+                ):
+                    break
                 # 1–2 Holder+Encoder ON + delay (solo 1ª; se mantienen el lote)
                 if rep == 1:
                     if self._enter(rep, qty, "holder_on"):
@@ -1416,6 +1573,8 @@ class CycleRunner:
                 if self._do_wait(rep, qty, "wait_holder_precut", "holder_on_ms"):
                     break
                 # 14–17 Corte solo en lados de feed (evita pulsar el cortador vacío)
+                # force=True: no omitir Set/Res por caché HMI desfasada.
+                # Si abortamos tras Set, Res de emergencia antes del break.
                 cut_sides = CycleConfig.normalize_feed_sides(self.get_config().feed_sides)
                 if self._enter(rep, qty, "cutter_on"):
                     break
@@ -1426,15 +1585,18 @@ class CycleRunner:
                         self._host.cycle_log("Corte abortado: PreFeeder Error")
                         break
                 self._host.cycle_log(f"Cortador ON (Set) lados={cut_sides}")
-                self._host.cmd_plc_cutters(True, sides=cut_sides)
+                self._host.cmd_plc_cutters(True, sides=cut_sides, force=True)
                 if self._after_step("cutter_on"):
+                    self._host.cmd_plc_cutters(False, sides=cut_sides, force=True)
                     break
                 if self._do_wait(rep, qty, "wait_cutter_pulse", "cutter_pulse_ms"):
+                    self._host.cmd_plc_cutters(False, sides=cut_sides, force=True)
                     break
                 if self._enter(rep, qty, "cutter_off"):
+                    self._host.cmd_plc_cutters(False, sides=cut_sides, force=True)
                     break
                 self._host.cycle_log(f"Cortador OFF (Res) lados={cut_sides}")
-                self._host.cmd_plc_cutters(False, sides=cut_sides)
+                self._host.cmd_plc_cutters(False, sides=cut_sides, force=True)
                 if self._after_step("cutter_off"):
                     break
                 if self._do_wait(rep, qty, "wait_cutter_post", "cutter_post_ms"):
@@ -1532,7 +1694,7 @@ class CycleRunner:
                     break
                 if self._do_wait(rep, qty, "wait_gripper_release", "gripper_release_ms"):
                     break
-                # 24 HOME + WIP: mid → blower ON/dwell/OFF → 0
+                # 24 HOME + WIP: blower fin → 0 → blower inicio
                 if self._enter(rep, qty, "home"):
                     break
                 if not self._home_with_wip_delivery(
@@ -1570,6 +1732,11 @@ class CycleRunner:
                         break
                 if self._enter(rep, qty, "post_piece"):
                     break
+                # Post-pieza: re-lee holgura; si quedó ausente, fuerza Tfeed otra vez.
+                if not self._force_pf_triggers_if_no_holgura(
+                    where=f"post-pieza {rep}/{qty}"
+                ):
+                    break
                 if self._after_step("post_piece"):
                     break
                 completed = rep
@@ -1601,11 +1768,13 @@ class CycleRunner:
         with self._lock:
             refill = self._refill_mode
             self._refill_awaiting_confirm = False
+            self._refill_prompt = ""
         self._refill_confirm.clear()
         self._refill_reject.clear()
-        # Stop/C1 ya hicieron all_safe (abre todo). En fin de piezas: cutters/
-        # grippers safe y Holder+Encoder quedan cerrados (sin pulso de más).
-        if not (self._aborted or self._stop.is_set()):
+        self._refill_retry.clear()
+        # Stop/C1/C2/C3 no tocan PLC. Fin de lote OK: tools safe + holder/enc.
+        # Abort/Stop: dejar válvulas como estén (All Off / Reset PLC manual).
+        if not (self._aborted or self._stop.is_set() or self._fault):
             self._host.cmd_plc_tools_safe()
             if not soft_cancel:
                 self._arm_holder_encoder()
@@ -1618,8 +1787,17 @@ class CycleRunner:
                     else "Refill finish: Holder/Encoder ON; cutters/grippers OFF"
                 )
             )
-        if self._use_prefeeder() and not refill:
-            self._host.cmd_pf_stop()
+        # Fin de lote / error: desarmar PreFeeder (In process OFF → Idle).
+        # Una sola armada al Start basta para 1…N piezas. No usar Stop 0x2B
+        # aquí: enclava PF-007; Stop de operador / C1 ya mandaron 0x2B.
+        if self._use_prefeeder() and not (self._aborted or self._stop.is_set()):
+            if self._host.cmd_pf_in_process(False):
+                self._host.cycle_log(
+                    "PreFeeder: In process OFF → Idle"
+                    + (" (post-error, desarmado)" if not ok else "")
+                )
+            else:
+                self._host.cycle_log("PreFeeder: In process OFF falló")
         elapsed = 0.0
         with self._lock:
             if self._started_at:
@@ -1647,6 +1825,7 @@ class CycleRunner:
             self._set_state(TX_IDLE, "Refill cancelado")
             self._host.cycle_log("Refill cancelado por operador → Idle")
         elif not ok:
+            # Máquina/Andon → Error; PreFeeder ya quedó Idle (desarmado) arriba.
             self._set_state(TX_ERROR, self._fault or "cycle_failed")
         else:
             self._set_state(TX_FINISH)
@@ -1662,4 +1841,7 @@ class CycleRunner:
                     + (f" en {elapsed:.0f}s" if elapsed > 0 else "")
                     + " · FinishParts (0x047)"
                 )
+            # Tras FinishParts: Idle máquina (PF ya Idle por In process OFF).
+            self._set_state(TX_IDLE)
+            self._host.cycle_log("Máquina → Idle (0x044) tras FinishParts")
         self._host.cycle_notify()

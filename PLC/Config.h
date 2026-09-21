@@ -22,6 +22,7 @@ constexpr unsigned long WIFI_CONNECT_TIMEOUT_MS = 30000;
 constexpr uint8_t PIN_CUTTER          = 26;  // 0x1F Cutter error
 constexpr uint8_t PIN_GRIPPER         = 27;  // 0x20 GripperE — falla gripper / aire baja·nula
 constexpr uint8_t PIN_HOLDER          = 32;  // 0x21 Holder error
+// GPIO34 input-only: sin pull-up interno; hace falta pull-up externa en PCB.
 constexpr uint8_t PIN_ENCODER         = 34;  // 0x22 EncoderE — aire / manguera / cilindro
 
 // --- Salidas válvulas / relés (Opcode TCP → GPIO) ---
@@ -55,6 +56,10 @@ constexpr uint8_t PIN_ETH_INT      = 35;
 // Válvulas por impulso: ON = un pulso, OFF = otro pulso (no enclavado).
 // Ancho suficiente para que el KEEP (Set/Res) del PLC neumático lea y enclaves.
 constexpr unsigned long VALVE_PULSE_MS = 100;
+// Hueco LOW mínimo entre impulsos en el mismo ciclo de válvulas. Si Set y Res
+// llegan encolados, sin este gap el KEEP a veces no registra el segundo pulso
+// y el cortador queda activado.
+constexpr unsigned long VALVE_PULSE_GAP_MS = 50;
 
 // Blower: nivel ON durante N s (ajustable desde HMI), luego OFF automático.
 constexpr unsigned long BLOWER_DEFAULT_SEC = 2;

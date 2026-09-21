@@ -9,7 +9,7 @@
   "asentarMs": 30,
   "dwellAtDestMs": 100,
   "depositBatchSize": 50,
-  "depositExtraMm": 60.0,
+  "depositExtraMm": 130.0,
   "cutOffsetMm": -8.0,
   "motionWaitTimeoutS": 120.0,
   "feedWaitTimeoutS": 30.0,

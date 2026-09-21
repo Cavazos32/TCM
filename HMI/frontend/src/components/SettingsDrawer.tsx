@@ -31,6 +31,8 @@ interface SettingsDrawerProps {
   onAndonBuzzerMute: (mute: boolean) => void;
   ignorePrefeeder?: boolean;
   onIgnorePrefeeder?: (on: boolean) => void;
+  /** IO Safety air (Motion): safetyExhaust true = trip; UI ON = OK. */
+  safetyExhaust?: boolean;
   connected?: boolean;
   onReconnectNetwork?: () => void;
   reconnecting?: boolean;
@@ -48,6 +50,7 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
   onAndonBuzzerMute,
   ignorePrefeeder = false,
   onIgnorePrefeeder,
+  safetyExhaust = false,
   connected = true,
   onReconnectNetwork,
   reconnecting = false,
@@ -401,6 +404,46 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
                   </div>
                   {andonBuzzerMute && <Check className="h-4 w-4 text-amber-600" />}
                 </button>
+
+                {(() => {
+                  const safetyOk = !safetyExhaust;
+                  return (
+                    <div
+                      id="dbg-safety-exhaust"
+                      title={t('safety_exhaust_hint')}
+                      className={`flex w-full items-center justify-between rounded-xl border p-3.5 text-left shadow-2xs select-none ${
+                        safetyOk
+                          ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-950/30 ring-2 ring-emerald-500/20'
+                          : 'border-red-500 bg-red-50 dark:bg-red-950/40 ring-2 ring-red-500/25 animate-pulse'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <span
+                          className={`h-2.5 w-2.5 rounded-full ${
+                            safetyOk ? 'bg-emerald-500' : 'bg-red-500'
+                          }`}
+                        />
+                        <div>
+                          <div className="text-xs font-bold">{t('safety_exhaust')}</div>
+                          <div className="text-[10px] text-slate-500 dark:text-slate-400">
+                            {safetyOk
+                              ? t('safety_exhaust_on_desc')
+                              : t('safety_exhaust_off_desc')}
+                          </div>
+                        </div>
+                      </div>
+                      <span
+                        className={`text-[10px] font-bold ${
+                          safetyOk
+                            ? 'text-emerald-700 dark:text-emerald-300'
+                            : 'text-red-700 dark:text-red-300'
+                        }`}
+                      >
+                        {safetyOk ? t('safety_exhaust_on') : t('safety_exhaust_off')}
+                      </span>
+                    </div>
+                  );
+                })()}
               </>
             )}
           </div>
