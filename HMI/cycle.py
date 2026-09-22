@@ -1513,6 +1513,9 @@ class CycleRunner:
         for s in bad:
             detail = self._host.feed_fault_for(s) or outcomes.get(s, "fail")
             self._host.cycle_log(f"Feed {s}: {detail}")
+        # Ya hay EXXX (p.ej. E002 LengthNG): no añadir E009 C1 encima.
+        if self._fault:
+            return False
         self._raise_fault("timeout_feed")
         self._host.cycle_log(format_ui("E009"))
         return False
@@ -2293,9 +2296,18 @@ class CycleRunner:
                                 handoff_ready = False
                                 if self._restart_piece:
                                     break
-                                if not self._fault:
-                                    self._raise_fault("feed_incomplete")
-                                break
+                                # C3: pieza ya cortada — no abortar; ir a post_piece → Pause.
+                                # Abortar aquí hacía break del while y el for seguía
+                                # disparando Tfeed/Feed en las piezas restantes.
+                                if self._c3_finish_piece:
+                                    self._host.cycle_log(
+                                        "∥ Join: prefetch falló — C3 sigue a "
+                                        "post_piece (Pause; Reset→Resume)"
+                                    )
+                                else:
+                                    if not self._fault:
+                                        self._raise_fault("feed_incomplete")
+                                    break
                             prefetch_running = False
                         if self._after_step("handoff"):
                             break
@@ -2341,7 +2353,11 @@ class CycleRunner:
                             f"C2: reinicio pieza {rep}/{qty} desde step 0"
                         )
                         continue
-                    break  # fallo / abort → salir del lote
+                    break  # fallo / abort → salir del while
+                # Critico: el break anterior solo sale del while; sin esto el for
+                # seguía con Tfeed/Feed en las piezas restantes (spam PF + E009).
+                if early_exit:
+                    break
             self._finish(completed >= qty and not self._aborted and not self._fault)
         except Exception as exc:
             self._raise_fault(f"exception:{exc}")
