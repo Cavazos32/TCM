@@ -35,6 +35,8 @@ export const PlcTab: React.FC<PlcTabProps> = ({
 }) => {
   const { t } = useApp();
   const activeValvesCount = plcState.valves.filter((v) => v.active).length;
+  const connected = plcState.connection.connected;
+  const hasError = !!plcState.hasError && connected;
 
   return (
     <div className="space-y-4">
@@ -44,12 +46,18 @@ export const PlcTab: React.FC<PlcTabProps> = ({
           <div className="flex items-center gap-2">
             <span
               className={`h-2.5 w-2.5 rounded-full ${
-                plcState.connection.connected
-                  ? 'bg-emerald-500 animate-pulse'
-                  : 'bg-red-500'
+                !connected || hasError
+                  ? 'bg-red-500'
+                  : 'bg-emerald-500 animate-pulse'
               }`}
             />
-            <span className="text-sm font-semibold text-slate-900 dark:text-white tracking-tight">
+            <span
+              className={`text-sm font-semibold tracking-tight ${
+                hasError
+                  ? 'text-red-700 dark:text-red-300'
+                  : 'text-slate-900 dark:text-white'
+              }`}
+            >
               {plcState.statusText || (activeValvesCount > 0
                 ? `${activeValvesCount} ${t('valves_active')}`
                 : t('state_ready'))}
@@ -60,8 +68,8 @@ export const PlcTab: React.FC<PlcTabProps> = ({
 
           <div className="flex items-center gap-1.5 font-mono text-xs text-slate-600 dark:text-slate-400">
             <span className="text-slate-400 dark:text-slate-500">{t('link_label')}:</span>
-            <span className={`font-semibold ${plcState.connection.connected ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
-              {plcState.connection.connected ? t('node_connected') : t('node_disconnected')}
+            <span className={`font-semibold ${connected ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
+              {connected ? t('node_connected') : t('node_disconnected')}
             </span>
             <span className="text-slate-400 dark:text-slate-500 text-[11px]">
               ({plcState.connection.ip}:{plcState.connection.port})

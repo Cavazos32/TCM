@@ -10,7 +10,7 @@ interface LogTerminalProps {
   filterModule?: 'MAQUINA' | 'MOTION' | 'PLC' | 'PREFEEDER' | 'ANDON' | 'ALL';
 }
 
-export const LogTerminal: React.FC<LogTerminalProps> = ({
+export const LogTerminal: React.FC<LogTerminalProps> = React.memo(({
   title,
   logs,
   onClear,
@@ -215,5 +215,7 @@ export const LogTerminal: React.FC<LogTerminalProps> = ({
       </div>
     </div>
   );
-};
+});
+
+LogTerminal.displayName = 'LogTerminal';
 

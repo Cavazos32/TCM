@@ -569,7 +569,6 @@ const char index_html[] PROGMEM = R"rawliteral(
           <li>Buffer Max GPIO 21 → para todo</li>
           <li>Cilindro abierto GPIO 25 → para todo</li>
           <li>Tensión GPIO 23 &gt; <span class="info-param">10 s</span> → para todo</li>
-          <li>Buffer Full GPIO 19 consumido sin relleno en <span class="info-param">10.0 s</span> → para todo</li>
         </ol>
 
         <p class="info-section-title">Núcleo 0 · Feeder (automático, con Iniciar)</p>
@@ -577,10 +576,9 @@ const char index_html[] PROGMEM = R"rawliteral(
           <li class="info-step-note">Tarea <em>m2_holgura</em> · ciclo ~5 ms · feeder: trigger TCP / helper holgura / refill</li>
           <li class="info-step-note">Misma condición: ventana de relleno + Auto ON</li>
           <li>Holgura GPIO 22: ausente ≥ <span class="info-param" data-info-key="holguraHelperMs">100 ms</span> → helper feed · ≥ <span class="info-param" data-info-key="holguraFault">1.5 s</span> → falla</li>
-          <li>Helper holgura (prioridad &gt; trigger TCP) · <span class="info-param" data-info-key="holguraHelperRpm">60 RPM</span> · <span class="info-param" data-info-key="holguraHelperS">1.0 s</span></li>
+          <li>Helper holgura · <span class="info-param" data-info-key="holguraHelperRpm">60 RPM</span> · <span class="info-param" data-info-key="holguraHelperS">1.0 s</span> · no corta Tfeed TCP en curso</li>
           <li>Trigger TCP desde TCM → alimenta Tfeed · <span class="info-param" data-info-key="rpm2">60 RPM</span> · en paralelo con relleno</li>
-          <li class="info-step-wait"><span class="info-param" data-info-key="triggerFeed">3.66 s</span> · Tfeed = L·(1+f) / V</li>
-          <li class="info-step-note">L=<span class="info-param" data-info-key="pieceLength">—</span> mm · V=<span class="info-param" data-info-key="feedSpeed">100</span> mm/s · f=<span class="info-param">0.1</span></li>
+          <li class="info-step-wait"><span class="info-param" data-info-key="triggerFeed">2.0 s</span> · duración Tfeed (editable) · no cortar hasta fin (salvo Stop/falla/Buffer Max)</li>
           <li>Fin Tfeed → feeder idle · DeReeler/servo siguen si Full OFF</li>
           <li class="info-step-wait">80 ms · filtro holgura estable</li>
           <li class="info-step-note">Sin enlace TCP con TCM → feeder en pausa</li>
@@ -699,22 +697,12 @@ const char index_html[] PROGMEM = R"rawliteral(
     <div class="card" id="triggers-card">
       <h2>Triggers</h2>
       <p class="meta compact">
-        Tfeed = longitud × (1 + 0.1) / velocidad. Longitud desde TCM.
+        Duración del feeder al recibir trigger TCP desde TCM.
+        Una vez iniciado, termina el tiempo (In process OFF no lo corta). Stop operador / falla / Buffer Max sí.
       </p>
       <div class="form-group">
-        <label for="piece-length-mm">Longitud total (mm)</label>
-        <p class="field-desc">Desde el modelo activo en TCM · solo visual · no editable</p>
-        <input type="number" id="piece-length-mm" min="0" step="0.1" value="0" readonly aria-readonly="true">
-      </div>
-      <div class="form-row">
-        <div class="form-group">
-          <label for="feed-speed-mm-s">Velocidad (mm/s)</label>
-          <input type="number" id="feed-speed-mm-s" min="1" max="2000" step="1" value="100">
-        </div>
-        <div class="form-group">
-          <label for="trigger-feed-sec">Tfeed (s)</label>
-          <input type="number" id="trigger-feed-sec" min="0.1" max="60" step="0.01" value="2.0" readonly aria-readonly="true">
-        </div>
+        <label for="trigger-feed-sec">Tfeed (s)</label>
+        <input type="number" id="trigger-feed-sec" min="0.1" max="60" step="0.01" value="2.0">
       </div>
     </div>
 
@@ -770,7 +758,7 @@ const char index_html[] PROGMEM = R"rawliteral(
       <h2>CW - CCW Settings</h2>
       <p class="meta compact">
         GPIO 23 tensión: +30 RPM · no cambia sentido (bobinas en planta) · duración = campo abajo.
-        Timeout tensión / Buffer Full fijos: 10 s.
+        Timeout tensión fijo: 10 s.
       </p>
       <div class="form-group">
         <label for="auto-rev">Boost tensión (s)</label>
@@ -812,8 +800,6 @@ const char index_html[] PROGMEM = R"rawliteral(
       servoPwm: { id: 'servo-pwm', suffix: ' µs' },
       rpm2: { id: 'rpm2', suffix: ' RPM' },
       triggerFeed: { id: 'trigger-feed-sec', suffix: ' s' },
-      pieceLength: { id: 'piece-length-mm', suffix: '' },
-      feedSpeed: { id: 'feed-speed-mm-s', suffix: '' },
       holguraHelperRpm: { id: 'holgura-helper-rpm', suffix: ' RPM' },
       holguraHelperS: { id: 'holgura-helper-s', suffix: ' s' },
       holguraHelperMs: { id: 'holgura-helper-absent-ms', suffix: ' ms' },
@@ -853,8 +839,8 @@ const char index_html[] PROGMEM = R"rawliteral(
     var tensionInit = false;
     var cfgDirty = false;
     var cfgFieldIds = [
-      'auto-rpm', 'auto-rev', 'rpm2',
-      'feed-speed-mm-s', 'tension-cooldown', 'servo-pwm', 'refill-pulse-s',
+      'auto-rpm', 'auto-rev', 'rpm2', 'trigger-feed-sec',
+      'tension-cooldown', 'servo-pwm', 'refill-pulse-s',
       'holgura-helper-rpm', 'holgura-helper-s', 'holgura-helper-absent-ms', 'holgura-fault-s'
     ];
     function markCfgDirty() { cfgDirty = true; }
@@ -894,17 +880,12 @@ const char index_html[] PROGMEM = R"rawliteral(
       else if (t.trigger_via === 'holgura_helper') trigBadge.textContent = 'Helper holgura';
       else trigBadge.textContent = 'Trigger TCP';
       syncCfg('rpm2', t.rpm_boost);
-      syncCfg('feed-speed-mm-s', t.feed_speed_mm_s);
+      syncCfg('trigger-feed-sec', t.trigger_feed_s);
       syncCfg('holgura-helper-rpm', t.holgura_helper_rpm);
       syncCfg('holgura-helper-s', t.holgura_helper_s);
       syncCfg('holgura-helper-absent-ms', t.holgura_helper_absent_ms);
       syncCfg('holgura-fault-s', t.holgura_fault_s);
       motor2Init = true;
-      // Solo lectura: siempre reflejar longitud/Tfeed del firmware.
-      var lenEl = document.getElementById('piece-length-mm');
-      if (lenEl && t.piece_length_mm !== undefined) lenEl.value = t.piece_length_mm;
-      var tfeedEl = document.getElementById('trigger-feed-sec');
-      if (tfeedEl && t.trigger_feed_s !== undefined) tfeedEl.value = t.trigger_feed_s;
       trigger2Init = true;
     }
     function saveAllCfg() {
@@ -920,9 +901,9 @@ const char index_html[] PROGMEM = R"rawliteral(
       if (servoPwm > 2500) servoPwm = 2500;
       var rpm2 = parseFloat(document.getElementById('rpm2').value);
       if (isNaN(rpm2) || rpm2 < 1) rpm2 = 60;
-      var feedSpeed = parseFloat(document.getElementById('feed-speed-mm-s').value);
-      if (isNaN(feedSpeed) || feedSpeed < 1) feedSpeed = 100;
-      if (feedSpeed > 2000) feedSpeed = 2000;
+      var tfeed = parseFloat(document.getElementById('trigger-feed-sec').value);
+      if (isNaN(tfeed) || tfeed < 0.1) tfeed = 2.0;
+      if (tfeed > 60) tfeed = 60;
       var hRpm = parseFloat(document.getElementById('holgura-helper-rpm').value);
       if (isNaN(hRpm) || hRpm < 1) hRpm = 60;
       var hSec = parseFloat(document.getElementById('holgura-helper-s').value);
@@ -942,7 +923,7 @@ const char index_html[] PROGMEM = R"rawliteral(
       if (isNaN(pulseS) || pulseS < 0.2) pulseS = 1.0;
       if (pulseS > 10) pulseS = 10;
       var m2Url = '/api/motor2?rpm=' + encodeURIComponent(rpm2)
-        + '&feed_speed_mm_s=' + encodeURIComponent(feedSpeed)
+        + '&trigger_feed_s=' + encodeURIComponent(tfeed)
         + '&holgura_helper_rpm=' + encodeURIComponent(hRpm)
         + '&holgura_helper_s=' + encodeURIComponent(hSec)
         + '&holgura_helper_absent_ms=' + encodeURIComponent(hAbsMs)

@@ -19,39 +19,52 @@ function AppMain() {
   const [reconnecting, setReconnecting] = useState(false);
   const hmi = useHmiState();
   const { view } = hmi;
+  // Callbacks estables (useCallback en el hook); no depender del objeto `hmi` entero.
+  const {
+    onTabChange,
+    reconnectNetwork,
+    setCycleTrialMode,
+    setCycleStepByStep,
+    stop,
+    start,
+    motionStop,
+    pfStop,
+  } = hmi;
 
   const handleReconnectNetwork = useCallback(async () => {
     setReconnecting(true);
     try {
-      await hmi.reconnectNetwork();
+      await reconnectNetwork();
     } finally {
       setReconnecting(false);
     }
-  }, [hmi]);
+  }, [reconnectNetwork]);
 
   const handleTabChange = useCallback(
     (tab: TabType) => {
       if (!debugMode && tab !== 'maquina') return;
       setCurrentTab(tab);
-      hmi.onTabChange(tab);
+      onTabChange(tab);
     },
-    [hmi, debugMode]
+    [onTabChange, debugMode]
   );
 
   const handleDebugModeDisable = useCallback(() => {
     if (view.machineState.trialMode) {
-      void hmi.setCycleTrialMode(false);
+      void setCycleTrialMode(false);
     }
     if (view.machineState.stepByStep) {
-      void hmi.setCycleStepByStep(false);
+      void setCycleStepByStep(false);
     }
     if (currentTab !== 'maquina') {
       setCurrentTab('maquina');
-      hmi.onTabChange('maquina');
+      onTabChange('maquina');
     }
   }, [
     currentTab,
-    hmi,
+    onTabChange,
+    setCycleTrialMode,
+    setCycleStepByStep,
     view.machineState.trialMode,
     view.machineState.stepByStep,
   ]);
@@ -59,9 +72,9 @@ function AppMain() {
   useEffect(() => {
     if (!debugMode && currentTab !== 'maquina') {
       setCurrentTab('maquina');
-      hmi.onTabChange('maquina');
+      onTabChange('maquina');
     }
-  }, [debugMode, currentTab, hmi]);
+  }, [debugMode, currentTab, onTabChange]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -82,22 +95,33 @@ function AppMain() {
       else if (e.code === 'Space') {
         e.preventDefault();
         if (currentTab === 'maquina') {
-          if (view.machineState.isRunning) hmi.stop();
-          else hmi.start();
+          if (view.machineState.isRunning) stop();
+          else start();
         }
       } else if (e.key === 'Escape') {
         if (isSettingsOpen) setIsSettingsOpen(false);
         else {
-          hmi.stop();
-          hmi.motionStop();
-          hmi.pfStop();
+          stop();
+          motionStop();
+          pfStop();
         }
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentTab, view.machineState.isRunning, isSettingsOpen, setIsSettingsOpen, hmi, handleTabChange, debugMode]);
+  }, [
+    currentTab,
+    view.machineState.isRunning,
+    isSettingsOpen,
+    setIsSettingsOpen,
+    handleTabChange,
+    debugMode,
+    stop,
+    start,
+    motionStop,
+    pfStop,
+  ]);
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans flex flex-col antialiased selection:bg-slate-800 dark:selection:bg-slate-200 selection:text-white dark:selection:text-slate-900 transition-colors">
@@ -159,34 +183,32 @@ function AppMain() {
           />
         )}
 
-        {debugMode && (
-          <div className={currentTab === 'cycle' ? undefined : 'hidden'} aria-hidden={currentTab !== 'cycle'}>
-            <CycleTab
-              machineState={view.machineState}
-              cycleConfig={view.cycleConfig}
-              cycleStep={view.cycleStep}
-              cycleActive={view.cycleActive}
-              cycleFlow={view.cycleFlow}
-              onSaveConfig={hmi.saveCycleConfig}
-              onReloadConfig={hmi.reloadCycleConfig}
-              onPause={hmi.pauseCycle}
-              onReset={hmi.resetCycleCmd}
-              onMaterialist={hmi.toggleCycleMaterialist}
-              onSetStepByStep={hmi.setCycleStepByStep}
-              onStart={hmi.start}
-              onResume={hmi.resume}
-              resumeEnabled={view.resumeEnabled}
-              onRefill={() => {
-                void hmi.startRefill();
-              }}
-              onRefillConfirm={(ok) => {
-                void hmi.confirmRefill(ok);
-              }}
-              onRefillRetry={() => {
-                void hmi.retryRefill();
-              }}
-            />
-          </div>
+        {debugMode && currentTab === 'cycle' && (
+          <CycleTab
+            machineState={view.machineState}
+            cycleConfig={view.cycleConfig}
+            cycleStep={view.cycleStep}
+            cycleActive={view.cycleActive}
+            cycleFlow={view.cycleFlow}
+            onSaveConfig={hmi.saveCycleConfig}
+            onReloadConfig={hmi.reloadCycleConfig}
+            onPause={hmi.pauseCycle}
+            onReset={hmi.resetCycleCmd}
+            onMaterialist={hmi.toggleCycleMaterialist}
+            onSetStepByStep={hmi.setCycleStepByStep}
+            onStart={hmi.start}
+            onResume={hmi.resume}
+            resumeEnabled={view.resumeEnabled}
+            onRefill={() => {
+              void hmi.startRefill();
+            }}
+            onRefillConfirm={(ok) => {
+              void hmi.confirmRefill(ok);
+            }}
+            onRefillRetry={() => {
+              void hmi.retryRefill();
+            }}
+          />
         )}
 
         {debugMode && currentTab === 'motion' && (

@@ -94,13 +94,17 @@ export interface MachineState {
   cycleBusy: boolean;
   refillActive: boolean;
   refillAwaitingConfirm: boolean;
-  /** after_feed | after_cut | "" */
+  /** working | after_feed | after_cut | "" */
   refillPrompt: string;
   stepByStep: boolean;
   trialMode: boolean;
   pauseEnabled: boolean;
   progress: number;
   cycleTimeSec: number;
+  /** Última pieza completada (s). */
+  lastPieceSec: number;
+  /** Promedio por pieza del lote (s). */
+  avgPieceSec: number;
   piecesCount: number;
   targetPieces: number;
   cycleCompleted: boolean;

@@ -60,7 +60,7 @@ constexpr uint32_t DEREELER_START_DELAY_MS = 100;
 // L: http://10.10.32.101 | R: http://10.10.32.102 | Master: http://10.10.32.100
 // Master TCP → L/R :8765 (esclavos independientes; ver PreFeeder_Master/master_cmds.h)
 //   Globales (Master→L+R): start/stop/reset, Materialista, In process, refill manual, …
-//   Volátiles (Master→L o R): trigger, settings, pieceLength, feedSpeed, …
+//   Volátiles (Master→L o R): trigger, settings, Tfeed, …
 static const char* const WIFI_SSID = "R&D_TCM";
 static const char* const WIFI_PASS = "TCM2026!r&d";
 static const IPAddress STA_GW(10, 10, 32, 72);
@@ -94,6 +94,7 @@ constexpr float TENSION_FAULT_SEC        = 10.0f;
 constexpr float TENSION_BOOST_RPM_OFFSET = 30.0f;
 
 // ====================== BUFFER / HOLGURA ======================
+// Legacy UI/JSON: el monitor ya no enclava FAULT_BUFFER_TIMEOUT.
 constexpr float BUFFER_REFILL_FAULT_SEC = 10.0f;
 constexpr float M2_HOLGURA_FAULT_SEC      = 1.5f;   // ausente ≥ esto → PF_ERR_HOLGURA (UI/NVS)
 constexpr float M2_HOLGURA_FAULT_SEC_MIN  = 0.3f;
@@ -115,10 +116,6 @@ constexpr uint32_t TENSION_REVERSE_FILTER_MS = 80;
 constexpr float M2_TRIGGER_FEED_DEFAULT = 2.0f;
 constexpr float M2_TRIGGER_FEED_MIN     = 0.1f;
 constexpr float M2_TRIGGER_FEED_MAX     = 60.0f;
-constexpr float M2_FEED_SPEED_MM_S_DEFAULT = 100.0f;
-constexpr float M2_FEED_SPEED_MM_S_MIN     = 1.0f;
-constexpr float M2_FEED_SPEED_MM_S_MAX     = 2000.0f;
-constexpr float M2_SAFETY_FACTOR           = 0.1f;
 constexpr uint8_t M2_TRIGGER_CORE          = 1;
 
 // ====================== REFILL / NVS / PEER ======================

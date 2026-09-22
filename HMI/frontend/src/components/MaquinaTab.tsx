@@ -152,10 +152,17 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
       : progressPercentage;
 
   const elapsedSec = machineState.cycleTimeSec ?? 0;
+  const lastPieceSec = machineState.lastPieceSec ?? 0;
+  const avgPieceSec = machineState.avgPieceSec ?? 0;
   const etaSec =
     machineState.cycleActive && stepProgress > 0 && stepProgress < 100
       ? Math.round((elapsedSec / stepProgress) * (100 - stepProgress))
       : 0;
+
+  const fmtSec = (sec: number) => {
+    const s = Math.max(0, Math.round(sec));
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  };
 
   const hasFault = !!(machineState.errorActive || machineState.fault);
   const modKind = faultModuleKind(machineState.faultModule);
@@ -182,6 +189,8 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
 
   const toDisplayMm = (internalMm: number) => -internalMm;
   const activeValvesCount = plcState.valves.filter((v) => v.active).length;
+  const plcConnected = plcState.connection.connected;
+  const plcHasError = !!plcState.hasError && plcConnected;
   const pfConnected = preFeederState.connection.connected;
   const pfHasError = !!preFeederState.hasError && pfConnected;
 
@@ -265,7 +274,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               {faultLabel}
             </span>
           ) : null}
-          {machineState.cycleCompleted && (
+          {machineState.cycleCompleted && !hasFault && (
             <span className="text-xs font-mono text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 px-2 py-0.5 rounded">
               {t('cycle_complete')}
             </span>
@@ -401,14 +410,8 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                 <span className="font-bold text-emerald-600 dark:text-emerald-400 text-xs">
                   {stepProgress}%
                 </span>
-                {machineState.cycleActive && elapsedSec > 0 && (
-                  <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400">
-                    {Math.floor(elapsedSec / 60)}:{String(elapsedSec % 60).padStart(2, '0')}
-                    {etaSec > 0 ? ` · ~${Math.floor(etaSec / 60)}:${String(etaSec % 60).padStart(2, '0')}` : ''}
-                  </span>
-                )}
               </div>
-              <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700 p-0.5">
+              <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700 p-0.5 mb-2">
                 <div
                   className={`h-full rounded-full transition-all duration-300 ${
                     machineState.isRunning
@@ -420,6 +423,33 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                   style={{ width: `${stepProgress}%` }}
                 />
               </div>
+              {(machineState.cycleActive || elapsedSec > 0 || lastPieceSec > 0) && (
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] font-mono text-slate-600 dark:text-slate-400">
+                  <span title={t('cycle_time_hint')}>
+                    {t('cycle_time_label')}:{' '}
+                    <strong className="text-teal-700 dark:text-teal-300">
+                      {fmtSec(elapsedSec)}
+                    </strong>
+                    {machineState.cycleActive && etaSec > 0 ? ` · ~${fmtSec(etaSec)}` : ''}
+                  </span>
+                  {lastPieceSec > 0 && (
+                    <span>
+                      {t('cycle_time_piece')}:{' '}
+                      <strong className="text-slate-800 dark:text-slate-200">
+                        {lastPieceSec.toFixed(1)}s
+                      </strong>
+                    </span>
+                  )}
+                  {avgPieceSec > 0 && (machineState.targetPieces || 0) > 1 && (
+                    <span>
+                      {t('cycle_time_avg')}:{' '}
+                      <strong className="text-slate-800 dark:text-slate-200">
+                        {avgPieceSec.toFixed(1)}s
+                      </strong>
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
 
             {machineState.refillActive && machineState.refillPrompt && onRefillConfirm && (
@@ -428,12 +458,16 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                   <p className="text-xs font-bold text-sky-900 dark:text-sky-100">
                     {machineState.refillPrompt === 'after_cut'
                       ? t('refill_confirm_title_cut')
-                      : t('refill_confirm_title_feed')}
+                      : machineState.refillPrompt === 'working'
+                        ? t('refill_confirm_title_working')
+                        : t('refill_confirm_title_feed')}
                   </p>
                   <p className="text-[11px] text-sky-800/80 dark:text-sky-200/80 mt-0.5">
                     {machineState.refillPrompt === 'after_cut'
                       ? t('refill_confirm_hint_cut')
-                      : t('refill_confirm_hint_feed')}
+                      : machineState.refillPrompt === 'working'
+                        ? t('refill_confirm_hint_working')
+                        : t('refill_confirm_hint_feed')}
                   </p>
                 </div>
                 {machineState.refillPrompt === 'after_feed' && onRefillRetry && (
@@ -448,28 +482,32 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     {t('btn_refill_confirm_retry')}
                   </button>
                 )}
-                <button
-                  id="btn-refill-confirm-yes"
-                  type="button"
-                  onClick={() => onRefillConfirm(true)}
-                  disabled={!machineState.refillAwaitingConfirm}
-                  className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 text-xs font-bold text-white shadow-2xs active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
-                >
-                  <Check className="h-3.5 w-3.5" />
-                  {machineState.refillPrompt === 'after_cut'
-                    ? t('btn_refill_confirm_yes')
-                    : t('btn_refill_confirm_next_cut')}
-                </button>
-                <button
-                  id="btn-refill-confirm-no"
-                  type="button"
-                  onClick={() => onRefillConfirm(false)}
-                  disabled={!machineState.refillAwaitingConfirm}
-                  className="flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3.5 py-2 text-xs font-bold text-slate-700 dark:text-slate-200 shadow-2xs active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
-                >
-                  <X className="h-3.5 w-3.5" />
-                  {t('btn_refill_confirm_no')}
-                </button>
+                {machineState.refillPrompt !== 'working' && (
+                  <>
+                    <button
+                      id="btn-refill-confirm-yes"
+                      type="button"
+                      onClick={() => onRefillConfirm(true)}
+                      disabled={!machineState.refillAwaitingConfirm}
+                      className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 text-xs font-bold text-white shadow-2xs active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
+                    >
+                      <Check className="h-3.5 w-3.5" />
+                      {machineState.refillPrompt === 'after_cut'
+                        ? t('btn_refill_confirm_yes')
+                        : t('btn_refill_confirm_next_cut')}
+                    </button>
+                    <button
+                      id="btn-refill-confirm-no"
+                      type="button"
+                      onClick={() => onRefillConfirm(false)}
+                      disabled={!machineState.refillAwaitingConfirm}
+                      className="flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3.5 py-2 text-xs font-bold text-slate-700 dark:text-slate-200 shadow-2xs active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                      {t('btn_refill_confirm_no')}
+                    </button>
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -630,12 +668,18 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
             <div className="flex items-center gap-2 min-w-0">
               <span
                 className={`h-2.5 w-2.5 rounded-full shrink-0 ${
-                  plcState.connection.connected
-                    ? 'bg-emerald-500 animate-pulse'
-                    : 'bg-red-500'
+                  !plcConnected || plcHasError
+                    ? 'bg-red-500'
+                    : 'bg-emerald-500 animate-pulse'
                 }`}
               />
-              <span className="text-sm font-semibold text-slate-900 dark:text-white tracking-tight truncate">
+              <span
+                className={`text-sm font-semibold tracking-tight truncate ${
+                  plcHasError
+                    ? 'text-red-700 dark:text-red-300'
+                    : 'text-slate-900 dark:text-white'
+                }`}
+              >
                 {plcState.statusText || (activeValvesCount > 0
                   ? `${activeValvesCount} ${t('valves_active')}`
                   : t('state_ready'))}
@@ -646,8 +690,8 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
 
             <div className="flex items-center gap-1.5 font-mono text-xs text-slate-600 dark:text-slate-400">
               <span className="text-slate-400 dark:text-slate-500">{t('link_label')}:</span>
-              <span className={`font-semibold ${plcState.connection.connected ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
-                {plcState.connection.connected ? t('node_connected') : t('node_disconnected')}
+              <span className={`font-semibold ${plcConnected ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
+                {plcConnected ? t('node_connected') : t('node_disconnected')}
               </span>
               <span className="text-slate-400 dark:text-slate-500 text-[11px]">
                 ({plcState.connection.ip}:{plcState.connection.port})

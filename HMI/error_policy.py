@@ -1,16 +1,19 @@
 """Política de errores C1/C2/C3 — flip-flop Set / Res.
 
 Set: llega EXXX detalle → latchea + aplica acción según clase.
-Res: Reset HMI → limpia latch + reset módulos + (hard) Reset PLC + (C1) exige confirm/home.
+Res: Reset HMI explícito, o Res observacional (módulo ya OK + ciclo inactivo).
 
 Clases (Doc/TCM - D.xlsx):
   C1 — Stop inmediato a todos; recovery: reset + validar + confirm + home
+       (atajo: Res observacional si módulo OK y ciclo inactivo)
   C2 — Pausar (no siguiente step); recovery: soft-Res + resume → desde step 0
+       (feed omitible si láser ya ON en feedSides)
   C3 — Terminar pieza/paso en curso; recovery: soft-Res + resume → reintentar/continuar
 """
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -39,6 +42,7 @@ class ErrorLatch:
     needs_home: bool = False
     recovery: str = ""  # "home" | "restart_from_0" | "retry_process" | ""
     confirmed: bool = False
+    set_at: float = 0.0  # monotonic; Res observacional espera edad mínima
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -126,6 +130,7 @@ class ErrorPolicy:
             needs_home=plan["needs_home"],
             recovery=plan["recovery"],
             confirmed=False,
+            set_at=time.monotonic(),
         )
         return {
             "ui": ui,

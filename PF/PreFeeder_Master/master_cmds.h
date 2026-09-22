@@ -33,10 +33,8 @@ static inline PfCmdScope pfMasterCmdScope(const String& cmd)
       || cmd == "setHolguraExtra" || cmd == "setHolguraFault" || cmd == "setHolguraFaultS"
       || cmd == "setHolguraHelper" || cmd == "setHolguraHelperRpm"
       || cmd == "setHolguraHelperS" || cmd == "setHolguraHelperAbsentMs"
-      || cmd == "setSafetyFactor" || cmd == "setDereelerLead" || cmd == "setDereelerLeadMs"
+      || cmd == "setDereelerLead" || cmd == "setDereelerLeadMs"
       || cmd == "setTriggerFeed" || cmd == "setTriggerCfg"
-      || cmd == "setPieceLength" || cmd == "setPieceLengthMm"
-      || cmd == "setFeedSpeed" || cmd == "setFeedSpeedMmS"
       || cmd == "setAllCfg" || cmd == "applyAllCfg")
     return PfCmdScope::Side;
 

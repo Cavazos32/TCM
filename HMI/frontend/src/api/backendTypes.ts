@@ -68,6 +68,8 @@ export interface BackendCycleSnapshot {
   totalReps: number;
   progress: number;
   elapsedSec?: number;
+  lastPieceSec?: number;
+  avgPieceSec?: number;
   completed?: boolean;
   lastOk: boolean;
   fault: string;

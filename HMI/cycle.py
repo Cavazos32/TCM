@@ -35,18 +35,23 @@ CONFIG_PATH = HMI_ROOT / "config" / "cycle_config.json"
 # El test HTML de Motion sigue usando pieceMm = L (target = L−55).
 # No modificar Feed / FEED_TARGET_FIXED_MM / Move ABS manual.
 
-# WIP Delivery (HOME): 2 soplos por pieza hacia 0.
+# WIP Delivery (HOME): soplo al volver a 0.
 # start = magnitud ABS final tras depósito y despeje post-pinzas (gripperClearanceMm).
-# 1) punta final (lado grippers) → move offset → soplo
-# 2) punta inicial (lado cortador = wipBlowerInicioOffsetMm) → soplo
-# 3) HOME 0
-# offset = montaje del blower respecto a cada punta (hacia el centro de pieza).
-# Cada soplo: ON(blowerSec) → dwell → OFF explícito (sin carrera timer HMI/PLC).
+#
+# WIP_BLOWER_CONTINUOUS=True (activo): un solo MOVE→0; al arrancar, blower ON
+# durante el mismo tiempo que duró el lineal. PLC apaga solo (no OFF al llegar).
+# WIP_BLOWER_CONTINUOUS=False: stop–soplo–stop en fin/inicio (rollback).
+WIP_BLOWER_CONTINUOUS = True
+# Cada soplo (modo stop): ON(blowerSec) → dwell → OFF explícito.
+# Cada soplo (modo continuo): ON(duración=lineal) sin dwell HMI.
 WIP_BLOWER_MIN_TRAVEL_MM = 8.0
 # Evita move de offset trivial (misma convención firmada que cmd_motion_move_mm).
 WIP_BLOWER_OFFSET_EPS_MM = 0.5
 # Si hay caché ASDA post-Reached, debe coincidir con la ref de depósito.
 WIP_START_CACHE_TOL_MM = 5.0
+# Piso/techo duración soplo match-lineal (solo si CONTINUOUS=True).
+WIP_BLOWER_LINEAL_MATCH_MIN_S = 0.2
+WIP_BLOWER_LINEAL_MATCH_MAX_S = 30.0
 
 # Protocolo máquina: machine_states.py (0x40–0x49). Andon solo refleja esos bytes.
 # Pasos atómicos (acción / delay independientes).
@@ -59,34 +64,35 @@ WIP_START_CACHE_TOL_MM = 5.0
 FLOW_STEPS: list[dict[str, Any]] = [
     {"id": 1, "key": "holder_on", "label": "Holder+Encoder ON (solo 1ª pieza)", "kind": "action", "sbsPause": False},
     {"id": 2, "key": "wait_holder_on", "label": "Delay Holder ON", "kind": "wait", "delayKey": "holderOnMs", "sbsPause": True},
-    {"id": 3, "key": "feed", "label": "Alimentación (feed / handoff)", "kind": "action", "sbsPause": True},
-    {"id": 4, "key": "offset", "label": "Offset alimentación (Motion, paso lógico)", "kind": "action", "sbsPause": False},
-    {"id": 5, "key": "grippers_on", "label": "Pinzas cierran", "kind": "action", "sbsPause": False},
-    {"id": 6, "key": "wait_grippers_on", "label": "Delay tras cerrar pinzas", "kind": "wait", "delayKey": "grippersOnMs", "sbsPause": False},
-    {"id": 7, "key": "enc_set0", "label": "OM ref (no usado por lineal TCP)", "kind": "action", "sbsPause": True},
-    {"id": 8, "key": "holder_off", "label": "Holder+Encoder OFF (abre para lineal)", "kind": "action", "sbsPause": False},
-    {"id": 9, "key": "wait_holder_open", "label": "Delay Holder/Encoder OFF", "kind": "wait", "delayKey": "holderOpenMs", "sbsPause": True},
-    {"id": 10, "key": "lineal_fwd", "label": "Lineal ASDA MOVE TCP (0→ABS)", "kind": "action", "sbsPause": False},
-    {"id": 11, "key": "wait_linear_done", "label": "Delay antes del corte", "kind": "wait", "delayKey": "linearDoneMs", "sbsPause": True},
-    {"id": 12, "key": "holder_precut", "label": "Holder ON / Encoder ON (pre-corte)", "kind": "action", "sbsPause": False},
-    {"id": 13, "key": "wait_holder_precut", "label": "Delay tras cerrar holder", "kind": "wait", "delayKey": "holderOnMs", "sbsPause": True},
-    {"id": 14, "key": "cutter_on", "label": "Cortador ON (+ All OK PreFeeder)", "kind": "action", "sbsPause": False},
-    {"id": 15, "key": "wait_cutter_pulse", "label": "Delay entre Set y Res cortador", "kind": "wait", "delayKey": "cutterPulseMs", "sbsPause": False, "delayEditable": False},
-    {"id": 16, "key": "cutter_off", "label": "Cortador OFF", "kind": "action", "sbsPause": False},
-    {"id": 17, "key": "wait_cutter_post", "label": "Delay post-corte", "kind": "wait", "delayKey": "cutterPostMs", "sbsPause": True},
+    # Tfeed ANTES del feed (contrato Review / secuencia productiva).
+    {"id": 3, "key": "pf_trigger", "label": "Trigger PreFeeder (Tfeed)", "kind": "action", "sbsPause": False},
+    {"id": 4, "key": "feed", "label": "Alimentación (feed / handoff)", "kind": "action", "sbsPause": True},
+    {"id": 5, "key": "offset", "label": "Offset alimentación (Motion, paso lógico)", "kind": "action", "sbsPause": False},
+    {"id": 6, "key": "grippers_on", "label": "Pinzas cierran", "kind": "action", "sbsPause": False},
+    {"id": 7, "key": "wait_grippers_on", "label": "Delay tras cerrar pinzas", "kind": "wait", "delayKey": "grippersOnMs", "sbsPause": False},
+    {"id": 8, "key": "enc_set0", "label": "OM ref (no usado por lineal TCP)", "kind": "action", "sbsPause": True},
+    {"id": 9, "key": "holder_off", "label": "Holder+Encoder OFF (abre para lineal)", "kind": "action", "sbsPause": False},
+    {"id": 10, "key": "wait_holder_open", "label": "Delay Holder/Encoder OFF", "kind": "wait", "delayKey": "holderOpenMs", "sbsPause": True},
+    {"id": 11, "key": "lineal_fwd", "label": "Lineal ASDA MOVE TCP (0→ABS)", "kind": "action", "sbsPause": False},
+    {"id": 12, "key": "wait_linear_done", "label": "Delay antes del corte", "kind": "wait", "delayKey": "linearDoneMs", "sbsPause": True},
+    {"id": 13, "key": "holder_precut", "label": "Holder ON / Encoder ON (pre-corte)", "kind": "action", "sbsPause": False},
+    {"id": 14, "key": "wait_holder_precut", "label": "Delay tras cerrar holder", "kind": "wait", "delayKey": "holderOnMs", "sbsPause": True},
+    {"id": 15, "key": "cutter_on", "label": "Cortador ON (+ All OK PreFeeder)", "kind": "action", "sbsPause": False},
+    {"id": 16, "key": "wait_cutter_pulse", "label": "Delay entre Set y Res cortador", "kind": "wait", "delayKey": "cutterPulseMs", "sbsPause": False, "delayEditable": False},
+    {"id": 17, "key": "cutter_off", "label": "Cortador OFF", "kind": "action", "sbsPause": False},
+    {"id": 18, "key": "wait_cutter_post", "label": "Delay post-corte", "kind": "wait", "delayKey": "cutterPostMs", "sbsPause": True},
     # Depósito ANTES del prefetch: la manguera debe salir del área antes de pre-alimentar.
-    {"id": 18, "key": "deposit", "label": "Extra / depósito lineal", "kind": "action", "sbsPause": False},
-    {"id": 19, "key": "wait_deposit_dwell", "label": "Delay tras depósito", "kind": "wait", "delayKey": "dwellAtDestMs", "sbsPause": True},
+    {"id": 19, "key": "deposit", "label": "Extra / depósito lineal", "kind": "action", "sbsPause": False},
+    {"id": 20, "key": "wait_deposit_dwell", "label": "Delay tras depósito", "kind": "wait", "delayKey": "dwellAtDestMs", "sbsPause": True},
     {
-        "id": 20,
+        "id": 21,
         "key": "prefetch_start",
         "label": "Prefetch feed — arranca en background",
         "kind": "parallel",
         "parallelRole": "start",
         "sbsPause": False,
     },
-    {"id": 21, "key": "grippers_off", "label": "Pinzas abren", "kind": "action", "sbsPause": False},
-    {"id": 22, "key": "pf_trigger", "label": "Trigger PreFeeder (Tfeed)", "kind": "action", "sbsPause": False},
+    {"id": 22, "key": "grippers_off", "label": "Pinzas abren", "kind": "action", "sbsPause": False},
     {"id": 23, "key": "wait_gripper_release", "label": "Delay tras abrir pinzas", "kind": "wait", "delayKey": "gripperReleaseMs", "sbsPause": True},
     {
         "id": 24,
@@ -95,7 +101,7 @@ FLOW_STEPS: list[dict[str, Any]] = [
         "kind": "action",
         "sbsPause": True,
     },
-    {"id": 25, "key": "home", "label": "HOME: WIP blower fin(+offset) → inicio → 0", "kind": "action", "sbsPause": True},
+    {"id": 25, "key": "home", "label": "HOME: WIP blower continuo (match lineal) → 0", "kind": "action", "sbsPause": True},
     {
         "id": 26,
         "key": "handoff",
@@ -112,8 +118,21 @@ STEP_NAMES = {0: "idle", **{s["id"]: s["key"] for s in FLOW_STEPS}}
 STEP_BY_KEY = {s["key"]: s for s in FLOW_STEPS}
 # Keys de control de lote (no están en FLOW_STEPS): nunca pausan en SBS.
 STEP_BY_STEP_NO_PAUSE = frozenset({"listo", "rep-start"})
-@dataclass
 
+
+class _OrEvent:
+    """Event compuesto: is_set() si cualquiera de los eventos está activo."""
+
+    __slots__ = ("_events",)
+
+    def __init__(self, *events: threading.Event) -> None:
+        self._events = events
+
+    def is_set(self) -> bool:
+        return any(e.is_set() for e in self._events)
+
+
+@dataclass
 class CycleConfig:
     holder_on_ms: int = 120
     holder_open_ms: int = 60
@@ -328,6 +347,7 @@ class CycleHost(Protocol):
     ) -> str: ...
     def stage2_fault(self) -> str: ...
     def asda_position_mm(self) -> float | None: ...
+    def motion_laser_on(self, side: str) -> bool: ...
     def cmd_motion_move_mm(self, mm: float, rpm: float) -> bool: ...
     def last_move_fail_kind(self) -> str: ...
     def cmd_motion_move_zero(self, rpm: float) -> bool: ...
@@ -390,9 +410,26 @@ class CycleRunner:
         # C3 en lote: completar pieza en curso (hasta post_piece / corte) y pausar.
         self._c3_finish_piece = False
         self._recovery = ""  # home | restart_from_0 | retry_process
+        # C2 Resume → reinicio pieza desde step 0; feed omitible si láser ON.
+        self._restart_piece = False
+        self._c2_laser_skip_feed = False
+        self._flow_interrupt = threading.Event()
         self._lot_rpm = 1200.0
+        self._last_lineal_sec: float = 0.0
+        self._last_lineal_mm: float = 0.0
+        # Reloj de lote (wall, incluye prep) — refill / diagnóstico.
         self._started_at: float | None = None
+        # CT productivo: 1ª pieza (holder/feed) → última freeze (antes post_piece).
+        # No incluye prep / Finish / settled. Pause no suma.
+        self._cycle_t0: float | None = None
+        self._piece_t0: float | None = None
+        self._piece_times: list[float] = []
+        self._last_piece_sec: float = 0.0
+        self._avg_piece_sec: float = 0.0
         self._finished_elapsed = 0.0
+        self._pause_t0: float | None = None
+        self._pause_excluded_sec: float = 0.0
+        self._piece_pause_base: float = 0.0
         self._on_machine_state: Callable[[int], None] | None = None
 
     def set_machine_state_hook(self, cb: Callable[[int], None] | None) -> None:
@@ -431,11 +468,9 @@ class CycleRunner:
                 "piecesDone": self._pieces_done,
                 "totalReps": self._total_reps,
                 "progress": self._progress,
-                "elapsedSec": (
-                    int(time.monotonic() - self._started_at)
-                    if self._started_at and self._active
-                    else int(self._finished_elapsed)
-                ),
+                "elapsedSec": self._ct_elapsed_locked(),
+                "lastPieceSec": float(self._last_piece_sec),
+                "avgPieceSec": float(self._avg_piece_sec),
                 "completed": self._last_ok and not self._active,
                 "lastOk": self._last_ok,
                 "fault": self._fault,
@@ -503,11 +538,15 @@ class CycleRunner:
         self._c3_stop_after_step = False
         self._c3_finish_piece = False
         self._recovery = ""
+        self._restart_piece = False
+        self._c2_laser_skip_feed = False
+        self._flow_interrupt.clear()
         self._last_ok = False
         with self._lock:
             self._refill_mode = False
             self._refill_awaiting_confirm = False
             self._refill_prompt = ""
+            self._reset_ct_clocks_locked()
         self._set_state(TX_BUSY)
         self._host.cycle_log(
             f"Cycle Start (0x040) length={length_mm} mm qty={qty}"
@@ -521,6 +560,9 @@ class CycleRunner:
     def request_stop(self) -> dict[str, Any]:
         self._aborted = True
         self._stop.set()
+        self._flow_interrupt.set()
+        self._restart_piece = False
+        self._c2_laser_skip_feed = False
         self._pause.clear()
         self._refill_reject.set()
         with self._lock:
@@ -539,6 +581,9 @@ class CycleRunner:
         if not self.is_active():
             return {"ok": False, "error": "Sin ciclo activo"}
         self._pause.set()
+        with self._lock:
+            if self._pause_t0 is None:
+                self._pause_t0 = time.monotonic()
         self._enter_pause_andon()
         self._host.cycle_log("Cycle Pause (0x048)")
         self._host.cycle_notify()
@@ -550,9 +595,24 @@ class CycleRunner:
                 "error": "Refill espera confirmación del operador (Sí/No)",
             }
         if self._pause.is_set():
+            # C2: reinicio pieza desde step 0 (norma). Feed se omite si láser ON.
+            if self._recovery == "restart_from_0":
+                self._restart_piece = True
+                self._flow_interrupt.set()
+                try:
+                    self._host.clear_motion_wait_flags()
+                    self._host.cmd_motion_stop()
+                except Exception:
+                    pass
+                self._host.cycle_log(
+                    "Cycle Resume (C2) → reinicio pieza desde step 0"
+                )
+            else:
+                self._host.cycle_log("Cycle Resume")
             self._pause.clear()
+            with self._lock:
+                self._sync_pause_exclusion_locked(time.monotonic())
             self._leave_pause_andon()
-            self._host.cycle_log("Cycle Resume")
             self._host.cycle_notify()
             return {"ok": True}
         return {"ok": False, "error": "Ciclo no está en Pause"}
@@ -660,6 +720,9 @@ class CycleRunner:
         self._c3_stop_after_step = False
         self._c3_finish_piece = False
         self._recovery = ""
+        self._restart_piece = False
+        self._c2_laser_skip_feed = False
+        self._flow_interrupt.clear()
         self._last_ok = False
         self._materialist = False
         self._busy_mode = False
@@ -670,11 +733,23 @@ class CycleRunner:
         self._refill_reject.clear()
         self._refill_retry.clear()
         self._pieces_done = 0
-        self._finished_elapsed = 0.0
+        with self._lock:
+            self._reset_ct_clocks_locked()
         self._set_progress(0, 0, 0)
         self._set_state(TX_IDLE)
         self._host.cycle_log("Cycle Reset (0x043)")
         return {"ok": True}
+
+    def clear_fault_mirror(self) -> None:
+        """Limpia el espejo EXXX del ciclo sin exigir lote activo.
+
+        El flip-flop vive en ErrorPolicy; cycle._fault solo refleja para UI/snapshot.
+        Si el Res limpia el latch pero deja _fault, la UI sigue en ERROR (p.ej. tras
+        lote completado o Reset local de Motion).
+        """
+        self._fault = ""
+        self._fault_class = ""
+        self._recovery = ""
 
     def clear_error_for_resume(self, recovery: str = "") -> dict[str, Any]:
         """Res suave C2/C3: limpia fault; mantiene lote vivo.
@@ -684,8 +759,7 @@ class CycleRunner:
         """
         if not self.is_active():
             return {"ok": False, "error": "Sin ciclo activo para Resume"}
-        self._fault = ""
-        self._fault_class = ""
+        self.clear_fault_mirror()
         if recovery:
             self._recovery = recovery
         if self._c3_finish_piece:
@@ -790,6 +864,8 @@ class CycleRunner:
     def _enter_pause_andon(self) -> None:
         """Pausa operativa → amarillo (0x48). No pisa Error (prioridad)."""
         with self._lock:
+            if self._pause_t0 is None:
+                self._pause_t0 = time.monotonic()
             if self._state_byte == TX_ERROR:
                 return
         self._set_state(TX_PAUSE)
@@ -797,6 +873,7 @@ class CycleRunner:
     def _leave_pause_andon(self) -> None:
         """Resume → Busy si el ciclo sigue activo y no hay Error con fault."""
         with self._lock:
+            self._sync_pause_exclusion_locked(time.monotonic())
             if self._state_byte == TX_ERROR and self._fault:
                 return
             if not self._active:
@@ -806,12 +883,17 @@ class CycleRunner:
     def _wait_paused_for_resume(self, reason: str) -> bool:
         """Pausa cooperativa hasta Resume/Stop. True = abortar."""
         self._pause.set()
+        with self._lock:
+            if self._pause_t0 is None:
+                self._pause_t0 = time.monotonic()
         self._host.cycle_log(reason)
         self._host.cycle_notify()
         while self._pause.is_set():
             if self._should_abort():
                 return True
             time.sleep(0.05)
+        with self._lock:
+            self._sync_pause_exclusion_locked(time.monotonic())
         if self._fault:
             # Soft-Res debió limpiar fault; si sigue, no continuar ciego.
             return True
@@ -842,6 +924,9 @@ class CycleRunner:
         self._fault = ui
         self._fault_class = err_class
         self._recovery = recovery
+        # EXXX tras lote OK: no dejar "Batch complete" + ERROR a la vez.
+        if not self.is_active():
+            self._last_ok = False
         if action == "stop_all":
             self._c3_stop_after_step = False
             self._c3_finish_piece = False
@@ -961,14 +1046,14 @@ class CycleRunner:
     def _pausable_delay(self, ms: int) -> bool:
         """Delay de secuencia. El tiempo en Pause no consume el delay. True = abort."""
         if ms <= 0:
-            return self._should_abort()
+            return self._should_abort() or bool(self._restart_piece)
         remaining = ms / 1000.0
         while remaining > 0:
-            if self._should_abort():
+            if self._should_abort() or self._restart_piece:
                 return True
             if self._pause.is_set():
                 while self._pause.is_set():
-                    if self._should_abort():
+                    if self._should_abort() or self._restart_piece:
                         return True
                     time.sleep(0.05)
                 self._leave_pause_andon()
@@ -980,7 +1065,7 @@ class CycleRunner:
             if self._pause.is_set():
                 continue
             remaining -= time.monotonic() - t0
-        return self._should_abort()
+        return self._should_abort() or bool(self._restart_piece)
     def _step_by_step_should_pause(self, step_key: str) -> bool:
         """True solo en checkpoints físicos (sbsPause). Delays/validaciones auto."""
         if not self._step_by_step:
@@ -1010,9 +1095,9 @@ class CycleRunner:
             time.sleep(0.05)
         if paused_here:
             self._leave_pause_andon()
-        return False
+        return bool(self._restart_piece)
     def _gate(self, step_name: str) -> bool:
-        """Tras un paso: Pause/Stop. True = salir del lote."""
+        """Tras un paso: Pause/Stop. True = salir del intento de pieza."""
         _ = step_name
         if self._should_abort():
             return True
@@ -1020,26 +1105,53 @@ class CycleRunner:
             if self._should_abort():
                 return True
             time.sleep(0.05)
-        return False
+        return bool(self._restart_piece)
     def _wait_motion(self) -> bool:
         """Espera Idle/Reached. El caller debe limpiar flags ANTES del comando
         (clear_motion_wait_flags / clear_motion_reached_flag) — no limpiar aquí
         o se pierde el evento si Motion responde entre el cmd y el wait."""
         cfg = self.get_config()
-        ok = self._host.wait_motion_idle_or_reached(cfg.motion_wait_timeout_s)
-        if not ok:
-            self._raise_fault("timeout_motion")
-            self._host.cycle_log(format_ui("E008"))
-        return ok
+        deadline = time.monotonic() + float(cfg.motion_wait_timeout_s)
+        while time.monotonic() < deadline:
+            if self._should_abort() or self._restart_piece:
+                return False
+            while self._pause.is_set():
+                if self._should_abort() or self._restart_piece:
+                    return False
+                time.sleep(0.05)
+            if self._host.wait_motion_idle_or_reached(0.1):
+                return True
+        self._raise_fault("timeout_motion")
+        self._host.cycle_log(format_ui("E008"))
+        return False
+
+    def _consume_restart_piece(self) -> bool:
+        """True si C2 Resume pidió reinicio de pieza; limpia el flag."""
+        if not self._restart_piece:
+            return False
+        self._restart_piece = False
+        self._flow_interrupt.clear()
+        return True
+
+    def _feed_sides_laser_present(self) -> bool:
+        """True si el láser de todos los lados de feed detecta material."""
+        for side in self._feed_side_list():
+            if not self._host.motion_laser_on(side):
+                return False
+        return True
+
+    def _feed_abort_event(self) -> threading.Event:
+        """Stop o interrupt C2 (reinicio pieza) abortan waits de feed."""
+        return _OrEvent(self._stop, self._flow_interrupt)  # type: ignore[return-value]
 
     def _wait_duration_s(self, sec: float) -> bool:
         """Espera cooperativa (respeta pause/abort). False = abort."""
         deadline = time.monotonic() + max(0.0, float(sec))
         while time.monotonic() < deadline:
-            if self._should_abort():
+            if self._should_abort() or self._restart_piece:
                 return False
             while self._pause.is_set():
-                if self._should_abort():
+                if self._should_abort() or self._restart_piece:
                     return False
                 time.sleep(0.05)
             remain = deadline - time.monotonic()
@@ -1054,6 +1166,81 @@ class CycleRunner:
             self._host.clear_motion_reached_flag()
         else:
             self._host.clear_motion_wait_flags()
+
+    def _sync_pause_exclusion_locked(self, now: float) -> None:
+        """Acumula tiempo en Pause (caller debe tener _lock)."""
+        if self._pause.is_set():
+            if self._pause_t0 is None:
+                self._pause_t0 = now
+            return
+        if self._pause_t0 is not None:
+            self._pause_excluded_sec += max(0.0, now - self._pause_t0)
+            self._pause_t0 = None
+
+    def _ct_elapsed_locked(self) -> int:
+        """Segundos CT para UI (congelado tras freeze; no infla con Finish)."""
+        now = time.monotonic()
+        self._sync_pause_exclusion_locked(now)
+        if self._cycle_t0 is not None:
+            raw = now - self._cycle_t0 - float(self._pause_excluded_sec)
+            return max(0, int(raw))
+        return max(0, int(self._finished_elapsed))
+
+    def _mark_piece_clock_start(self) -> None:
+        """Arranca CT productivo (1ª pieza) y reloj de la pieza en curso."""
+        now = time.monotonic()
+        with self._lock:
+            self._sync_pause_exclusion_locked(now)
+            if self._cycle_t0 is None:
+                self._cycle_t0 = now
+            self._piece_t0 = now
+            self._piece_pause_base = float(self._pause_excluded_sec)
+
+    def _freeze_piece_clock(self) -> float:
+        """Congela reloj de pieza/CT (sin log). Devuelve duración pieza (s)."""
+        now = time.monotonic()
+        with self._lock:
+            self._sync_pause_exclusion_locked(now)
+            piece_sec = 0.0
+            if self._piece_t0 is not None:
+                piece_sec = max(
+                    0.0,
+                    now
+                    - self._piece_t0
+                    - (float(self._pause_excluded_sec) - float(self._piece_pause_base)),
+                )
+                self._piece_times.append(piece_sec)
+                self._last_piece_sec = piece_sec
+                n = len(self._piece_times)
+                self._avg_piece_sec = (
+                    sum(self._piece_times) / n if n else 0.0
+                )
+                self._piece_t0 = None
+            if self._cycle_t0 is not None:
+                self._finished_elapsed = max(
+                    0.0,
+                    now - self._cycle_t0 - float(self._pause_excluded_sec),
+                )
+            return piece_sec
+
+    def _log_piece_ok(self, rep: int, qty: int, piece_sec: float) -> None:
+        if piece_sec > 0:
+            self._host.cycle_log(f"Pieza {rep}/{qty} OK · {piece_sec:.1f}s")
+        else:
+            self._host.cycle_log(f"Pieza {rep}/{qty} OK")
+
+    def _reset_ct_clocks_locked(self) -> None:
+        self._cycle_t0 = None
+        self._piece_t0 = None
+        self._piece_times = []
+        self._last_piece_sec = 0.0
+        self._avg_piece_sec = 0.0
+        self._finished_elapsed = 0.0
+        self._pause_t0 = None
+        self._pause_excluded_sec = 0.0
+        self._piece_pause_base = 0.0
+        self._last_lineal_sec = 0.0
+        self._last_lineal_mm = 0.0
 
     def _validate_wip_start_mm(self, start_mm: float) -> bool:
         """True si OK. Caché ASDA opcional: si existe, debe cuadrar con la ref."""
@@ -1100,8 +1287,9 @@ class CycleRunner:
         return True
 
     def _wip_motion_zero(self, rpm: float, *, prefetch_running: bool) -> bool:
-        """HOME a 0 con blower OFF. False = abort/falla de comando o wait."""
+        """HOME a 0 con blower OFF (modo stop). False = abort/falla."""
         self._arm_motion_leg(prefetch_running)
+        self._host.cycle_log("WIP Delivery MOVE → HOME=0.0 mm")
         if not self._host.cmd_motion_move_zero(rpm):
             if not self._should_abort() and not self._fault:
                 kind = ""
@@ -1109,13 +1297,17 @@ class CycleRunner:
                     kind = self._host.last_move_fail_kind()
                 self._raise_fault("E065" if kind == "transport" else "home_cmd")
             return False
-        return self._wait_motion()
+        if not self._wait_motion():
+            return False
+        self._host.cycle_log("WIP Delivery move ok @ HOME=0.0 mm")
+        return True
 
     def _wip_motion_to(
         self, mm: float, rpm: float, *, prefetch_running: bool, tag: str
     ) -> bool:
         """Move ABS firmado (solo con blower OFF). False = abort/falla."""
         self._arm_motion_leg(prefetch_running)
+        self._host.cycle_log(f"WIP Delivery MOVE → {tag}={float(mm):.1f} mm")
         if not self._host.cmd_motion_move_mm(float(mm), rpm):
             if not self._should_abort() and not self._fault:
                 kind = ""
@@ -1138,7 +1330,97 @@ class CycleRunner:
         *,
         prefetch_running: bool,
     ) -> bool:
-        """HOME + WIP: fin(+offset)→soplo → inicio→soplo → HOME 0.
+        if WIP_BLOWER_CONTINUOUS:
+            return self._home_with_wip_delivery_continuous(
+                start_mm, rpm, prefetch_running=prefetch_running
+            )
+        return self._home_with_wip_delivery_stop(
+            start_mm, rpm, prefetch_running=prefetch_running
+        )
+
+    def _home_with_wip_delivery_continuous(
+        self,
+        start_mm: float | None,
+        rpm: float,
+        *,
+        prefetch_running: bool,
+    ) -> bool:
+        """Un solo MOVE→0; blower ON match-lineal al arrancar. PLC apaga solo."""
+        if start_mm is None:
+            self._raise_fault("wip_start")
+            self._host.cycle_log(
+                "WIP start ausente — falta ref depósito/despeje (no se estima)"
+            )
+            return False
+
+        start_abs = abs(float(start_mm))
+        if not self._validate_wip_start_mm(start_abs):
+            return False
+
+        if start_abs < WIP_BLOWER_MIN_TRAVEL_MM:
+            self._host.cycle_log(
+                f"WIP Delivery: omitido (travel={start_abs:.1f} mm) — HOME directo"
+            )
+            return self._wip_motion_zero(rpm, prefetch_running=prefetch_running)
+
+        lineal_s = float(self._last_lineal_sec or 0.0)
+        if lineal_s < WIP_BLOWER_LINEAL_MATCH_MIN_S:
+            lineal_s = float(self._host.plc_blower_sec())
+            match_src = "blowerSec(fallback)"
+        else:
+            match_src = "lineal"
+        lineal_s = max(
+            WIP_BLOWER_LINEAL_MATCH_MIN_S,
+            min(WIP_BLOWER_LINEAL_MATCH_MAX_S, lineal_s),
+        )
+
+        self._host.cycle_log(
+            f"WIP Delivery (continuo/match-lineal): desde={start_abs:.1f} mm "
+            f"→ HOME=0 (blower={lineal_s:.2f}s ({match_src}))"
+        )
+
+        self._arm_motion_leg(prefetch_running)
+        self._host.cycle_log(
+            f"WIP Delivery MOVE continuo → HOME=0.0 mm "
+            f"(desde={start_abs:.1f}; blower {lineal_s:.2f}s match={match_src})"
+        )
+        if not self._host.cmd_motion_move_zero(rpm):
+            if not self._should_abort() and not self._fault:
+                kind = ""
+                if hasattr(self._host, "last_move_fail_kind"):
+                    kind = self._host.last_move_fail_kind()
+                self._raise_fault("E065" if kind == "transport" else "home_cmd")
+            return False
+        # Evitar Reached residual del despeje (wait instantáneo).
+        try:
+            self._host.clear_motion_reached_flag()
+        except Exception:
+            pass
+
+        if not self._host.cmd_plc_blower(True, duration_sec=lineal_s):
+            self._raise_fault("wip_blower")
+            self._host.cycle_log(
+                f"WIP Delivery blower ON FAIL @ HOME=0.0 mm hold={lineal_s:g}s"
+            )
+            return False
+        self._host.cycle_log(
+            f"WIP Delivery blower ON @ HOME=0.0 mm hold={lineal_s:g}s (en vuelo)"
+        )
+
+        if not self._wait_motion():
+            return False
+        self._host.cycle_log("WIP Delivery move ok @ HOME=0.0 mm (continuo)")
+        # No OFF forzado: timer PLC apaga. Evita corte prematuro del soplo.
+        return True
+
+    def _home_with_wip_delivery_stop(
+        self,
+        start_mm: float | None,
+        rpm: float,
+        *,
+        prefetch_running: bool,
+    ) -> bool:
+        """HOME + WIP stop–soplo–stop: fin(+offset)→soplo → inicio→soplo → HOME 0.
 
         `start_mm` = magnitud ABS en punta final (lado grippers), post depósito
         y despeje. No es estimación.
@@ -1217,10 +1499,16 @@ class CycleRunner:
         cfg = self.get_config()
         sides = self._feed_side_list()
         outcomes = self._host.wait_feed_length_ok_for(
-            sides, cfg.feed_wait_timeout_s, abort_event=self._stop
+            sides,
+            cfg.feed_wait_timeout_s,
+            abort_event=self._feed_abort_event(),  # type: ignore[arg-type]
         )
+        if self._restart_piece:
+            return False
         bad = [s for s, v in outcomes.items() if v != "ok"]
         if not bad:
+            sides_txt = "".join(sides)
+            self._host.cycle_log(f"Feed OK lados={sides_txt}")
             return True
         for s in bad:
             detail = self._host.feed_fault_for(s) or outcomes.get(s, "fail")
@@ -1236,6 +1524,31 @@ class CycleRunner:
         if mode == "R":
             return ["R"]
         return ["L", "R"]
+
+    def _do_pf_trigger(self) -> bool:
+        """Tfeed a lados de feedSides. True = OK / omitido; False = fault."""
+        if not self._use_prefeeder():
+            self._host.cycle_log("trigger PreFeeder: omitido (sin enlace)")
+            return True
+        sides = CycleConfig.normalize_feed_sides(self.get_config().feed_sides)
+        want_r = "R" in sides
+        want_l = "L" in sides
+        ok_r = self._host.cmd_pf_trigger_r() if want_r else True
+        ok_l = self._host.cmd_pf_trigger_l() if want_l else True
+        r_txt = ("ok" if ok_r else "fail") if want_r else "omit"
+        l_txt = ("ok" if ok_l else "fail") if want_l else "omit"
+        if (want_r and not ok_r) or (want_l and not ok_l):
+            self._raise_fault("pf_trigger")
+            self._host.cycle_log(
+                f"trigger PreFeeder falló lados={sides} "
+                f"R(0x4C)={r_txt} L(0x51)={l_txt}"
+            )
+            return False
+        self._host.cycle_log(
+            f"trigger PreFeeder Tfeed lados={sides} — "
+            f"R(0x4C)={r_txt} L(0x51)={l_txt}"
+        )
+        return True
 
     def _force_pf_triggers_if_no_holgura(self, *, where: str) -> bool:
         """Lee holgura L/R; si ausente en un lado de feed, manda Tfeed a ese lado.
@@ -1347,9 +1660,11 @@ class CycleRunner:
         No usa Stage2 HTTP (/api/stage2/*): ese camino compite con serviceAsdaTcp
         en el loop de Motion y deja huecos muertos justo tras pinzas/holder.
         Mismo canal que feed (TCP) y que depósito/HOME.
+        Guarda duración/distancia en `_last_lineal_*` para soplo match-lineal.
         """
         abs_mm = abs(float(abs_target_mm))
         self._host.clear_motion_wait_flags()
+        t0 = time.monotonic()
         if not self._host.cmd_motion_move_mm(abs_mm, self._lot_rpm):
             if not self._should_abort() and not self._fault:
                 kind = ""
@@ -1357,9 +1672,15 @@ class CycleRunner:
                     kind = self._host.last_move_fail_kind()
                 self._raise_fault("E065" if kind == "transport" else "move_cmd")
             self._host.cycle_log("Lineal MOVE TCP: comando rechazado")
+            self._last_lineal_sec = 0.0
+            self._last_lineal_mm = 0.0
             return False
         if not self._wait_motion():
+            self._last_lineal_sec = 0.0
+            self._last_lineal_mm = 0.0
             return False
+        self._last_lineal_sec = max(0.0, time.monotonic() - t0)
+        self._last_lineal_mm = abs_mm
         self._host.cycle_log(
             f"Lineal MOVE TCP OK targetAbsMm={abs_mm:.1f} rpm={self._lot_rpm:g}"
         )
@@ -1654,8 +1975,10 @@ class CycleRunner:
             self._pieces_done = 0
             self._total_reps = qty
             self._lot_rpm = float(rpm)
+            self._last_lineal_sec = 0.0
+            self._last_lineal_mm = 0.0
             self._started_at = time.monotonic()
-            self._finished_elapsed = 0.0
+            self._reset_ct_clocks_locked()
         self._host.cycle_notify()
         try:
             if not self._prepare_before_cut():
@@ -1695,309 +2018,330 @@ class CycleRunner:
             handoff_ready = False
             prefetch_running = False
             for rep in range(1, qty + 1):
-                if self._gate("listo" if rep == 1 else "rep-start"):
-                    break
-                self._set_progress(rep, 0, qty)
-                # Antes de pieza: si un lado activo no tiene holgura → Tfeed a ese lado.
-                if not self._force_pf_triggers_if_no_holgura(
-                    where=f"pre-pieza {rep}/{qty}"
-                ):
-                    break
-                # 1–2 Holder+Encoder ON + delay (solo 1ª; se mantienen el lote)
-                if rep == 1:
-                    if self._enter(rep, qty, "holder_on"):
-                        break
-                    self._arm_holder_encoder()
-                    if self._after_step("holder_on"):
-                        break
-                    if self._do_wait(rep, qty, "wait_holder_on", "holder_on_ms"):
-                        break
-                # 3 Feed / handoff
-                if self._enter(rep, qty, "feed"):
-                    break
-                if handoff_ready:
-                    handoff_ready = False
-                    self._host.cycle_log("Feed: handoff (prefetch ya listo)")
-                else:
-                    if not self._run_feed():
-                        break
-                if self._after_step("feed"):
-                    break
-                # 4 Offset (placeholder)
-                if self._enter(rep, qty, "offset"):
-                    break
-                if self._after_step("offset"):
-                    break
-                # 5–7 Pinzas + delay + enc set0
-                if self._enter(rep, qty, "grippers_on"):
-                    break
-                self._host.cmd_plc_gripper(True)
-                if self._after_step("grippers_on"):
-                    break
-                if self._do_wait(rep, qty, "wait_grippers_on", "grippers_on_ms"):
-                    break
-                if self._enter(rep, qty, "enc_set0"):
-                    break
-                # Lineal ASDA-only: no RESET OM en Motion.
-                self._host.cycle_log("enc_set0: omitido (lineal TCP no usa OM)")
-                if self._after_step("enc_set0"):
-                    break
-                # 8–11 Holder+Encoder abren para lineal + MOVE TCP + delay
-                if self._enter(rep, qty, "holder_off"):
-                    break
-                self._open_holder_encoder()
-                self._host.cycle_log(
-                    "Holder+Encoder OFF (abren para lineal)"
-                )
-                if self._after_step("holder_off"):
-                    break
-                if self._do_wait(rep, qty, "wait_holder_open", "holder_open_ms"):
-                    break
-
-                if self._enter(rep, qty, "lineal_fwd"):
-                    break
-                # Producción: MOVE ABS por TCP (0x05) + Reached — no Stage2 HTTP.
-                abs_target_mm = abs(float(target_mm))
-                sides = CycleConfig.normalize_feed_sides(self.get_config().feed_sides)
-                self._host.cycle_log(
-                    f"Lineal MOVE TCP modelMm={length_mm:.1f} "
-                    f"cutOffset→targetAbsMm={abs_target_mm:.1f} "
-                    f"sides={sides} rpm={self._lot_rpm:g}"
-                )
-                if not self._run_lineal_abs(abs_target_mm):
-                    break
-                if self._after_step("lineal_fwd"):
-                    break
-                if self._do_wait(rep, qty, "wait_linear_done", "linear_done_ms"):
-                    break
-                # 12–13 Cerrar Holder+Encoder de nuevo pre-corte
-                if self._enter(rep, qty, "holder_precut"):
-                    break
-                self._arm_holder_encoder()
-                self._host.cycle_log("Holder+Encoder ON (cierran pre-corte)")
-                if self._after_step("holder_precut"):
-                    break
-                if self._do_wait(rep, qty, "wait_holder_precut", "holder_on_ms"):
-                    break
-                # 14–17 Corte solo en lados de feed (evita pulsar el cortador vacío)
-                # force=True: no omitir Set/Res por caché HMI desfasada.
-                # Si abortamos tras Set, Res de emergencia antes del break.
-                cut_sides = CycleConfig.normalize_feed_sides(self.get_config().feed_sides)
-                if self._enter(rep, qty, "cutter_on"):
-                    break
-                # C3 finish-piece: cortar aunque PF siga en ErrorState (p.ej. Buffer Max).
-                if (
-                    not self._trial_mode
-                    and self._use_prefeeder()
-                    and not self._c3_finish_piece
-                ):
-                    st = self._host.pf_state_byte()
-                    if st == TX_PF_ERROR:
-                        self._raise_fault("prefeeder_all_ok")
-                        self._host.cycle_log("Corte abortado: PreFeeder Error")
-                        break
-                self._host.cycle_log(f"Cortador ON (Set) lados={cut_sides}")
-                self._host.cmd_plc_cutters(True, sides=cut_sides, force=True)
-                if self._after_step("cutter_on"):
-                    self._host.cmd_plc_cutters(False, sides=cut_sides, force=True)
-                    break
-                if self._do_wait(rep, qty, "wait_cutter_pulse", "cutter_pulse_ms"):
-                    self._host.cmd_plc_cutters(False, sides=cut_sides, force=True)
-                    break
-                if self._enter(rep, qty, "cutter_off"):
-                    self._host.cmd_plc_cutters(False, sides=cut_sides, force=True)
-                    break
-                self._host.cycle_log(f"Cortador OFF (Res) lados={cut_sides}")
-                self._host.cmd_plc_cutters(False, sides=cut_sides, force=True)
-                if self._after_step("cutter_off"):
-                    break
-                if self._do_wait(rep, qty, "wait_cutter_post", "cutter_post_ms"):
-                    break
-                # 18–19 Depósito + delay (manguera fuera del área ANTES del prefetch)
-                # wip_pos_signed = posición firmada confirmada; wip_start_mm = |pos|
-                # (fuente soplo WIP fin; se actualiza tras despeje post-pinzas).
-                wip_pos_signed: float | None = None
-                wip_start_mm: float | None = None
-                prefetch_running = False
-                if self._enter(rep, qty, "deposit"):
-                    break
-                extra = self._deposit_extra_mm(rep)
-                if abs(extra) > 0.01:
-                    deposit_target = target_mm + extra
-                    self._host.clear_motion_wait_flags()
-                    if not self._host.cmd_motion_move_mm(deposit_target, rpm):
-                        # Transporte agotado → E065 (ya latcheado). Rechazo ASDA → E013.
-                        if not self._should_abort() and not self._fault:
-                            kind = ""
-                            if hasattr(self._host, "last_move_fail_kind"):
-                                kind = self._host.last_move_fail_kind()
-                            if kind == "transport":
-                                self._raise_fault("E065")
-                            else:
-                                self._raise_fault("deposit_cmd")
-                        break
-                    if not self._wait_motion():
-                        break
-                    wip_pos_signed = float(deposit_target)
-                    wip_start_mm = abs(wip_pos_signed)
-                    self._host.cycle_log(
-                        f"WIP start ref=deposit_target {wip_start_mm:.1f} mm "
-                        f"(post Idle/Reached)"
-                    )
-                else:
-                    # Sin move de depósito: ref = target lineal ya confirmado.
-                    wip_pos_signed = float(target_mm)
-                    wip_start_mm = abs(wip_pos_signed)
-                    self._host.cycle_log(
-                        f"WIP start ref=lineal_target {wip_start_mm:.1f} mm "
-                        f"(sin depósito extra)"
-                    )
-                if self._after_step("deposit"):
-                    break
-                if self._do_wait(rep, qty, "wait_deposit_dwell", "dwell_at_dest_ms"):
-                    break
-                # 20 Prefetch — inicia paralelo A (tras depósito: manguera ya movida)
-                if self._enter(rep, qty, "prefetch_start"):
-                    break
-                if rep < qty:
-                    self._host.clear_motion_wait_flags()
-                    sides = self._feed_side_list()
-                    if "L" in sides:
-                        self._host.cmd_motion_feed_l()
-                    if "R" in sides:
-                        self._host.cmd_motion_feed_r()
-                    prefetch_running = True
-                    self._host.cycle_log(
-                        f"∥ Prefetch feed lados={''.join(sides)} "
-                        f"en paralelo con pinzas/HOME (post-depósito)"
-                    )
-                if self._after_step("prefetch_start"):
-                    break
-                # 21–23 Pinzas OFF + Tfeed + delay (∥ A)
-                if self._enter(rep, qty, "grippers_off"):
-                    break
-                self._host.cmd_plc_gripper(False)
-                if self._after_step("grippers_off"):
-                    break
-                if self._enter(rep, qty, "pf_trigger"):
-                    break
-                if self._use_prefeeder():
-                    # Misma política que corte/Stage2: solo lados de feedSides.
-                    sides = CycleConfig.normalize_feed_sides(
-                        self.get_config().feed_sides
-                    )
-                    want_r = "R" in sides
-                    want_l = "L" in sides
-                    ok_r = self._host.cmd_pf_trigger_r() if want_r else True
-                    ok_l = self._host.cmd_pf_trigger_l() if want_l else True
-                    r_txt = ("ok" if ok_r else "fail") if want_r else "omit"
-                    l_txt = ("ok" if ok_l else "fail") if want_l else "omit"
-                    if (want_r and not ok_r) or (want_l and not ok_l):
-                        self._raise_fault("pf_trigger")
+                while True:
+                    early_exit = True
+                    for _piece_attempt in (0,):
+                        if self._gate("listo" if rep == 1 else "rep-start"):
+                            break
+                        self._set_progress(rep, 0, qty)
+                        self._last_lineal_sec = 0.0
+                        self._last_lineal_mm = 0.0
+                        # Antes de pieza: holgura fuera del CT (status/Tfeed prep).
+                        if not self._force_pf_triggers_if_no_holgura(
+                            where=f"pre-pieza {rep}/{qty}"
+                        ):
+                            break
+                        self._mark_piece_clock_start()
+                        # 1–2 Holder+Encoder ON + delay (solo 1ª; se mantienen el lote)
+                        if rep == 1:
+                            if self._enter(rep, qty, "holder_on"):
+                                break
+                            self._arm_holder_encoder()
+                            self._host.cycle_log(
+                                f"Holder+Encoder ON (inicio pieza {rep})"
+                            )
+                            if self._after_step("holder_on"):
+                                break
+                            if self._do_wait(rep, qty, "wait_holder_on", "holder_on_ms"):
+                                break
+                        # 3 Tfeed ANTES del feed (luego 4 Feed / handoff)
+                        if self._enter(rep, qty, "pf_trigger"):
+                            break
+                        if not self._do_pf_trigger():
+                            break
+                        if self._after_step("pf_trigger"):
+                            break
+                        # 4 Feed / handoff
+                        if self._enter(rep, qty, "feed"):
+                            break
+                        if handoff_ready:
+                            handoff_ready = False
+                            self._c2_laser_skip_feed = False
+                            self._host.cycle_log("Feed: handoff (prefetch ya listo)")
+                        elif self._c2_laser_skip_feed and self._feed_sides_laser_present():
+                            self._c2_laser_skip_feed = False
+                            sides_txt = "".join(self._feed_side_list())
+                            self._host.cycle_log(
+                                f"Feed omitido (C2 Resume): láser ya ON lados={sides_txt}"
+                            )
+                        else:
+                            self._c2_laser_skip_feed = False
+                            if not self._run_feed():
+                                break
+                        if self._after_step("feed"):
+                            break
+                        # 5 Offset (placeholder)
+                        if self._enter(rep, qty, "offset"):
+                            break
+                        if self._after_step("offset"):
+                            break
+                        # 6–8 Pinzas + delay + enc set0
+                        if self._enter(rep, qty, "grippers_on"):
+                            break
+                        self._host.cmd_plc_gripper(True)
+                        self._host.cycle_log("Pinzas ON (cierran)")
+                        if self._after_step("grippers_on"):
+                            break
+                        if self._do_wait(rep, qty, "wait_grippers_on", "grippers_on_ms"):
+                            break
+                        if self._enter(rep, qty, "enc_set0"):
+                            break
+                        # Lineal ASDA-only: no RESET OM en Motion.
+                        self._host.cycle_log("enc_set0: omitido (lineal TCP no usa OM)")
+                        if self._after_step("enc_set0"):
+                            break
+                        # 9–12 Holder+Encoder abren para lineal + MOVE TCP + delay
+                        if self._enter(rep, qty, "holder_off"):
+                            break
+                        self._open_holder_encoder()
                         self._host.cycle_log(
-                            f"trigger PreFeeder falló lados={sides} "
-                            f"R(0x4C)={r_txt} L(0x51)={l_txt}"
+                            "Holder+Encoder OFF (abren para lineal)"
                         )
-                        break
-                    self._host.cycle_log(
-                        f"trigger PreFeeder Tfeed lados={sides} — "
-                        f"R(0x4C)={r_txt} L(0x51)={l_txt}"
-                    )
-                else:
-                    self._host.cycle_log("trigger PreFeeder: omitido (sin enlace)")
-                if self._after_step("pf_trigger"):
-                    break
-                if self._do_wait(rep, qty, "wait_gripper_release", "gripper_release_ms"):
-                    break
-                # 24 Despeje ASDA tras abrir pinzas → actualiza ref WIP (soplo fin)
-                if self._enter(rep, qty, "gripper_clearance"):
-                    break
-                clr = abs(float(self.get_config().gripper_clearance_mm))
-                if clr > 0.01 and wip_pos_signed is not None:
-                    clearance_target = self._clearance_target_mm(
-                        wip_pos_signed, float(target_mm), clr
-                    )
-                    self._arm_motion_leg(prefetch_running)
-                    if not self._host.cmd_motion_move_mm(clearance_target, rpm):
-                        if not self._should_abort() and not self._fault:
-                            kind = ""
-                            if hasattr(self._host, "last_move_fail_kind"):
-                                kind = self._host.last_move_fail_kind()
-                            if kind == "transport":
-                                self._raise_fault("E065")
+                        if self._after_step("holder_off"):
+                            break
+                        if self._do_wait(rep, qty, "wait_holder_open", "holder_open_ms"):
+                            break
+
+                        if self._enter(rep, qty, "lineal_fwd"):
+                            break
+                        # Producción: MOVE ABS por TCP (0x05) + Reached — no Stage2 HTTP.
+                        abs_target_mm = abs(float(target_mm))
+                        sides = CycleConfig.normalize_feed_sides(self.get_config().feed_sides)
+                        self._host.cycle_log(
+                            f"Lineal MOVE TCP modelMm={length_mm:.1f} "
+                            f"cutOffset→targetAbsMm={abs_target_mm:.1f} "
+                            f"sides={sides} rpm={self._lot_rpm:g}"
+                        )
+                        if not self._run_lineal_abs(abs_target_mm):
+                            break
+                        if self._after_step("lineal_fwd"):
+                            break
+                        if self._do_wait(rep, qty, "wait_linear_done", "linear_done_ms"):
+                            break
+                        # 13–14 Cerrar Holder+Encoder de nuevo pre-corte
+                        if self._enter(rep, qty, "holder_precut"):
+                            break
+                        self._arm_holder_encoder()
+                        self._host.cycle_log("Holder+Encoder ON (cierran pre-corte)")
+                        if self._after_step("holder_precut"):
+                            break
+                        if self._do_wait(rep, qty, "wait_holder_precut", "holder_on_ms"):
+                            break
+                        # 15–18 Corte solo en lados de feed (evita pulsar el cortador vacío)
+                        # force=True: no omitir Set/Res por caché HMI desfasada.
+                        # Si abortamos tras Set, Res de emergencia antes del break.
+                        cut_sides = CycleConfig.normalize_feed_sides(self.get_config().feed_sides)
+                        if self._enter(rep, qty, "cutter_on"):
+                            break
+                        # C3 finish-piece: cortar aunque PF siga en ErrorState (p.ej. Buffer Max).
+                        if (
+                            not self._trial_mode
+                            and self._use_prefeeder()
+                            and not self._c3_finish_piece
+                        ):
+                            st = self._host.pf_state_byte()
+                            if st == TX_PF_ERROR:
+                                self._raise_fault("prefeeder_all_ok")
+                                self._host.cycle_log("Corte abortado: PreFeeder Error")
+                                break
+                        self._host.cycle_log(f"Cortador ON (Set) lados={cut_sides}")
+                        self._host.cmd_plc_cutters(True, sides=cut_sides, force=True)
+                        if self._after_step("cutter_on"):
+                            self._host.cmd_plc_cutters(False, sides=cut_sides, force=True)
+                            break
+                        if self._do_wait(rep, qty, "wait_cutter_pulse", "cutter_pulse_ms"):
+                            self._host.cmd_plc_cutters(False, sides=cut_sides, force=True)
+                            break
+                        if self._enter(rep, qty, "cutter_off"):
+                            self._host.cmd_plc_cutters(False, sides=cut_sides, force=True)
+                            break
+                        self._host.cycle_log(f"Cortador OFF (Res) lados={cut_sides}")
+                        self._host.cmd_plc_cutters(False, sides=cut_sides, force=True)
+                        if self._after_step("cutter_off"):
+                            break
+                        if self._do_wait(rep, qty, "wait_cutter_post", "cutter_post_ms"):
+                            break
+                        # 19–20 Depósito + delay (manguera fuera del área ANTES del prefetch)
+                        # wip_pos_signed = posición firmada confirmada; wip_start_mm = |pos|
+                        # (fuente soplo WIP fin; se actualiza tras despeje post-pinzas).
+                        wip_pos_signed: float | None = None
+                        wip_start_mm: float | None = None
+                        prefetch_running = False
+                        if self._enter(rep, qty, "deposit"):
+                            break
+                        extra = self._deposit_extra_mm(rep)
+                        if abs(extra) > 0.01:
+                            deposit_target = target_mm + extra
+                            self._host.clear_motion_wait_flags()
+                            self._host.cycle_log(
+                                f"Depósito MOVE → {deposit_target:.1f} mm"
+                            )
+                            if not self._host.cmd_motion_move_mm(deposit_target, rpm):
+                                # Transporte agotado → E065 (ya latcheado). Rechazo ASDA → E013.
+                                if not self._should_abort() and not self._fault:
+                                    kind = ""
+                                    if hasattr(self._host, "last_move_fail_kind"):
+                                        kind = self._host.last_move_fail_kind()
+                                    if kind == "transport":
+                                        self._raise_fault("E065")
+                                    else:
+                                        self._raise_fault("deposit_cmd")
+                                break
+                            if not self._wait_motion():
+                                break
+                            wip_pos_signed = float(deposit_target)
+                            wip_start_mm = abs(wip_pos_signed)
+                            self._host.cycle_log(
+                                f"Depósito MOVE ok → {deposit_target:.1f} mm "
+                                f"(WIP start ref {wip_start_mm:.1f})"
+                            )
+                        else:
+                            # Sin move de depósito: ref = target lineal ya confirmado.
+                            wip_pos_signed = float(target_mm)
+                            wip_start_mm = abs(wip_pos_signed)
+                            self._host.cycle_log(
+                                f"WIP start ref=lineal_target {wip_start_mm:.1f} mm "
+                                f"(sin depósito extra)"
+                            )
+                        if self._after_step("deposit"):
+                            break
+                        if self._do_wait(rep, qty, "wait_deposit_dwell", "dwell_at_dest_ms"):
+                            break
+                        # 21 Prefetch — inicia paralelo A (tras depósito: manguera ya movida)
+                        if self._enter(rep, qty, "prefetch_start"):
+                            break
+                        if rep < qty:
+                            self._host.clear_motion_wait_flags()
+                            sides = self._feed_side_list()
+                            if "L" in sides:
+                                self._host.cmd_motion_feed_l()
+                            if "R" in sides:
+                                self._host.cmd_motion_feed_r()
+                            prefetch_running = True
+                            self._host.cycle_log(
+                                f"∥ Prefetch feed lados={''.join(sides)} "
+                                f"en paralelo con pinzas/HOME (post-depósito)"
+                            )
+                        if self._after_step("prefetch_start"):
+                            break
+                        # 22–23 Pinzas OFF + delay (∥ A) — Tfeed ya fue al inicio de pieza
+                        if self._enter(rep, qty, "grippers_off"):
+                            break
+                        self._host.cmd_plc_gripper(False)
+                        self._host.cycle_log("Pinzas OFF (abren)")
+                        if self._after_step("grippers_off"):
+                            break
+                        if self._do_wait(rep, qty, "wait_gripper_release", "gripper_release_ms"):
+                            break
+                        # 24 Despeje ASDA tras abrir pinzas → actualiza ref WIP (soplo fin)
+                        if self._enter(rep, qty, "gripper_clearance"):
+                            break
+                        clr = abs(float(self.get_config().gripper_clearance_mm))
+                        if clr > 0.01 and wip_pos_signed is not None:
+                            clearance_target = self._clearance_target_mm(
+                                wip_pos_signed, float(target_mm), clr
+                            )
+                            self._arm_motion_leg(prefetch_running)
+                            self._host.cycle_log(
+                                f"Despeje MOVE → {clearance_target:.1f} mm "
+                                f"(+|clearance|={clr:.1f})"
+                            )
+                            if not self._host.cmd_motion_move_mm(clearance_target, rpm):
+                                if not self._should_abort() and not self._fault:
+                                    kind = ""
+                                    if hasattr(self._host, "last_move_fail_kind"):
+                                        kind = self._host.last_move_fail_kind()
+                                    if kind == "transport":
+                                        self._raise_fault("E065")
+                                    else:
+                                        self._raise_fault("clearance_cmd")
+                                break
+                            if not self._wait_motion():
+                                break
+                            wip_pos_signed = float(clearance_target)
+                            wip_start_mm = abs(wip_pos_signed)
+                            self._host.cycle_log(
+                                f"Despeje MOVE ok → {wip_pos_signed:.1f} mm; "
+                                f"WIP fin ref={wip_start_mm:.1f} mm"
+                            )
+                        else:
+                            self._host.cycle_log(
+                                "Despeje post-pinzas: omitido "
+                                f"(clearance={clr:.1f} mm)"
+                            )
+                        if self._after_step("gripper_clearance"):
+                            break
+                        # 25 HOME + WIP continuo (match-lineal) → 0
+                        if self._enter(rep, qty, "home"):
+                            break
+                        if not self._home_with_wip_delivery(
+                            wip_start_mm,
+                            self._lot_rpm,
+                            prefetch_running=prefetch_running,
+                        ):
+                            break
+                        if self._after_step("home"):
+                            break
+                        # 26 Handoff / join paralelo A
+                        if self._enter(rep, qty, "handoff"):
+                            break
+                        if prefetch_running:
+                            if self._wait_feed():
+                                handoff_ready = True
+                                self._host.cycle_log("∥ Join: prefetch listo (handoff)")
                             else:
-                                self._raise_fault("clearance_cmd")
-                        break
-                    if not self._wait_motion():
-                        break
-                    wip_pos_signed = float(clearance_target)
-                    wip_start_mm = abs(wip_pos_signed)
-                    self._host.cycle_log(
-                        f"Despeje post-pinzas → {wip_pos_signed:.1f} mm "
-                        f"(+|clearance|={clr:.1f}); WIP fin ref={wip_start_mm:.1f} mm"
-                    )
-                else:
-                    self._host.cycle_log(
-                        "Despeje post-pinzas: omitido "
-                        f"(clearance={clr:.1f} mm)"
-                    )
-                if self._after_step("gripper_clearance"):
-                    break
-                # 25 HOME + WIP: fin(+offset)→soplo → inicio→soplo → HOME
-                if self._enter(rep, qty, "home"):
-                    break
-                if not self._home_with_wip_delivery(
-                    wip_start_mm,
-                    self._lot_rpm,
-                    prefetch_running=prefetch_running,
-                ):
-                    break
-                if self._after_step("home"):
-                    break
-                # 26 Handoff / join paralelo A
-                if self._enter(rep, qty, "handoff"):
-                    break
-                if prefetch_running:
-                    if self._wait_feed():
-                        handoff_ready = True
-                        self._host.cycle_log("∥ Join: prefetch listo (handoff)")
-                    else:
+                                handoff_ready = False
+                                if self._restart_piece:
+                                    break
+                                if not self._fault:
+                                    self._raise_fault("feed_incomplete")
+                                break
+                            prefetch_running = False
+                        if self._after_step("handoff"):
+                            break
+                        # 27–28 Asentar + post-pieza
+                        if not handoff_ready:
+                            if self._do_wait(rep, qty, "wait_asentar", "asentar_ms"):
+                                break
+                        else:
+                            if self._enter(rep, qty, "wait_asentar"):
+                                break
+                            self._host.cycle_log("Asentar omitido (handoff listo)")
+                            if self._after_step("wait_asentar"):
+                                break
+                        if self._enter(rep, qty, "post_piece"):
+                            break
+                        # Congelar CT al entrar a post_piece (antes holgura/Finish).
+                        piece_sec = self._freeze_piece_clock()
+                        # Post-pieza: re-lee holgura; si quedó ausente, fuerza Tfeed otra vez.
+                        if not self._force_pf_triggers_if_no_holgura(
+                            where=f"post-pieza {rep}/{qty}"
+                        ):
+                            break
+                        if self._after_step("post_piece"):
+                            break
+                        completed = rep
+                        with self._lock:
+                            self._pieces_done = rep
+                            if qty > 0:
+                                self._progress = max(
+                                    self._progress,
+                                    int(min(100, round(100.0 * rep / qty))),
+                                )
+                        self._log_piece_ok(rep, qty, piece_sec)
+                        self._host.cycle_notify()
+                        early_exit = False
+                    if not early_exit:
+                        break  # pieza OK → siguiente rep
+                    if self._consume_restart_piece():
                         handoff_ready = False
-                        if not self._fault:
-                            self._raise_fault("feed_incomplete")
-                        break
-                    prefetch_running = False
-                if self._after_step("handoff"):
-                    break
-                # 27–28 Asentar + post-pieza
-                if not handoff_ready:
-                    if self._do_wait(rep, qty, "wait_asentar", "asentar_ms"):
-                        break
-                else:
-                    if self._enter(rep, qty, "wait_asentar"):
-                        break
-                    self._host.cycle_log("Asentar omitido (handoff listo)")
-                    if self._after_step("wait_asentar"):
-                        break
-                if self._enter(rep, qty, "post_piece"):
-                    break
-                # Post-pieza: re-lee holgura; si quedó ausente, fuerza Tfeed otra vez.
-                if not self._force_pf_triggers_if_no_holgura(
-                    where=f"post-pieza {rep}/{qty}"
-                ):
-                    break
-                if self._after_step("post_piece"):
-                    break
-                completed = rep
-                with self._lock:
-                    self._pieces_done = rep
-                    if qty > 0:
-                        self._progress = max(
-                            self._progress,
-                            int(min(100, round(100.0 * rep / qty))),
+                        prefetch_running = False
+                        self._c2_laser_skip_feed = True
+                        self._host.cycle_log(
+                            f"C2: reinicio pieza {rep}/{qty} desde step 0"
                         )
-                self._host.cycle_log(f"Pieza {rep}/{qty} OK")
-                self._host.cycle_notify()
+                        continue
+                    break  # fallo / abort → salir del lote
             self._finish(completed >= qty and not self._aborted and not self._fault)
         except Exception as exc:
             self._raise_fault(f"exception:{exc}")
@@ -2013,6 +2357,9 @@ class CycleRunner:
                 self._finish(False)
     def _finish(self, ok: bool, *, soft_cancel: bool = False) -> None:
         self._pause.clear()
+        self._restart_piece = False
+        self._c2_laser_skip_feed = False
+        self._flow_interrupt.clear()
         refill = False
         with self._lock:
             refill = self._refill_mode
@@ -2053,10 +2400,22 @@ class CycleRunner:
                     self._host.cycle_log("PreFeeder: In process OFF falló")
         elapsed = 0.0
         with self._lock:
-            if self._started_at:
-                elapsed = time.monotonic() - self._started_at
-                self._finished_elapsed = elapsed
-                self._started_at = None
+            # CT productivo: congelado en última Pieza OK. Si abort mid-pieza, corta ya.
+            if self._cycle_t0 is not None:
+                if self._piece_t0 is not None:
+                    self._sync_pause_exclusion_locked(time.monotonic())
+                    self._finished_elapsed = max(
+                        0.0,
+                        time.monotonic()
+                        - self._cycle_t0
+                        - float(self._pause_excluded_sec),
+                    )
+                elapsed = float(self._finished_elapsed)
+                self._cycle_t0 = None
+                self._piece_t0 = None
+            else:
+                elapsed = float(self._finished_elapsed)
+            self._started_at = None
             self._active = False
             self._refill_mode = False
             self._last_ok = ok
@@ -2088,9 +2447,10 @@ class CycleRunner:
                     + (f" en {elapsed:.0f}s" if elapsed > 0 else "")
                 )
             else:
+                ct_txt = f" · CT={elapsed:.1f}s" if elapsed > 0 else ""
                 self._host.cycle_log(
                     f"Lote completado — {self._total_reps}/{self._total_reps} piezas"
-                    + (f" en {elapsed:.0f}s" if elapsed > 0 else "")
+                    + ct_txt
                 )
             # Tras FinishParts: Idle máquina (PF ya Idle por In process OFF).
             self._set_state(TX_IDLE)

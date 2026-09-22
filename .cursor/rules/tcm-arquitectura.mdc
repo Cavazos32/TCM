@@ -23,7 +23,7 @@ Al cerrar el cambio: indicar qué archivos se alinearon.
 
 ## Comunicación
 
-- Flip-flop **Set / Res**: no polling de sensores ni de “¿sigues en error?”.
+- Flip-flop **Set / Res**: no polling de sensores ni de “¿sigues en error?”. Res también puede ser **observacional** (módulo fuente ya OK + ciclo inactivo → limpia latch HMI sin Reset a esclavos; ver `Doc/normas_arquitectura.md`).
 - Heartbeat TCP solo valida enlace; no sustituye eventos de aplicación.
 - Opcode = contrato (Excel / Opcodes). No inventar bytes sueltos.
 - PLC válvulas: pulso ON/OFF (KEEP); no enclavado en GPIO ESP. Excepción: Blower (nivel + durationSec del comando).

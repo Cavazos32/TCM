@@ -48,20 +48,21 @@ export const DEFAULT_CYCLE_CONFIG: CycleConfig = {
 export const CYCLE_STEPS_DEFINITION: CycleStep[] = [
   { id: 1, title: 'Holder+Encoder ON (solo 1ª pieza)', type: 'action', sbsPause: false },
   { id: 2, title: 'Delay Holder ON', type: 'delay', delayKey: 'holderOnMs', defaultDurationMs: 200, sbsPause: true },
-  { id: 3, title: 'Alimentación (feed / handoff)', type: 'action', sbsPause: true },
-  { id: 4, title: 'Offset alimentación (si hay)', type: 'action', sbsPause: false },
-  { id: 5, title: 'Pinzas cierran', type: 'action', sbsPause: false },
-  { id: 6, title: 'Delay tras cerrar pinzas', type: 'delay', delayKey: 'grippersOnMs', defaultDurationMs: 100, sbsPause: false },
-  { id: 7, title: 'OM ref (Stage2 RESET)', type: 'action', sbsPause: true },
-  { id: 8, title: 'Holder+Encoder OFF (abre para lineal)', type: 'action', sbsPause: false },
-  { id: 9, title: 'Delay Holder/Encoder OFF', type: 'delay', delayKey: 'holderOpenMs', defaultDurationMs: 100, sbsPause: true },
-  { id: 10, title: 'Stage2 lineal ASDA (0→ABS)', type: 'action', sbsPause: false },
-  { id: 11, title: 'Delay antes del corte', type: 'delay', delayKey: 'linearDoneMs', defaultDurationMs: 100, sbsPause: true },
-  { id: 12, title: 'Holder ON / Encoder ON (pre-corte)', type: 'action', sbsPause: false },
-  { id: 13, title: 'Delay tras cerrar holder', type: 'delay', delayKey: 'holderOnMs', defaultDurationMs: 200, sbsPause: true },
-  { id: 14, title: 'Cortador ON (+ All OK PreFeeder)', type: 'action', sbsPause: false },
+  { id: 3, title: 'Trigger PreFeeder (Tfeed)', type: 'action', sbsPause: false },
+  { id: 4, title: 'Alimentación (feed / handoff)', type: 'action', sbsPause: true },
+  { id: 5, title: 'Offset alimentación (Motion, paso lógico)', type: 'action', sbsPause: false },
+  { id: 6, title: 'Pinzas cierran', type: 'action', sbsPause: false },
+  { id: 7, title: 'Delay tras cerrar pinzas', type: 'delay', delayKey: 'grippersOnMs', defaultDurationMs: 100, sbsPause: false },
+  { id: 8, title: 'OM ref (no usado por lineal TCP)', type: 'action', sbsPause: true },
+  { id: 9, title: 'Holder+Encoder OFF (abre para lineal)', type: 'action', sbsPause: false },
+  { id: 10, title: 'Delay Holder/Encoder OFF', type: 'delay', delayKey: 'holderOpenMs', defaultDurationMs: 100, sbsPause: true },
+  { id: 11, title: 'Lineal ASDA MOVE TCP (0→ABS)', type: 'action', sbsPause: false },
+  { id: 12, title: 'Delay antes del corte', type: 'delay', delayKey: 'linearDoneMs', defaultDurationMs: 100, sbsPause: true },
+  { id: 13, title: 'Holder ON / Encoder ON (pre-corte)', type: 'action', sbsPause: false },
+  { id: 14, title: 'Delay tras cerrar holder', type: 'delay', delayKey: 'holderOnMs', defaultDurationMs: 200, sbsPause: true },
+  { id: 15, title: 'Cortador ON (+ All OK PreFeeder)', type: 'action', sbsPause: false },
   {
-    id: 15,
+    id: 16,
     title: 'Delay entre Set y Res cortador',
     type: 'delay',
     delayKey: 'cutterPulseMs',
@@ -70,23 +71,22 @@ export const CYCLE_STEPS_DEFINITION: CycleStep[] = [
     delayEditable: false,
     note: 'Fijo ≥150 ms (pulso PLC KEEP) — no editable',
   },
-  { id: 16, title: 'Cortador OFF', type: 'action', sbsPause: false },
-  { id: 17, title: 'Delay post-corte', type: 'delay', delayKey: 'cutterPostMs', defaultDurationMs: 100, sbsPause: true },
-  { id: 18, title: 'Extra / depósito lineal', type: 'action', sbsPause: false },
-  { id: 19, title: 'Delay tras depósito', type: 'delay', delayKey: 'dwellAtDestMs', defaultDurationMs: 150, sbsPause: true },
+  { id: 17, title: 'Cortador OFF', type: 'action', sbsPause: false },
+  { id: 18, title: 'Delay post-corte', type: 'delay', delayKey: 'cutterPostMs', defaultDurationMs: 100, sbsPause: true },
+  { id: 19, title: 'Extra / depósito lineal', type: 'action', sbsPause: false },
+  { id: 20, title: 'Delay tras depósito', type: 'delay', delayKey: 'dwellAtDestMs', defaultDurationMs: 150, sbsPause: true },
   {
-    id: 20,
+    id: 21,
     title: 'Prefetch feed — arranca en background',
     type: 'background',
     badge: 'background',
-    note: 'Depósito ya hecho (manguera fuera). Prefetch en background; la secuencia continúa (pinzas → HOME), no todo a la vez.',
+    note: 'Depósito ya hecho (manguera fuera). Prefetch en background; la secuencia continúa (pinzas → HOME).',
     sbsPause: false,
   },
-  { id: 21, title: 'Pinzas abren', type: 'action', sbsPause: false },
-  { id: 22, title: 'Trigger PreFeeder (Tfeed)', type: 'action', sbsPause: false },
+  { id: 22, title: 'Pinzas abren', type: 'action', sbsPause: false },
   { id: 23, title: 'Delay tras abrir pinzas', type: 'delay', delayKey: 'gripperReleaseMs', defaultDurationMs: 350, sbsPause: true },
   { id: 24, title: 'Despeje ASDA post-pinzas (+clearance)', type: 'action', sbsPause: true },
-  { id: 25, title: 'HOME: WIP blower fin(+offset) → inicio → 0', type: 'action', sbsPause: true },
+  { id: 25, title: 'HOME: WIP blower continuo (match lineal) → 0', type: 'action', sbsPause: true },
   { id: 26, title: 'Join — espera fin del prefetch (handoff)', type: 'join', badge: 'join', sbsPause: false },
   { id: 27, title: 'Delay asentar', type: 'delay', delayKey: 'asentarMs', defaultDurationMs: 50, sbsPause: false },
   { id: 28, title: 'Post-pieza (safety / peer / holgura)', type: 'action', sbsPause: false },
@@ -201,9 +201,18 @@ export const CycleTab: React.FC<CycleTabProps> = ({
 
   useEffect(() => {
     return () => {
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+      }
+      // Al desmontar (cambio de tab): no perder edits pendientes del debounce.
+      const pending = pendingSaveRef.current;
+      if (pending && !savingRef.current) {
+        pendingSaveRef.current = null;
+        void onSaveConfig(pending).catch(() => {});
+      }
     };
-  }, []);
+  }, [onSaveConfig]);
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [filterType, setFilterType] = useState<'all' | 'action' | 'delay' | 'parallel'>('all');
@@ -371,6 +380,10 @@ export const CycleTab: React.FC<CycleTabProps> = ({
     config.asentarMs;
 
   const estimatedTotalTimeSec = ((totalDelaysMs + 2400) / 1000).toFixed(2);
+  const liveCtSec = machineState.cycleTimeSec ?? 0;
+  const lastPieceSec = machineState.lastPieceSec ?? 0;
+  const avgPieceSec = machineState.avgPieceSec ?? 0;
+  const showLiveCt = cycleActive || liveCtSec > 0 || lastPieceSec > 0;
 
   const filteredSteps = sequenceSteps.filter((step) => {
     if (filterType === 'action') return step.type === 'action';
@@ -480,12 +493,16 @@ export const CycleTab: React.FC<CycleTabProps> = ({
             <p className="text-xs font-bold text-sky-900 dark:text-sky-100">
               {machineState.refillPrompt === 'after_cut'
                 ? t('refill_confirm_title_cut')
-                : t('refill_confirm_title_feed')}
+                : machineState.refillPrompt === 'working'
+                  ? t('refill_confirm_title_working')
+                  : t('refill_confirm_title_feed')}
             </p>
             <p className="text-[11px] text-sky-800/80 dark:text-sky-200/80 mt-0.5">
               {machineState.refillPrompt === 'after_cut'
                 ? t('refill_confirm_hint_cut')
-                : t('refill_confirm_hint_feed')}
+                : machineState.refillPrompt === 'working'
+                  ? t('refill_confirm_hint_working')
+                  : t('refill_confirm_hint_feed')}
             </p>
           </div>
           {machineState.refillPrompt === 'after_feed' && onRefillRetry && (
@@ -500,28 +517,32 @@ export const CycleTab: React.FC<CycleTabProps> = ({
               {t('btn_refill_confirm_retry')}
             </button>
           )}
-          <button
-            id="btn-cycle-refill-yes"
-            type="button"
-            onClick={() => onRefillConfirm(true)}
-            disabled={!machineState.refillAwaitingConfirm}
-            className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            <Check className="h-3.5 w-3.5" />
-            {machineState.refillPrompt === 'after_cut'
-              ? t('btn_refill_confirm_yes')
-              : t('btn_refill_confirm_next_cut')}
-          </button>
-          <button
-            id="btn-cycle-refill-no"
-            type="button"
-            onClick={() => onRefillConfirm(false)}
-            disabled={!machineState.refillAwaitingConfirm}
-            className="flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-200 disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            <X className="h-3.5 w-3.5" />
-            {t('btn_refill_confirm_no')}
-          </button>
+          {machineState.refillPrompt !== 'working' && (
+            <>
+              <button
+                id="btn-cycle-refill-yes"
+                type="button"
+                onClick={() => onRefillConfirm(true)}
+                disabled={!machineState.refillAwaitingConfirm}
+                className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <Check className="h-3.5 w-3.5" />
+                {machineState.refillPrompt === 'after_cut'
+                  ? t('btn_refill_confirm_yes')
+                  : t('btn_refill_confirm_next_cut')}
+              </button>
+              <button
+                id="btn-cycle-refill-no"
+                type="button"
+                onClick={() => onRefillConfirm(false)}
+                disabled={!machineState.refillAwaitingConfirm}
+                className="flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-200 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <X className="h-3.5 w-3.5" />
+                {t('btn_refill_confirm_no')}
+              </button>
+            </>
+          )}
         </div>
       )}
 
@@ -538,8 +559,24 @@ export const CycleTab: React.FC<CycleTabProps> = ({
               </div>
               <span className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 px-2.5 py-0.5 rounded-md border border-slate-200 dark:border-slate-700 text-xs font-mono shadow-2xs">
                 <Clock className="h-3.5 w-3.5 text-sky-500" />
-                <span>Est. Ciclo: <strong className="text-teal-600 dark:text-teal-400">~{estimatedTotalTimeSec}s</strong></span>
+                <span>Est. delays: <strong className="text-teal-600 dark:text-teal-400">~{estimatedTotalTimeSec}s</strong></span>
               </span>
+              {showLiveCt && (
+                <span
+                  className="flex items-center gap-1 bg-teal-50 dark:bg-teal-950/40 text-teal-800 dark:text-teal-200 px-2.5 py-0.5 rounded-md border border-teal-200 dark:border-teal-800 text-xs font-mono shadow-2xs"
+                  title={t('cycle_time_hint')}
+                >
+                  <Timer className="h-3.5 w-3.5" />
+                  <span>
+                    {t('cycle_time_label')}:{' '}
+                    <strong>{liveCtSec}s</strong>
+                    {lastPieceSec > 0 ? ` · pz ${lastPieceSec.toFixed(1)}s` : ''}
+                    {avgPieceSec > 0 && (machineState.targetPieces || 0) > 1
+                      ? ` · avg ${avgPieceSec.toFixed(1)}s`
+                      : ''}
+                  </span>
+                </span>
+              )}
             </div>
           </div>
 
@@ -662,7 +699,10 @@ export const CycleTab: React.FC<CycleTabProps> = ({
         <div className="max-h-[500px] overflow-y-auto p-2 sm:p-4 space-y-1.5 divide-y divide-slate-100 dark:divide-slate-800/60 font-sans">
           {filteredSteps.map((step) => {
             const isCurrent = currentRunningStep === step.id;
-            const stepDelayVal = step.delayKey ? config[step.delayKey] : step.defaultDurationMs;
+            const stepDelayVal = step.delayKey
+              ? Number(config[step.delayKey])
+              : Number(step.defaultDurationMs ?? 0);
+            const delayMs = Number.isFinite(stepDelayVal) ? stepDelayVal : 0;
 
             return (
               <div
@@ -776,7 +816,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                         title="Fijo por pulso PLC KEEP (≥150 ms)"
                       >
                         <span className="font-mono font-bold text-xs sm:text-sm text-slate-600 dark:text-slate-300">
-                          {Math.max(150, Number(stepDelayVal) || 0)}
+                          {Math.max(150, delayMs)}
                         </span>
                         <span className="text-[11px] font-mono text-slate-400 dark:text-slate-500 select-none">
                           ms
@@ -786,7 +826,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                     <div className="flex items-center gap-1 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 hover:border-teal-500 dark:hover:border-teal-500 rounded-lg p-0.5 shadow-2xs transition">
                       <button
                         type="button"
-                        onClick={() => handleUpdateDelay(step.delayKey, Math.max(0, (stepDelayVal || 0) - 25))}
+                        onClick={() => handleUpdateDelay(step.delayKey, Math.max(0, delayMs - 25))}
                         title="Restar 25ms"
                         className="flex h-6 w-6 items-center justify-center rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white transition active:scale-95 cursor-pointer"
                       >
@@ -799,7 +839,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                           type="number"
                           min={0}
                           step={10}
-                          value={stepDelayVal ?? ''}
+                          value={Number.isFinite(delayMs) ? delayMs : ''}
                           onChange={(e) => handleUpdateDelay(step.delayKey, Number(e.target.value))}
                           className="w-16 sm:w-20 bg-transparent text-center font-mono font-bold text-xs sm:text-sm text-teal-600 dark:text-teal-400 focus:outline-hidden focus:ring-1 focus:ring-teal-500 rounded"
                         />
@@ -810,7 +850,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
 
                       <button
                         type="button"
-                        onClick={() => handleUpdateDelay(step.delayKey, (stepDelayVal || 0) + 25)}
+                        onClick={() => handleUpdateDelay(step.delayKey, delayMs + 25)}
                         title="Sumar 25ms"
                         className="flex h-6 w-6 items-center justify-center rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white transition active:scale-95 cursor-pointer"
                       >

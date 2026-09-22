@@ -47,9 +47,12 @@ Se trata como **flip-flop**:
 | Señal | Significado |
 |-------|-------------|
 | **Set** | Un evento activa la condición (sensor, timeout, comando fallido, enlace caído, cambio de estado). |
-| **Res** | Reset / comando explícito desde Main limpia la condición. |
+| **Res** | Limpia la condición: **Reset HMI** explícito **o** Res observacional (abajo). |
 
 Mientras no haya **Set**, no hay acción obligatoria. No inventar polling de “por si acaso”.
+
+**Res observacional (HMI):** si el latch EXXX sigue activo pero el **módulo fuente ya no está en error** (caché HMI: no ErrorState, sensores/fallos del módulo OK, enlace up) y **no hay ciclo activo**, Main limpia el latch **sin** mandar Reset/All Off a los esclavos. Así el operador no pierde un setup ya hecho solo porque olvidó Reset.  
+No aplica a E06x de enlace (solo al recuperar socket). Con lote C2/C3 en Pause sigue haciendo falta soft-Res explícito antes de Resume.
 
 **Excepción de enlace:** el heartbeat TCP (`ping`/`pong` o keepalive) solo verifica que el socket vive.  
 No es sondeo de sensores ni de estado de aplicación. Los sensores/válvulas se publican por **evento** (cambio) o status push del esclavo.
@@ -166,7 +169,9 @@ Cambiar un paso u orden = cambiar **este documento** primero.
 7. **Homing general** obligatorio.  
 8. Idle / aceptar Start.
 
-Prohibido: Reset sin confirmación; Start sin home; saltar validación; mandar **All Off** desde C1 (All Off = Home de máquina / control PLC).
+**Atajo permitido:** si tras corregir la causa el operador ya validó / hizo Home/setup y el módulo fuente está Idle/OK (sin ErrorState) con **ciclo inactivo**, HMI aplica **Res observacional** del latch (sin Reset a esclavos ni All Off). No obliga a repetir Reset HMI solo para borrar el EXXX en barra.
+
+Prohibido: Reset sin confirmación (salvo Res observacional con módulo ya OK); Start sin home tras Reset C1 formal; saltar validación en la secuencia formal; mandar **All Off** desde C1 (All Off = Home de máquina / control PLC).
 
 #### Secuencia C2
 
@@ -175,6 +180,8 @@ Prohibido: Reset sin confirmación; Start sin home; saltar validación; mandar *
 3. **Reset HMI** (Res) — **soft**: limpia latch + reset Motion/PF; **no** aborta el lote ni va a Idle.  
 4. **Resume**.  
 5. Proceso desde **step 0**.
+   - Si el láser de los lados de `feedSides` ya detecta material → **omitir solo Alimentación (feed)**; el resto de la pieza sigue.
+   - Criterio: solo láser ON (no exige ventana OM).
 
 Prohibido: Resume sin Reset; matar el ciclo en el Reset C2; tocar válvulas desde C2.
 
@@ -193,8 +200,8 @@ Prohibido: abortar el lote en el Pause C3 (debe quedar resumible); Resume sin Re
 
 Orden resumido:
 
-- **C1:** Confirmación → Reset → Validar → Homing → Idle/Start  
-- **C2:** Reset (soft) → Resume → desde step 0  
+- **C1:** Confirmación → Reset → Validar → Homing → Idle/Start (o Res observacional si módulo ya OK y ciclo inactivo)  
+- **C2:** Reset (soft) → Resume → desde step 0 (feed omitible si láser ya ON)  
 - **C3:** (pieza/paso seguro OK) → Reset (soft) → Resume → reintentar/continuar  
 
 ---
@@ -355,7 +362,7 @@ Prohibido aprovechar correcciones de rutina, Motion, PreFeeder, PLC, encoder, fe
 | Cómo se avisa sin detalle | Opcode de estado |
 | Cómo se dice qué falló | EXXX (mismo en Main y HTML local del módulo) |
 | Quién aplica C1/C2/C3 | Solo Main |
-| Cómo se activa/limpia | Flip-flop Set / Res — no polling |
+| Cómo se activa/limpia | Flip-flop Set / Res (Reset HMI o Res observacional si módulo OK) |
 | PLC válvulas | Pulso ON/OFF / All Off / Reset PLC; Reset HMI hard → Reset PLC; Home máquina → All Off; no desde Stop/Pause/soft C2/C3 |
 | Cómo se sale de un fallo | Secuencia fija C1 / C2 / C3 |
 | De dónde salen códigos | Excel + GPIO doc |

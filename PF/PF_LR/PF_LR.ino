@@ -76,9 +76,7 @@ float commandedRpm  = 0.0f;
 float commandedRpm2 = 0.0f;
 
 volatile float motor2RpmSetting       = MOTOR_RPM_DEFAULT;  // RPM durante alimentación (trigger TCP)
-volatile float motor2TriggerFeedSec   = M2_TRIGGER_FEED_DEFAULT;  // Tfeed calculado
-volatile float motor2FeedSpeedMmS     = M2_FEED_SPEED_MM_S_DEFAULT;
-volatile float motor2PieceLengthMm    = 0.0f;  // desde modelo TCM (solo visual + cálculo)
+volatile float motor2TriggerFeedSec   = M2_TRIGGER_FEED_DEFAULT;  // duración Tfeed (editable)
 volatile Motor2Phase motor2Phase      = M2_PHASE_IDLE;
 volatile Motor2FeedSource motor2FeedSource = M2_FEED_NONE;
 volatile float motor2ActiveFeedRpm = 0.0f;   // RPM del timed feed en curso
@@ -92,21 +90,9 @@ volatile float    holguraFaultSec        = M2_HOLGURA_FAULT_SEC;
 static volatile bool holguraHelperFiredThisAbsence = false;
 TaskHandle_t   motor2TaskHandle       = nullptr;
 
-static void recalculateTriggerFeedSec()
+static void applyTriggerFeedSec(float v)
 {
-  const float len = (float)motor2PieceLengthMm;
-  const float spd = (float)motor2FeedSpeedMmS;
-  if (len < 1.0f || spd < M2_FEED_SPEED_MM_S_MIN)
-  {
-    motor2TriggerFeedSec = constrain((float)motor2TriggerFeedSec,
-                                     M2_TRIGGER_FEED_MIN, M2_TRIGGER_FEED_MAX);
-    if (motor2TriggerFeedSec < M2_TRIGGER_FEED_MIN)
-      motor2TriggerFeedSec = M2_TRIGGER_FEED_DEFAULT;
-    return;
-  }
-  // Tfeed = longitud*(1+factor) / velocidad_mm_s  (factor fijo M2_SAFETY_FACTOR)
-  float t = (len * (1.0f + M2_SAFETY_FACTOR)) / spd;
-  motor2TriggerFeedSec = constrain(t, M2_TRIGGER_FEED_MIN, M2_TRIGGER_FEED_MAX);
+  motor2TriggerFeedSec = constrain(v, M2_TRIGGER_FEED_MIN, M2_TRIGGER_FEED_MAX);
 }
 
 static volatile bool holguraStablePresent   = false;
@@ -160,9 +146,7 @@ static void saveSettings()
   prefs.putFloat("auto_rev", autoReverseSec);
   prefs.putBool("auto_en", autoEnabled);
   prefs.putFloat("m2_rpm", (float)motor2RpmSetting);
-  prefs.putFloat("m2_feed_mms", (float)motor2FeedSpeedMmS);
-  prefs.putFloat("m2_len_mm", (float)motor2PieceLengthMm);
-  prefs.putFloat("m2_trig_s", (float)motor2TriggerFeedSec);  // cache del Tfeed calculado
+  prefs.putFloat("m2_trig_s", (float)motor2TriggerFeedSec);
   prefs.putBool("m2_buf_hi", motor2BufferActiveHigh);
   prefs.putFloat("h_help_rpm", (float)holguraHelperRpm);
   prefs.putFloat("h_help_s", (float)holguraHelperSec);
@@ -181,8 +165,6 @@ static void loadSettings()
   autoReverseSec = prefs.getFloat("auto_rev", AUTO_REVERSE_DEFAULT);
   autoEnabled = prefs.getBool("auto_en", true);
   motor2RpmSetting = prefs.getFloat("m2_rpm", MOTOR_RPM_DEFAULT);
-  motor2FeedSpeedMmS = prefs.getFloat("m2_feed_mms", M2_FEED_SPEED_MM_S_DEFAULT);
-  motor2PieceLengthMm = prefs.getFloat("m2_len_mm", 0.0f);
   motor2TriggerFeedSec = prefs.getFloat("m2_trig_s", M2_TRIGGER_FEED_DEFAULT);
   const bool bufMigrated = prefs.getBool("m2_buf_v2", false);
   motor2BufferActiveHigh = prefs.getBool("m2_buf_hi", true);
@@ -209,10 +191,7 @@ static void loadSettings()
   autoRpm = constrain(autoRpm, MOTOR_RPM_MIN, MOTOR_RPM_MAX);
   autoReverseSec = constrain(autoReverseSec, AUTO_REVERSE_MIN, AUTO_REVERSE_MAX);
   motor2RpmSetting = constrain(motor2RpmSetting, MOTOR_RPM_MIN, MOTOR_RPM_MAX);
-  motor2FeedSpeedMmS = constrain(motor2FeedSpeedMmS, M2_FEED_SPEED_MM_S_MIN, M2_FEED_SPEED_MM_S_MAX);
-  if (motor2PieceLengthMm < 0.0f) motor2PieceLengthMm = 0.0f;
-  if (motor2PieceLengthMm > 60000.0f) motor2PieceLengthMm = 60000.0f;
-  recalculateTriggerFeedSec();
+  applyTriggerFeedSec((float)motor2TriggerFeedSec);
   holguraHelperRpm = constrain(holguraHelperRpm, MOTOR_RPM_MIN, MOTOR_RPM_MAX);
   holguraHelperSec = constrain(holguraHelperSec, M2_HOLGURA_HELPER_SEC_MIN, M2_HOLGURA_HELPER_SEC_MAX);
   if (holguraHelperAbsentMs < M2_HOLGURA_HELPER_ABSENT_MS_MIN)
@@ -1474,12 +1453,6 @@ static void appendTrigger2Object(String& json)
   json += ",\"holgura_helper_absent_ms\":";
   jsonAppendUInt(json, (uint32_t)holguraHelperAbsentMs);
   json += ",\"holgura_extra_feed_s\":0.0";  // legacy slot
-  json += ",\"piece_length_mm\":";
-  jsonAppendFloat(json, (float)motor2PieceLengthMm, 1);
-  json += ",\"feed_speed_mm_s\":";
-  jsonAppendFloat(json, (float)motor2FeedSpeedMmS, 1);
-  json += ",\"safety_factor\":";
-  jsonAppendFloat(json, (float)M2_SAFETY_FACTOR, 3);
   json += ",\"trigger_feed_s\":";
   jsonAppendFloat(json, motor2TriggerFeedSec, 2);
   json += ",\"holgura_filter_ms\":";
@@ -1634,40 +1607,12 @@ static void updateTensionFaultMonitor()
     enterSystemFault(FAULT_TENSION_TIMEOUT);
 }
 
-// Buffer Full consumido: con ventana de relleno abierta, si no vuelve a tiempo → falla.
-// Un blip corto de GPIO 19 no reinicia el timer (antes nunca llegaba a 10 s ni enclava).
+// Buffer Full consumido: ya no enclava por timeout de relleno (E052/E058).
+// DeReeler/servo siguen parando en Full ON y reanudando en Full OFF (filtro GPIO).
 static void updateBufferRefillFaultMonitor()
 {
-  if (systemFault != FAULT_NONE || idleMode || !autoEnabled || refillOverrideActive()
-      || !sensorsMotionArmed())
-  {
-    bufferEmptySinceMs = 0;
-    bufferFullRecoverSinceMs = 0;
-    return;
-  }
-
-  if (bufferFullActive())
-  {
-    if (bufferFullRecoverSinceMs == 0)
-      bufferFullRecoverSinceMs = millis();
-    else if ((uint32_t)(millis() - bufferFullRecoverSinceMs) >= BUFFER_FULL_OFF_FILTER_MS)
-      bufferEmptySinceMs = 0;
-    return;
-  }
-
+  bufferEmptySinceMs = 0;
   bufferFullRecoverSinceMs = 0;
-
-  if (bufferEmptySinceMs == 0)
-  {
-    bufferEmptySinceMs = millis();
-    DBG_PRINTF("AUTO: Buffer Full consumido — timeout relleno %.1fs\n",
-               BUFFER_REFILL_FAULT_SEC);
-  }
-  else if ((uint32_t)(millis() - bufferEmptySinceMs)
-           >= (uint32_t)(BUFFER_REFILL_FAULT_SEC * 1000.0f))
-  {
-    enterSystemFault(FAULT_BUFFER_TIMEOUT);
-  }
 }
 
 // Sin holgura estable ≥ fault_s (ventana armada): falla PF_ERR_HOLGURA.
@@ -1817,7 +1762,8 @@ static void serviceTimedFeeder()
 }
 
 // Helper: SIN HOLGURA (pin ausente) ≥ holguraHelperAbsentMs → feeder (una vez por ausencia).
-// Usa lectura cruda en la tarea m2 (sin pelear el filtro del loop). Prioridad > trigger TCP.
+// Usa lectura cruda en la tarea m2 (sin pelear el filtro del loop).
+// Timed feed en curso (Tfeed TCP o helper) no se corta ni se reinicia — como Buffer Full.
 static void updateHolguraHelper()
 {
   // HOLGURA presente (slack OK) → reset one-shot.
@@ -1846,6 +1792,10 @@ static void updateHolguraHelper()
     return;
   }
 
+  // Ya en timed feed: dejar terminar (no reemplazar Tfeed TCP ni reiniciar helper).
+  if (motor2Phase == M2_PHASE_TIMED_FEED)
+    return;
+
   if (holguraHelperAbsentStartMs == 0)
   {
     holguraHelperAbsentStartMs = millis();
@@ -1860,11 +1810,6 @@ static void updateHolguraHelper()
   if ((uint32_t)(millis() - holguraHelperAbsentStartMs) < (uint32_t)holguraHelperAbsentMs)
     return;
 
-  // Ya en timed feed de holgura: no reiniciar.
-  if (motor2Phase == M2_PHASE_TIMED_FEED && motor2FeedSource == M2_FEED_HOLGURA)
-    return;
-
-  // Prioridad holgura > TCM: si hay trigger TCP en curso, lo reemplaza.
   holguraHelperFiredThisAbsence = true;
   float sec = (float)holguraHelperSec;
   if (sec < M2_HOLGURA_HELPER_SEC_MIN) sec = M2_HOLGURA_HELPER_SEC_MIN;
@@ -1901,7 +1846,8 @@ static void motor2HolguraTask(void* /*param*/)
 
     // Helper pronto: loguea bloqueos (falla/sin armado) aunque luego se haga continue.
     updateHolguraHelper();
-    if (motor2Phase == M2_PHASE_TIMED_FEED && motor2FeedSource == M2_FEED_HOLGURA)
+    // Timed feed (Tfeed TCP o helper): servir siempre el timer — no cortar por In process OFF.
+    if (motor2Phase == M2_PHASE_TIMED_FEED)
       serviceTimedFeeder();
 
     // Feeder manual Materialista: no cortar por Buffer Max (eso era arranca/para cada 5 ms).
@@ -1937,11 +1883,15 @@ static void motor2HolguraTask(void* /*param*/)
     }
 
     // Trigger TCP: requiere ventana armada + Auto ON.
+    // Timed feed ya iniciado: seguir hasta fin aunque In process OFF / sin armado.
     if (!sensorsMotionArmed() || !autoEnabled)
     {
       motor2TcpTriggerRequest = false;
-      // Armado sin Auto: seguir sirviendo timed feed holgura; sin armado → idle.
-      if (!sensorsMotionArmed())
+      if (motor2Phase == M2_PHASE_TIMED_FEED)
+      {
+        serviceTimedFeeder();
+      }
+      else if (!sensorsMotionArmed())
       {
         if (motor2Phase != M2_PHASE_IDLE || fabsf(commandedRpm2) > 0.01f
             || (motor2 && fabsf(motor2->currentRPM()) > 1.0f))
@@ -1949,7 +1899,6 @@ static void motor2HolguraTask(void* /*param*/)
       }
       else
       {
-        serviceTimedFeeder();
         serviceHolguraFeeder();
       }
       vTaskDelay(pdMS_TO_TICKS(5));
@@ -1962,7 +1911,7 @@ static void motor2HolguraTask(void* /*param*/)
         motor2TcpTriggerRequest = false;
       else if (motor2Phase == M2_PHASE_TIMED_FEED && motor2FeedSource == M2_FEED_HOLGURA)
       {
-        // Prioridad helper holgura: descartar trigger TCP mientras alivia.
+        // Helper holgura en curso: no cortar ni reiniciar; descartar trigger TCP.
         motor2TcpTriggerRequest = false;
         Serial.println("M2: trigger TCP ignorado — helper holgura activo");
       }
@@ -2234,12 +2183,10 @@ void handleMotor2()
   }
   if (server.hasArg("buffer_active_high"))
     motor2BufferActiveHigh = server.arg("buffer_active_high").toInt() != 0;
-  if (server.hasArg("feed_speed_mm_s"))
+  if (server.hasArg("trigger_feed_s"))
   {
-    float v = server.arg("feed_speed_mm_s").toFloat();
-    if (v < M2_FEED_SPEED_MM_S_MIN) v = M2_FEED_SPEED_MM_S_MIN;
-    if (v > M2_FEED_SPEED_MM_S_MAX) v = M2_FEED_SPEED_MM_S_MAX;
-    motor2FeedSpeedMmS = v;
+    float v = server.arg("trigger_feed_s").toFloat();
+    applyTriggerFeedSec(v);
   }
   if (server.hasArg("holgura_helper_rpm"))
   {
@@ -2269,8 +2216,6 @@ void handleMotor2()
     if (v > M2_HOLGURA_FAULT_SEC_MAX) v = M2_HOLGURA_FAULT_SEC_MAX;
     holguraFaultSec = v;
   }
-  // trigger_feed_s ya no es editable: se recalcula siempre.
-  recalculateTriggerFeedSec();
 
   holguraFilterReset();
 
@@ -2604,12 +2549,6 @@ static String peerStatusJson(const char* type)
   jsonAppendFloat(j, (float)holguraHelperSec, 2);
   j += ",\"holguraHelperAbsentMs\":";
   j += (uint32_t)holguraHelperAbsentMs;
-  j += ",\"pieceLengthMm\":";
-  jsonAppendFloat(j, (float)motor2PieceLengthMm, 1);
-  j += ",\"feedSpeedMmS\":";
-  jsonAppendFloat(j, (float)motor2FeedSpeedMmS, 1);
-  j += ",\"safetyFactor\":";
-  jsonAppendFloat(j, (float)M2_SAFETY_FACTOR, 3);
   j += ",\"triggerFeedS\":";
   jsonAppendFloat(j, motor2TriggerFeedSec, 2);
   j += ",\"autoRpm\":";
@@ -2856,15 +2795,15 @@ static bool peerDoCmd(const String& cmd, const String& val, int id)
       DBG_PRINTF("In process: %s\n", on ? "ON" : "OFF");
     if (!on)
     {
-      // OFF (o re-OFF del TCM): cortar fill/servo/DeReeler ya.
-      // No reabrir fillUntilReady — eso vaciaba el rollo si Buffer Full no leía OK
-      // y hacía que Stop/timeout no pararan el movimiento.
+      // OFF: cortar fill/servo/DeReeler. Timed feed (Tfeed/helper) sigue hasta su tiempo
+      // — mismo criterio que Buffer Full: no cortar por fin de ciclo / In process OFF.
       clearFillUntilReady("inProcess-off");
       if (!idleMode && !refillOverrideActive())
       {
         if (fabsf(commandedRpm) > 0.01f)
           motorRun(0.0f);
-        motor2AbortRequested = true;
+        if (motor2Phase != M2_PHASE_TIMED_FEED)
+          motor2AbortRequested = true;
         if (autoEnabled && systemFault == FAULT_NONE)
           autoState = AUTO_HOME_HOLD;
         syncServoToAutoState();
@@ -2897,13 +2836,16 @@ static bool peerDoCmd(const String& cmd, const String& val, int id)
     ok = true;
   }
   else if (cmd == "setHolguraExtra" || cmd == "setHolguraFault" || cmd == "setHolguraFaultS"
-           || cmd == "setSafetyFactor" || cmd == "setDereelerLead" || cmd == "setDereelerLeadMs"
+           || cmd == "setDereelerLead" || cmd == "setDereelerLeadMs"
            || cmd == "setTriggerFeed" || cmd == "setTriggerCfg"
            || cmd == "setHolguraHelper" || cmd == "setHolguraHelperRpm"
            || cmd == "setHolguraHelperS" || cmd == "setHolguraHelperAbsentMs")
   {
-    if (cmd == "setSafetyFactor" || cmd == "setTriggerFeed" || cmd == "setTriggerCfg")
-      recalculateTriggerFeedSec();
+    if (cmd == "setTriggerFeed" || cmd == "setTriggerCfg")
+    {
+      applyTriggerFeedSec(val.toFloat());
+      saveSettingsNow = true;
+    }
     if (cmd == "setHolguraFault" || cmd == "setHolguraFaultS")
     {
       float v = val.toFloat();
@@ -2980,34 +2922,12 @@ static bool peerDoCmd(const String& cmd, const String& val, int id)
       }
       saveSettingsNow = true;
     }
-    else
-      saveSettingsNow = (cmd == "setTriggerFeed" || cmd == "setTriggerCfg");
-    ok = true;
-  }
-  else if (cmd == "setPieceLength" || cmd == "setPieceLengthMm")
-  {
-    float v = val.toFloat();
-    if (v < 0.0f) v = 0.0f;
-    if (v > 60000.0f) v = 60000.0f;
-    motor2PieceLengthMm = v;
-    recalculateTriggerFeedSec();
-    saveSettingsNow = true;
-    ok = true;
-  }
-  else if (cmd == "setFeedSpeed" || cmd == "setFeedSpeedMmS")
-  {
-    float v = val.toFloat();
-    if (v < M2_FEED_SPEED_MM_S_MIN) v = M2_FEED_SPEED_MM_S_MIN;
-    if (v > M2_FEED_SPEED_MM_S_MAX) v = M2_FEED_SPEED_MM_S_MAX;
-    motor2FeedSpeedMmS = v;
-    recalculateTriggerFeedSec();
-    saveSettingsNow = true;
     ok = true;
   }
   else if (cmd == "setAllCfg" || cmd == "applyAllCfg")
   {
     // CSV: autoRpm,reverse,servo,m2Rpm,tensCd,tensFault,holguraExtra,triggerFeed[,dereelerLeadMs]
-    // tensFault / holguraExtra / triggerFeed / dereelerLead: fijos o ignorados.
+    // tensFault / holguraExtra / dereelerLead: fijos o ignorados.
     float parts[9];
     int n = 0;
     int start = 0;
@@ -3026,7 +2946,7 @@ static bool peerDoCmd(const String& cmd, const String& val, int id)
       applyServoActivePwmUs((uint16_t)parts[2]);
       motor2RpmSetting = constrain(parts[3], MOTOR_RPM_MIN, MOTOR_RPM_MAX);
       tensionCooldownSec = constrain(parts[4], TENSION_COOLDOWN_MIN, TENSION_COOLDOWN_MAX);
-      recalculateTriggerFeedSec();
+      applyTriggerFeedSec(parts[7]);
       if (autoEnabled) syncServoToAutoState();
       if (cmd == "setAllCfg")
         saveSettingsNow = true;
@@ -3230,13 +3150,14 @@ static void peerService()
       if (tcmInProcess)
       {
         tcmInProcess = false;
-        // Sin TCP: parar ya (no seguir rellenando a ciegas — vaciaba el rollo).
+        // Sin TCP: parar DeReeler/fill; timed feed en curso termina su tiempo.
         clearFillUntilReady("tcp-off");
         if (!refillOverrideActive())
         {
           if (fabsf(commandedRpm) > 0.01f)
             motorRun(0.0f);
-          motor2AbortRequested = true;
+          if (motor2Phase != M2_PHASE_TIMED_FEED)
+            motor2AbortRequested = true;
           if (autoEnabled && systemFault == FAULT_NONE)
             autoState = AUTO_HOME_HOLD;
           syncServoToAutoState();

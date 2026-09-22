@@ -39,7 +39,7 @@ const PF_SENSOR_IDS: Record<string, string> = {
 let logCounter = 0;
 
 function parseLogLine(line: string, module: LogEntry['module']): LogEntry {
-  const match = line.match(/^\[(\d{2}:\d{2}:\d{2})\]\s*(.*)$/);
+  const match = line.match(/^\[(\d{2}:\d{2}:\d{2}(?:\.\d{3})?)\]\s*(.*)$/);
   const timestamp = match?.[1] ?? '';
   const message = match?.[2] ?? line;
   const codeMatch = message.match(/\(0x[0-9A-Fa-f]+\)/);
@@ -148,14 +148,26 @@ export function mapMachineState(
           ? Math.max(snap.progress, Math.round((piecesDone / Math.max(lotTarget, 1)) * 100))
           : snap.progress,
     cycleTimeSec: cycle.elapsedSec ?? 0,
+    lastPieceSec: cycle.lastPieceSec ?? 0,
+    avgPieceSec: cycle.avgPieceSec ?? 0,
     // Piezas terminadas (no el rep en curso — eso confundía 1/15 al empezar)
     piecesCount: cycle.completed ? lotTarget : piecesDone,
     targetPieces,
     cycleCompleted: cycle.completed ?? false,
     safetyExhaust: !!snap.motion.safetyExhaust,
     errorActive,
-    fault: errorActive ? snap.error?.ui : cycle.fault || undefined,
-    faultClass: snap.error?.class || cycle.faultClass || undefined,
+    // Solo el latch HMI (o fault de ciclo activo). Tras Res, cycle.fault residual
+    // no debe dejar ERROR en barra si el flip-flop ya está limpio.
+    fault: errorActive
+      ? snap.error?.ui
+      : cycle.active
+        ? cycle.fault || undefined
+        : undefined,
+    faultClass: errorActive
+      ? snap.error?.class || undefined
+      : cycle.active
+        ? cycle.faultClass || undefined
+        : undefined,
     faultCode: errorActive ? snap.error?.code : undefined,
     faultModule: faultModule || undefined,
     faultDescription: errorActive ? snap.error?.description : undefined,

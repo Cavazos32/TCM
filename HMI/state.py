@@ -131,6 +131,8 @@ MODELS_PATH = HMI_ROOT / "config" / "models.json"
 MAX_LOG_LINES = 400
 # No latchear E065–E067 en microcortes WiFi; solo si el enlace sigue caído.
 LINK_DOWN_CONFIRM_SEC = 8.0
+# Tras Set EXXX: no Res observacional inmediato (esclavo puede ir Idle→Error).
+AUTO_RES_MIN_AGE_SEC = 2.0
 # Arranque ASDA: el MCU puede estar arriba antes que la fuente del drive.
 # Sonda = ack del propio Servo ON (0x04): si el ASDA no está alimentado, el
 # write Modbus falla y Motion contesta ok:false. Se reintenta sin tope hasta
@@ -229,7 +231,8 @@ _PF_CLASS_RANK = {CLASS_C1: 0, CLASS_C2: 1, CLASS_C3: 2}
 
 
 def _ts() -> str:
-    return datetime.now().strftime("%H:%M:%S")
+    # HH:MM:SS.mmm (strftime %f = microsegundos)
+    return datetime.now().strftime("%H:%M:%S.%f")[:-3]
 
 
 def _append_log(log: deque[str], text: str) -> None:
@@ -449,6 +452,8 @@ class HmiState:
     def snapshot(self) -> dict[str, Any]:
         cycle_snap = self._cycle.snapshot()
         with self._lock:
+            # Res observacional sobre caché (sin preguntar al esclavo).
+            self._try_auto_clear_error_if_healthy()
             progress = self._cycle_live_progress(cycle_snap)
             resume = (
                 self._stopped_pending_resume
@@ -623,6 +628,18 @@ class HmiState:
             if cached is None:
                 return None
             return float(cached)
+
+    def motion_laser_on(self, side: str) -> bool:
+        """True si el láser del lado detecta material (caché HMI desde Motion)."""
+        s = str(side).strip().upper()
+        if s == "L":
+            key = "laserL"
+        elif s == "R":
+            key = "laserR"
+        else:
+            return False
+        with self._lock:
+            return bool(self._motion.get(key))
 
     def refresh_asda_position_mm(self) -> float | None:
         """Posición ASDA live vía HTTP /api/status; actualiza caché.
@@ -1279,6 +1296,13 @@ class HmiState:
     def cmd_start(self, qty: int | None = None) -> dict:
         """Start máquina (0x040): lote Cycle con mm/qty del modelo."""
         with self._lock:
+            latch = self._error_policy.latch
+            if latch.active:
+                ui = latch.ui_text or latch.code or "error activo"
+                return {
+                    "ok": False,
+                    "error": f"Error activo — {ui} (Reset antes de Start)",
+                }
             mm, rpm = self._mm, self._rpm
             model = self._models[self._selected_model_idx] if self._models else {}
             model_qty = int(model.get("qty", model.get("cantidad", 1)))
@@ -1368,6 +1392,9 @@ class HmiState:
             "text": "Home máquina OK" if ok else "Home máquina con fallos",
             "kind": "ok" if ok else "error",
         }
+        if ok:
+            with self._lock:
+                self._try_auto_clear_error_if_healthy()
         self._notify()
         return {
             "ok": ok,
@@ -1423,6 +1450,9 @@ class HmiState:
             old = self._error_policy.clear()
             soft = self._cycle.clear_error_for_resume(recovery)
             finishing = bool(soft.get("finishingPiece"))
+            # Status Motion puede seguir en kind=error tras soft-Res.
+            if old.active and "motion" in (old.module or "").lower():
+                self._set_motion_status("Errores limpiados (0x016)", "ok")
             self._broadcast_machine_state(MACH_RESET)
             if finishing and not soft.get("paused"):
                 self._broadcast_machine_state(MACH_BUSY)
@@ -1461,6 +1491,11 @@ class HmiState:
         with self._lock:
             # Indicador Exhaust baja con Res; si GPIO sigue activo, status lo re-Set.
             self._motion["safetyExhaust"] = False
+            if old.active and "motion" in (old.module or "").lower():
+                self._motion["status"] = {
+                    "text": "Errores limpiados (0x016)",
+                    "kind": "ok",
+                }
         cycle_res = self._cycle.request_reset()
         if not cycle_res.get("ok", False):
             err = str(cycle_res.get("error") or "Reset de ciclo rechazado")
@@ -2138,13 +2173,114 @@ class HmiState:
         latch = self._error_policy.latch
         if latch.active and latch.code == code:
             self._error_policy.clear()
+            try:
+                self._cycle.clear_fault_mirror()
+            except Exception:
+                pass
             _append_log(self._main_log, f"Enlace recuperado · {code}")
 
-    def _clear_latch_for_module(self, source: str) -> bool:
+    def _motion_is_healthy(self) -> bool:
+        """Motion OK en caché HMI: enlace up y no ErrorState."""
+        if not self._motion.get("connected"):
+            return False
+        b = self._last_state_byte
+        if b is None:
+            return False
+        return b != TX_ERROR
+
+    def _plc_is_healthy(self) -> bool:
+        """PLC OK: enlace up, no ErrorState, sin sensor de seguridad activo."""
+        if not self._plc.get("connected"):
+            return False
+        b = self._plc.get("last_state_byte")
+        if b is None or b == TX_PLC_ERROR:
+            return False
+        for v in self._plc.get("valves", {}).values():
+            if isinstance(v, dict) and v.get("error"):
+                return False
+        return True
+
+    def _pf_is_healthy(self) -> bool:
+        """PreFeeder OK: enlace up, no ErrorState ni EXXX activo en caché."""
+        if not self._pf.get("connected"):
+            return False
+        if self._pf.get("last_state_byte") == TX_PF_ERROR:
+            return False
+        if self._pf_primary_active_error_byte() is not None:
+            return False
+        return True
+
+    def _latch_source_is_healthy(self) -> bool:
+        """¿El módulo (o máquina) del EXXX latcheado ya está OK en caché?"""
+        latch = self._error_policy.latch
+        if not latch.active:
+            return True
+        code = latch.code or ""
+        # E06x: solo al recuperar socket (_clear_link_error_if).
+        if code in ("E065", "E066", "E067"):
+            return False
+        mod = (latch.module or "").lower()
+        if "motion" in mod:
+            return self._motion_is_healthy()
+        if "plc" in mod:
+            return self._plc_is_healthy()
+        if "pre" in mod or "feeder" in mod:
+            return self._pf_is_healthy()
+        # Andon / máquina / desconocido: todos los nodos conectados sanos.
+        if self._motion.get("connected") and not self._motion_is_healthy():
+            return False
+        if self._plc.get("connected") and not self._plc_is_healthy():
+            return False
+        if self._pf.get("connected") and not self._pf_is_healthy():
+            return False
+        return True
+
+    def _try_auto_clear_error_if_healthy(self) -> bool:
+        """Res observacional: limpia latch HMI si la causa ya no existe en módulo.
+
+        No manda Reset/All Off a esclavos (preserva setup). Con ciclo activo
+        (C2/C3 Pause u otro) el Res sigue siendo explícito.
+        Espera AUTO_RES_MIN_AGE_SEC tras el Set para no ganar la carrera
+        Idle→ErrorState del esclavo.
+        """
+        latch = self._error_policy.latch
+        if not latch.active:
+            return False
+        try:
+            if self._cycle.is_active():
+                return False
+        except Exception:
+            return False
+        set_at = float(getattr(latch, "set_at", 0) or 0)
+        if set_at and (time.monotonic() - set_at) < AUTO_RES_MIN_AGE_SEC:
+            return False
+        if not self._latch_source_is_healthy():
+            return False
+        mod = (latch.module or "").lower()
+        if "motion" in mod:
+            return self._clear_latch_for_module("motion", auto=True)
+        if "plc" in mod:
+            return self._clear_latch_for_module("plc", auto=True)
+        if "pre" in mod or "feeder" in mod:
+            return self._clear_latch_for_module("prefeeder", auto=True)
+        old = self._error_policy.clear()
+        try:
+            self._cycle.clear_fault_mirror()
+        except Exception:
+            pass
+        ui = old.ui_text or old.code or "error"
+        _append_log(self._main_log, f"Res auto · {ui} (máquina/módulos OK)")
+        self._banner = {"text": "Listo.", "kind": "ok"}
+        self._broadcast_machine_state(MACH_RESET)
+        self._broadcast_machine_state(MACH_IDLE)
+        return True
+
+    def _clear_latch_for_module(self, source: str, *, auto: bool = False) -> bool:
         """Res del flip-flop HMI si el EXXX activo pertenece a ese módulo.
 
         Reset local del módulo (Module Controls / pestaña) deja el esclavo en OK
         pero sin esto el HMI seguía en ERROR aunque Motion/PLC/PF digan bien.
+        auto=True: Res observacional (módulo ya OK; no implica Reset TCP).
         """
         latch = self._error_policy.latch
         if not latch.active:
@@ -2162,10 +2298,34 @@ class HmiState:
         if src not in ("motion", "plc", "prefeeder", "pre-feeder", "pf"):
             return False
         old = self._error_policy.clear()
+        # Siempre limpiar espejo del ciclo (también con lote ya terminado).
+        try:
+            self._cycle.clear_fault_mirror()
+        except Exception:
+            pass
         ui = old.ui_text or old.code or source
-        _append_log(self._main_log, f"Res · {ui} (reset módulo {source})")
-        self._banner = {"text": "Errores reseteados", "kind": "ok"}
-        if src in ("prefeeder", "pre-feeder", "pf"):
+        if auto:
+            _append_log(self._main_log, f"Res auto · {ui} ({source} OK)")
+            self._banner = {"text": "Listo.", "kind": "ok"}
+        else:
+            _append_log(self._main_log, f"Res · {ui} (reset módulo {source})")
+            self._banner = {"text": "Errores reseteados", "kind": "ok"}
+        if src == "motion":
+            if auto and self._last_state_byte in (TX_IDLE, TX_RETURN):
+                text = STATE_TEXT.get(
+                    self._last_state_byte, "Motion en espera (0x010)"
+                )
+                self._set_motion_status(text, "ok")
+            else:
+                self._set_motion_status("Errores limpiados (0x016)", "ok")
+        elif src == "plc":
+            if auto:
+                b = self._plc.get("last_state_byte")
+                text = PLC_STATE_TEXT.get(b, "PLC en espera (0x025)") if b else "Listo."
+                self._set_plc_status(text, "ok")
+            else:
+                self._set_plc_status("Errores reseteados", "ok")
+        elif src in ("prefeeder", "pre-feeder", "pf"):
             self._refresh_pf_status_from_state()
         # Si el lote sigue vivo (C2/C3 Pause): soft clear, no mandar Idle a Andon.
         soft = False
@@ -2550,6 +2710,9 @@ class HmiState:
 
     def _apply_state_byte(self, byte_code: int) -> None:
         if byte_code == self._last_state_byte:
+            # Mismo Idle/OK repetido: aún así Res observacional si EXXX quedó colgado.
+            if byte_code != TX_ERROR:
+                self._try_auto_clear_error_if_healthy()
             return
         prev = self._last_state_byte
         self._last_state_byte = byte_code
@@ -2558,7 +2721,9 @@ class HmiState:
             # Módulo salió de ErrorState → Res del EXXX Motion en HMI (evita
             # ERROR global con Motion en espera / OK).
             if prev == TX_ERROR:
-                self._clear_latch_for_module("motion")
+                self._clear_latch_for_module("motion", auto=True)
+            else:
+                self._try_auto_clear_error_if_healthy()
         text = STATE_TEXT.get(byte_code, f"Estado 0x{byte_code:02X}")
         kind = "info"
         if byte_code == TX_ERROR:
@@ -2569,6 +2734,7 @@ class HmiState:
             kind = "warn"
             self._stopped_pending_resume = True
             text = f"{text} — reanudar disponible"
+            self._try_auto_clear_error_if_healthy()
         elif byte_code == TX_RETURN:
             kind = "ok"
             self._stopped_pending_resume = False
@@ -2581,6 +2747,7 @@ class HmiState:
             lat_mark("9", source="motion", state="BUSY")
             if self._move_target_mm is not None and self._progress < 5:
                 self._progress = 5
+            self._try_auto_clear_error_if_healthy()
         self._set_banner(text, kind)
         self._set_motion_status(text, kind)
         # Arranque ASDA solo cuando Motion ya reportó Init/Idle (no al abrir socket).
@@ -2844,12 +3011,23 @@ class HmiState:
                 kind = "info"
                 if byte_code == TX_PLC_ERROR:
                     kind = "error"
+                    # No pisar EXXX (p.ej. E047) con "Error (0x027)" genérico.
+                    latch = self._error_policy.latch
+                    if (
+                        latch.active
+                        and latch.ui_text
+                        and "plc" in (latch.module or "").lower()
+                    ):
+                        text = latch.ui_text
                 elif byte_code == TX_PLC_STOP:
                     kind = "warn"
                 elif byte_code in (TX_PLC_IDLE, TX_PLC_RETURN):
-                    kind = "ok"
+                    # Res observacional (incl. C1) si PLC ya no está en ErrorState.
                     if prev == TX_PLC_ERROR:
-                        self._clear_latch_for_module("plc")
+                        self._clear_latch_for_module("plc", auto=True)
+                    else:
+                        self._try_auto_clear_error_if_healthy()
+                    kind = "ok"
                 self._set_plc_status(text, kind)
                 return True
             if mtype == "event":
@@ -3060,7 +3238,7 @@ class HmiState:
             and byte_code in _PF_CLEAR_LATCH_STATES
         ):
             # Auto ON → Busy (no Idle): antes solo Idle/Return hacían Res.
-            self._clear_latch_for_module("prefeeder")
+            self._clear_latch_for_module("prefeeder", auto=True)
         self._set_pf_status(text, kind)
         return True
 
@@ -3090,7 +3268,10 @@ class HmiState:
             return False
         if self._pf_master_has_fault(msg):
             return False
-        return self._clear_latch_for_module("prefeeder")
+        # Con lote vivo: Res de módulo (puede soft-Res C2/C3). Sin lote: Res observacional.
+        if self._cycle.is_active():
+            return self._clear_latch_for_module("prefeeder", auto=True)
+        return self._try_auto_clear_error_if_healthy()
 
     def _pf_try_latch_once(self) -> bool:
         """Un solo Set/log/Andon por fallo PF. Sensores viven en el panel HMI."""
