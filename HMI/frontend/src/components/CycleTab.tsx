@@ -33,13 +33,16 @@ export const DEFAULT_CYCLE_CONFIG: CycleConfig = {
   dwellAtDestMs: 100,
   depositBatchSize: 50,
   depositExtraMm: 30,
+  depositStackGapMm: 20,
+  depositMaxTravelMm: 1500,
   gripperClearanceMm: 10,
   cutOffsetMm: 0,
   wipBlowerInicioOffsetMm: 8,
-  motionWaitTimeoutS: 120,
-  feedWaitTimeoutS: 30,
-  pfReadyTimeoutS: 10,
-  feedSides: 'L',
+  motionWaitTimeoutS: 25,
+  feedWaitTimeoutS: 15,
+  pfReadyTimeoutS: 15,
+  pieceWatchTimeoutS: 20,
+  feedSides: 'LR',
   refillMm: 55,
   refillAsdaMm: -300,
 };
@@ -150,6 +153,8 @@ interface CycleTabProps {
   onRefill?: () => void;
   onRefillConfirm?: (ok: boolean) => void;
   onRefillRetry?: () => void;
+  onRefillLongFeed?: () => void;
+  onRecoveryReview?: (ok: boolean) => void;
 }
 
 export const CycleTab: React.FC<CycleTabProps> = ({
@@ -170,8 +175,86 @@ export const CycleTab: React.FC<CycleTabProps> = ({
   onRefill,
   onRefillConfirm,
   onRefillRetry,
+  onRefillLongFeed,
+  onRecoveryReview,
 }) => {
   const { t } = useApp();
+  const recoveryStage =
+    machineState.recoveryPrompt ||
+    (machineState.recoveryAfterError || machineState.e050Lot
+      ? machineState.refillPrompt ||
+        (machineState.refillActive ? 'working' : '')
+      : '');
+  const showRecoveryTrack = !!recoveryStage;
+  const showManualRefill =
+    !machineState.recoveryAfterError &&
+    !machineState.e050Lot &&
+    !!machineState.refillActive &&
+    !!machineState.refillPrompt &&
+    !!onRefillConfirm;
+  const e050Lot = !!machineState.e050Lot;
+  const skipCut = !!machineState.refillSkipCut;
+  const recoveryTitle =
+    recoveryStage === 'e050_insufficient'
+      ? t('e050_insufficient_title')
+      : recoveryStage === 'e050_finish_process'
+        ? t('e050_finish_title')
+        : recoveryStage === 'e050_empty_material'
+          ? t('e050_empty_title')
+          : recoveryStage === 'review_piece'
+            ? t('recovery_review_title')
+            : recoveryStage === 'continue_cycle'
+              ? t('recovery_continue_title')
+              : recoveryStage === 'after_cut'
+                ? t('refill_confirm_title_cut')
+                : recoveryStage === 'working'
+                  ? t('refill_confirm_title_working')
+                  : t('refill_confirm_title_feed');
+  const recoveryHint =
+    recoveryStage === 'e050_insufficient'
+      ? t('e050_insufficient_hint')
+      : recoveryStage === 'e050_finish_process'
+        ? t('e050_finish_hint')
+        : recoveryStage === 'e050_empty_material'
+          ? t('e050_empty_hint')
+          : recoveryStage === 'review_piece'
+            ? t('recovery_review_hint')
+            : recoveryStage === 'continue_cycle'
+              ? t('recovery_continue_hint')
+              : recoveryStage === 'after_cut'
+                ? t('refill_confirm_hint_cut')
+                : recoveryStage === 'working'
+                  ? t('refill_confirm_hint_working')
+                  : skipCut
+                    ? t('refill_confirm_hint_feed_nocut')
+                    : t('refill_confirm_hint_feed');
+  const recoverTitle =
+    e050Lot
+      ? t('lot_recover_title_e050')
+      : (machineState.faultClass || '').toUpperCase() === 'C1'
+        ? t('lot_recover_title_c1')
+        : t('lot_recover_title_c2');
+  const recoverHintIdle = e050Lot
+    ? machineState.fault
+      ? t('lot_recover_hint_e050_reset')
+      : t('lot_recover_hint_e050_resume')
+    : (machineState.faultClass || '').toUpperCase() === 'C1'
+      ? t('lot_recover_hint_c1')
+      : machineState.fault
+        ? t('lot_recover_hint_reset')
+        : t('lot_recover_hint_resume');
+  const recoverSteps = e050Lot
+    ? `${t('lot_recover_step_ask')} → ${t('lot_recover_step_reset')} → ${t('lot_recover_step_resume')}`
+    : (machineState.faultClass || '').toUpperCase() === 'C1'
+      ? `${t('lot_recover_step_reset')} → ${t('lot_recover_step_home')} → ${t('lot_recover_step_start')}`
+      : `${t('lot_recover_step_reset')} → ${t('lot_recover_step_resume')} → ${t('lot_recover_step_piece')} → ${t('lot_recover_step_review')} → ${t('lot_recover_step_purge')} → ${t('lot_recover_step_continue')}`;
+  const e050Ask =
+    recoveryStage === 'e050_insufficient' ||
+    recoveryStage === 'e050_finish_process' ||
+    recoveryStage === 'e050_empty_material';
+  const nextFeedLabel = skipCut
+    ? t('btn_refill_confirm_continue')
+    : t('btn_refill_confirm_next_cut');
 
   const [config, setConfig] = useState<CycleConfig>(cycleConfig || DEFAULT_CYCLE_CONFIG);
   const [configDirty, setConfigDirty] = useState(false);
@@ -255,11 +338,21 @@ export const CycleTab: React.FC<CycleTabProps> = ({
 
   const currentRunningStep = cycleActive ? cycleStep : activeStepNum;
 
+  const workBlocked = !!(
+    machineState.errorActive ||
+    machineState.fault ||
+    machineState.workBlocked
+  );
   /** Pausado en paso a paso → Resume ejecuta el siguiente paso real. */
   const showStepNext =
-    stepModeActive && cycleActive && machineState.isPaused && resumeEnabled;
+    stepModeActive &&
+    cycleActive &&
+    machineState.isPaused &&
+    resumeEnabled &&
+    !workBlocked;
   /** Idle en paso a paso → Siguiente arranca el lote (no solo cambia el highlight). */
-  const canStartStepRun = stepModeActive && !cycleActive && Boolean(onStart);
+  const canStartStepRun =
+    stepModeActive && !cycleActive && Boolean(onStart) && !workBlocked;
   const canExecuteNext = showStepNext || canStartStepRun;
 
   const handleStartStepMode = () => {
@@ -474,9 +567,13 @@ export const CycleTab: React.FC<CycleTabProps> = ({
             id="btn-cycle-refill"
             type="button"
             onClick={onRefill}
-            disabled={machineState.isRunning || machineState.refillActive}
+            disabled={
+              machineState.isRunning ||
+              machineState.refillActive
+            }
             className={`flex items-center gap-1 rounded-lg border px-3 py-1.5 text-xs font-bold ${
-              machineState.isRunning || machineState.refillActive
+              machineState.isRunning ||
+              machineState.refillActive
                 ? 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed'
                 : 'border-sky-300 dark:border-sky-800 bg-sky-50 dark:bg-sky-950/40 text-sky-800 dark:text-sky-200'
             }`}
@@ -487,7 +584,114 @@ export const CycleTab: React.FC<CycleTabProps> = ({
         )}
       </div>
 
-      {machineState.refillActive && machineState.refillPrompt && onRefillConfirm && (
+      {(showRecoveryTrack ||
+        machineState.fault ||
+        machineState.recoveryAfterError ||
+        e050Lot) && (
+        <div className="flex flex-wrap items-center gap-3 rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/50 px-4 py-3 shadow-2xs">
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-bold text-amber-950 dark:text-amber-100">
+              {recoverTitle}
+              {showRecoveryTrack ? ` · ${recoveryTitle}` : ''}
+            </p>
+            <p className="text-[11px] text-amber-900/80 dark:text-amber-200/80 mt-0.5">
+              {showRecoveryTrack ? recoveryHint : recoverHintIdle}
+            </p>
+            <p className="mt-1 font-mono text-[10px] text-amber-800 dark:text-amber-200">
+              {recoverSteps}
+            </p>
+          </div>
+          {recoveryStage === 'after_feed' && onRefillRetry && (
+            <button
+              id="btn-cycle-recovery-retry"
+              type="button"
+              onClick={onRefillRetry}
+              disabled={!machineState.refillAwaitingConfirm}
+              className="flex items-center gap-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              {t('btn_refill_confirm_retry')}
+            </button>
+          )}
+          {recoveryStage === 'after_feed' && onRefillLongFeed && (
+            <button
+              id="btn-cycle-recovery-long"
+              type="button"
+              onClick={onRefillLongFeed}
+              disabled={!machineState.refillAwaitingConfirm}
+              className="flex items-center gap-1.5 rounded-lg bg-sky-600 hover:bg-sky-700 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40"
+            >
+              <Footprints className="h-3.5 w-3.5" />
+              {t('btn_refill_confirm_long')}
+            </button>
+          )}
+          {recoveryStage === 'after_feed' && onRefillConfirm && (
+            <button
+              id="btn-cycle-recovery-next-cut"
+              type="button"
+              onClick={() => onRefillConfirm(true)}
+              disabled={!machineState.refillAwaitingConfirm}
+              className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40"
+            >
+              <Check className="h-3.5 w-3.5" />
+              {nextFeedLabel}
+            </button>
+          )}
+          {recoveryStage === 'after_cut' && onRefillConfirm && (
+            <button
+              id="btn-cycle-recovery-asda-0"
+              type="button"
+              onClick={() => onRefillConfirm(true)}
+              disabled={!machineState.refillAwaitingConfirm}
+              className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40"
+            >
+              <Check className="h-3.5 w-3.5" />
+              {t('btn_refill_confirm_yes')}
+            </button>
+          )}
+          {e050Ask && onRecoveryReview && (
+            <>
+              <button
+                id="btn-cycle-e050-yes"
+                type="button"
+                onClick={() => onRecoveryReview(true)}
+                disabled={!machineState.recoveryAwaitingConfirm}
+                className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40"
+              >
+                <Check className="h-3.5 w-3.5" />
+                {t('btn_e050_yes')}
+              </button>
+              <button
+                id="btn-cycle-e050-omit"
+                type="button"
+                onClick={() => onRecoveryReview(false)}
+                disabled={!machineState.recoveryAwaitingConfirm}
+                className="flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-200 disabled:opacity-40"
+              >
+                <X className="h-3.5 w-3.5" />
+                {t('btn_e050_omit')}
+              </button>
+            </>
+          )}
+          {(recoveryStage === 'review_piece' ||
+            recoveryStage === 'continue_cycle') &&
+            onRecoveryReview && (
+            <button
+              id="btn-cycle-recovery-review-ok"
+              type="button"
+              onClick={() => onRecoveryReview(true)}
+              disabled={!machineState.recoveryAwaitingConfirm}
+              className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40"
+            >
+              <Check className="h-3.5 w-3.5" />
+              {recoveryStage === 'continue_cycle'
+                ? t('btn_recovery_continue')
+                : t('btn_recovery_review_ok')}
+            </button>
+          )}
+        </div>
+      )}
+      {showManualRefill && (
         <div className="flex flex-wrap items-center gap-3 rounded-xl border border-sky-300 dark:border-sky-700 bg-sky-50 dark:bg-sky-950/50 px-4 py-3 shadow-2xs">
           <div className="min-w-0 flex-1">
             <p className="text-xs font-bold text-sky-900 dark:text-sky-100">
@@ -515,6 +719,18 @@ export const CycleTab: React.FC<CycleTabProps> = ({
             >
               <RotateCcw className="h-3.5 w-3.5" />
               {t('btn_refill_confirm_retry')}
+            </button>
+          )}
+          {machineState.refillPrompt === 'after_feed' && onRefillLongFeed && (
+            <button
+              id="btn-cycle-refill-long"
+              type="button"
+              onClick={onRefillLongFeed}
+              disabled={!machineState.refillAwaitingConfirm}
+              className="flex items-center gap-1.5 rounded-lg bg-sky-600 hover:bg-sky-700 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Footprints className="h-3.5 w-3.5" />
+              {t('btn_refill_confirm_long')}
             </button>
           )}
           {machineState.refillPrompt !== 'working' && (
@@ -979,6 +1195,38 @@ export const CycleTab: React.FC<CycleTabProps> = ({
 
               <div className="space-y-1.5">
                 <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                  {t('cfg_deposito_stack_gap')}
+                </label>
+                <input
+                  type="number"
+                  step={0.1}
+                  min={0}
+                  value={config.depositStackGapMm ?? 20}
+                  onChange={(e) =>
+                    updateConfigField('depositStackGapMm', Number(e.target.value))
+                  }
+                  className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 focus:border-teal-500 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                  {t('cfg_deposito_max_travel')}
+                </label>
+                <input
+                  type="number"
+                  step={1}
+                  min={1}
+                  value={config.depositMaxTravelMm ?? 1500}
+                  onChange={(e) =>
+                    updateConfigField('depositMaxTravelMm', Number(e.target.value))
+                  }
+                  className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 focus:border-teal-500 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
                   {t('cfg_gripper_clearance')}
                 </label>
                 <input
@@ -1038,7 +1286,19 @@ export const CycleTab: React.FC<CycleTabProps> = ({
               </p>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                  {t('cfg_timeout_piece')}
+                </label>
+                <input
+                  type="number"
+                  min={3}
+                  value={config.pieceWatchTimeoutS ?? 20}
+                  onChange={(e) => updateConfigField('pieceWatchTimeoutS', Number(e.target.value))}
+                  className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 focus:border-teal-500 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
+                />
+              </div>
               <div className="space-y-1.5">
                 <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
                   {t('cfg_timeout_motion')}

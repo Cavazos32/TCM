@@ -1,5 +1,8 @@
 export type TabType = 'maquina' | 'cycle' | 'motion' | 'plc' | 'prefeeder' | 'andon';
 
+/** Purga: feed largo desde el prompt after_feed (skipValidate en Motion). */
+export const REFILL_LONG_FEED_MM = 100;
+
 export interface CycleConfig {
   holderOnMs: number;
   holderOpenMs: number;
@@ -12,6 +15,10 @@ export interface CycleConfig {
   dwellAtDestMs: number;
   depositBatchSize: number;
   depositExtraMm: number;
+  /** Gap entre batches: depósito(n) = depósito(n−1) + |L| + gap. */
+  depositStackGapMm?: number;
+  /** Tope carrera ASDA (mm). Start rechaza si último batch + despeje lo supera. */
+  depositMaxTravelMm?: number;
   /** Avance corto ASDA tras abrir pinzas; entra en ref WIP soplo fin. */
   gripperClearanceMm?: number;
   cutOffsetMm?: number;
@@ -20,9 +27,11 @@ export interface CycleConfig {
   motionWaitTimeoutS: number;
   feedWaitTimeoutS: number;
   pfReadyTimeoutS: number;
+  /** Watchdog de pieza (s). Si no cierra (Pause excluida) → E008/E009. Join prefetch excluido. */
+  pieceWatchTimeoutS?: number;
   /** Feed / Stage2 OM: 'L' | 'R' | 'LR' */
   feedSides: 'L' | 'R' | 'LR';
-  /** Longitud de purga/refill (mm). Motion FEED físico = 55. */
+  /** Longitud de purga/refill (mm). Retry = este valor; Long feed = REFILL_LONG_FEED_MM. */
   refillMm?: number;
   /** Posición park ASDA antes del refill (convención firmada HMI). */
   refillAsdaMm?: number;
@@ -85,6 +94,8 @@ export interface MachineState {
   mm: number;
   rpm: number;
   statusText: string;
+  /** Banner de máquina (info/ok/warn/error). Error de interlock no es EXXX. */
+  statusKind?: 'info' | 'ok' | 'warn' | 'error';
   isRunning: boolean;
   isPaused: boolean;
   cycleActive: boolean;
@@ -96,8 +107,14 @@ export interface MachineState {
   refillAwaitingConfirm: boolean;
   /** working | after_feed | after_cut | "" */
   refillPrompt: string;
+  /** review_piece | continue_cycle | e050_* | "" */
+  recoveryPrompt: string;
+  recoveryAwaitingConfirm: boolean;
+  recoveryAfterError: boolean;
+  e050Lot: boolean;
+  e050FinishPiece: boolean;
+  refillSkipCut: boolean;
   stepByStep: boolean;
-  trialMode: boolean;
   pauseEnabled: boolean;
   progress: number;
   cycleTimeSec: number;
@@ -116,6 +133,8 @@ export interface MachineState {
   faultModule?: string;
   faultDescription?: string;
   errorActive?: boolean;
+  /** Latch EXXX o fallo PLC (ErrorState / sensor) — bloquea Start/Refill. */
+  workBlocked?: boolean;
   /** Status del módulo del EXXX (Motion/PLC/PreFeeder). */
   faultModuleStatus?: string;
   errorNeedsConfirm?: boolean;
@@ -151,13 +170,26 @@ export interface PlcState {
   valves: ValveItem[];
 }
 
+export type PfRefillChannel = 'material' | 'dereeler' | 'servo' | 'feeder';
+
+export interface PfRefillState {
+  material: boolean;
+  dereeler: boolean;
+  servo: boolean;
+  feeder: boolean;
+}
+
 export interface PreFeederState {
   connection: ConnectionState;
   isRunning: boolean;
   statusText?: string;
   hasError?: boolean;
+  /** Materialista real del PreFeeder (idleMode L|R del HTML local). */
+  idleMode?: boolean;
   sensorsL: PreFeederSensor[];
   sensorsR: PreFeederSensor[];
+  refillL: PfRefillState;
+  refillR: PfRefillState;
 }
 
 export interface AppConfigState {

@@ -97,13 +97,6 @@ export function setCycleStepByStep(on: boolean) {
   );
 }
 
-export function setCycleTrialMode(on: boolean) {
-  return post<{ ok: boolean; trialMode?: boolean; error?: string }>(
-    '/api/cycle/trial-mode',
-    { on }
-  );
-}
-
 export function startCycleRefill(opts?: { mm?: number; asdaMm?: number }) {
   const body: Record<string, unknown> = {};
   if (opts?.mm != null) body.mm = opts.mm;
@@ -115,8 +108,14 @@ export function confirmCycleRefill(ok: boolean = true) {
   return post<{ ok: boolean; error?: string }>('/api/cycle/refill/confirm', { ok });
 }
 
-export function retryCycleRefill() {
-  return post<{ ok: boolean; error?: string }>('/api/cycle/refill/retry', {});
+export function confirmRecoveryReview(ok: boolean = true) {
+  return post<{ ok: boolean; error?: string }>('/api/cycle/recovery/review', { ok });
+}
+
+export function retryCycleRefill(opts?: { mm?: number }) {
+  const body: Record<string, unknown> = {};
+  if (opts?.mm != null) body.mm = opts.mm;
+  return post<{ ok: boolean; error?: string }>('/api/cycle/refill/retry', body);
 }
 
 export function getCycleConfig() {
@@ -183,8 +182,11 @@ export function plcAction(action: string, extra: Record<string, unknown> = {}) {
   return post('/api/plc', { action, ...extra });
 }
 
-export function prefeederAction(action: string) {
-  return post<{ ok: boolean; error?: string }>('/api/prefeeder', { action });
+export function prefeederAction(
+  action: string,
+  extra: Record<string, unknown> = {}
+) {
+  return post<{ ok: boolean; error?: string }>('/api/prefeeder', { action, ...extra });
 }
 
 export function andonAction(

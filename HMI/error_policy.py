@@ -2,13 +2,14 @@
 
 Set: llega EXXX detalle → latchea + aplica acción según clase.
 Res: Reset HMI explícito, o Res observacional (módulo ya OK + ciclo inactivo).
+No observacional: E06x (enlace) ni E068 / lote NO OK (el aborto no se borra porque PF quedó Idle).
 
 Clases (Doc/TCM - D.xlsx):
   C1 — Stop inmediato a todos; recovery: reset + validar + confirm + home
        (atajo: Res observacional si módulo OK y ciclo inactivo)
-  C2 — Pausar (no siguiente step); recovery: soft-Res + resume → desde step 0
-       (feed omitible si láser ya ON en feedSides)
-  C3 — Terminar pieza/paso en curso; recovery: soft-Res + resume → reintentar/continuar
+  C2 — Pausar (no siguiente step); recovery: Reset → Resume → terminar pieza
+       → review OK → purga → Continuar ciclo → el lote sigue (Stop = botón)
+  C3 — Igual que C2 con lote activo (Pause; no auto-termina la pieza)
 """
 
 from __future__ import annotations
@@ -139,6 +140,15 @@ class ErrorPolicy:
             "duplicate": False,
             **self.latch.snapshot(),
         }
+
+    def apply_e050_lot_branch(self) -> None:
+        """E050 + pieza/lote: no C1 confirm/home. Soft-Res + Resume."""
+        if self.latch.code != "E050":
+            return
+        self.latch.needs_confirm = False
+        self.latch.needs_home = False
+        self.latch.recovery = "e050_material"
+        self.latch.confirmed = True
 
     def confirm(self) -> bool:
         """Operador confirma ventana C1."""

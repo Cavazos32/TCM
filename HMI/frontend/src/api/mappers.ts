@@ -6,6 +6,7 @@ import type {
   LogEntry,
   MachineState,
   MotionState,
+  PfRefillState,
   PlcState,
   PreFeederState,
   PreFeederSensor,
@@ -34,6 +35,14 @@ const PF_SENSOR_IDS: Record<string, string> = {
   'Cilindro R': 'cilindro-r',
   'Manguera R': 'manguera-r',
   'Holgura R': 'holgura-r',
+};
+
+// Sensor ON = OK (igual que HTML L/R). EXXX solo con fault_active (timeout).
+const PF_OK_WHEN_ACTIVE: Record<string, number> = {
+  'Buffer Full L': 0x33,
+  'Buffer Full R': 0x2d,
+  'Holgura L': 0x38,
+  'Holgura R': 0x32,
 };
 
 let logCounter = 0;
@@ -102,6 +111,9 @@ export function mapMachineState(
     cycle.active && cycle.totalReps > 0 ? cycle.totalReps : qty;
 
   const errorActive = !!snap.error?.active;
+  const plcFault =
+    snap.plc.status?.kind === 'error' ||
+    Object.values(snap.plc.valves || {}).some((v) => v.error === true);
   const faultModule = errorActive ? snap.error?.module || '' : '';
   const modKey = faultModule.toLowerCase();
   let faultModuleStatus = '';
@@ -110,7 +122,7 @@ export function mapMachineState(
   } else if (modKey.includes('plc')) {
     faultModuleStatus = snap.plc.status?.text ?? '';
   } else if (modKey.includes('pre') || modKey.includes('feeder')) {
-    faultModuleStatus = snap.prefeeder.status?.text ?? '';
+    faultModuleStatus = pfVisibleStatusText(snap.prefeeder.status?.text);
   }
 
   // Estado general de máquina: no mezclar EXXX (va al panel de recovery).
@@ -124,6 +136,7 @@ export function mapMachineState(
     mm: snap.mm,
     rpm: snap.rpm,
     statusText: generalStatus,
+    statusKind: errorActive ? 'error' : snap.banner.kind,
     isRunning: cycle.active && !cycle.paused,
     isPaused: cycle.paused,
     cycleActive: cycle.active,
@@ -134,9 +147,21 @@ export function mapMachineState(
     refillActive: !!cycle.refillActive,
     refillAwaitingConfirm: !!cycle.refillAwaitingConfirm,
     refillPrompt: String(cycle.refillPrompt || ''),
+    recoveryPrompt: String(cycle.recoveryPrompt || ''),
+    recoveryAwaitingConfirm: !!cycle.recoveryAwaitingConfirm,
+    recoveryAfterError: !!cycle.recoveryAfterError,
+    e050Lot:
+      String(cycle.recovery || '') === 'e050_material' ||
+      !!cycle.e050FinishPiece ||
+      String(cycle.recoveryPrompt || '').startsWith('e050_'),
+    e050FinishPiece: !!cycle.e050FinishPiece,
+    refillSkipCut: !!cycle.refillSkipCut,
     stepByStep: cycle.stepByStep ?? false,
-    trialMode: cycle.trialMode ?? false,
-    pauseEnabled: cycle.active && !cycle.paused && !cycle.refillAwaitingConfirm,
+    pauseEnabled:
+      cycle.active &&
+      !cycle.paused &&
+      !cycle.refillAwaitingConfirm &&
+      !cycle.recoveryAwaitingConfirm,
     progress: cycle.completed
       ? 100
       : cycle.active && lotTarget > 0
@@ -156,18 +181,26 @@ export function mapMachineState(
     cycleCompleted: cycle.completed ?? false,
     safetyExhaust: !!snap.motion.safetyExhaust,
     errorActive,
-    // Solo el latch HMI (o fault de ciclo activo). Tras Res, cycle.fault residual
-    // no debe dejar ERROR en barra si el flip-flop ya está limpio.
+    workBlocked:
+      errorActive ||
+      plcFault ||
+      (!!cycle.fault && !cycle.lastOk && !cycle.active),
+    // Latch HMI, fault de ciclo activo, o lote NO OK con EXXX (el aborto
+    // no debe desaparecer al poner _active=false / PF Idle).
     fault: errorActive
       ? snap.error?.ui
       : cycle.active
         ? cycle.fault || undefined
-        : undefined,
+        : !cycle.lastOk && cycle.fault
+          ? cycle.fault
+          : undefined,
     faultClass: errorActive
       ? snap.error?.class || undefined
       : cycle.active
         ? cycle.faultClass || undefined
-        : undefined,
+        : !cycle.lastOk && cycle.faultClass
+          ? cycle.faultClass
+          : undefined,
     faultCode: errorActive ? snap.error?.code : undefined,
     faultModule: faultModule || undefined,
     faultDescription: errorActive ? snap.error?.description : undefined,
@@ -249,21 +282,55 @@ function buildSensors(
   snap: BackendSnapshot,
   side: 'L' | 'R'
 ): PreFeederSensor[] {
+  const faults = snap.prefeeder.fault_active || {};
   return Object.values(snap.prefeeder.errors)
     .filter((e) => e.label.endsWith(` ${side}`))
-    .map((e) => ({
-      id: PF_SENSOR_IDS[e.label] ?? e.label.toLowerCase().replace(/\s+/g, '-'),
-      name: e.label,
-      active: e.active === true,
-      status: (e.active === true ? 'error' : e.active === false ? 'ok' : 'idle') as PreFeederSensor['status'],
-    }));
+    .map((e) => {
+      const okByte = PF_OK_WHEN_ACTIVE[e.label];
+      const fault = okByte !== undefined && faults[String(okByte)] === true;
+      if (okByte !== undefined) {
+        return {
+          id: PF_SENSOR_IDS[e.label] ?? e.label.toLowerCase().replace(/\s+/g, '-'),
+          name: e.label,
+          active: fault,
+          status: (fault ? 'error' : e.active === true ? 'ok' : e.active === false ? 'warning' : 'idle') as PreFeederSensor['status'],
+        };
+      }
+      return {
+        id: PF_SENSOR_IDS[e.label] ?? e.label.toLowerCase().replace(/\s+/g, '-'),
+        name: e.label,
+        active: e.active === true,
+        status: (e.active === true ? 'error' : e.active === false ? 'ok' : 'idle') as PreFeederSensor['status'],
+      };
+    });
+}
+
+function mapPfRefill(side?: { refillMaterial?: boolean; refillDereeler?: boolean; refillServo?: boolean; refillFeeder?: boolean } | null): PfRefillState {
+  return {
+    material: !!side?.refillMaterial,
+    dereeler: !!side?.refillDereeler,
+    servo: !!side?.refillServo,
+    feeder: !!side?.refillFeeder,
+  };
+}
+
+export function isPfGenericErrorText(text: string | undefined): boolean {
+  const s = (text || '').toLowerCase();
+  return s.includes('errorstate') || s.includes('0x03c');
+}
+
+export function pfVisibleStatusText(text: string | undefined): string {
+  if (isPfGenericErrorText(text)) return '';
+  return (text || '').trim();
 }
 
 export function mapPreFeederState(snap: BackendSnapshot): PreFeederState {
   const pf = snap.prefeeder;
+  const rawStatus = pf.status?.text ?? '';
+  const statusText = pfVisibleStatusText(rawStatus);
   const running =
-    pf.status?.text?.toLowerCase().includes('ocupado') ||
-    pf.status?.text?.toLowerCase().includes('busy');
+    rawStatus.toLowerCase().includes('ocupado') ||
+    rawStatus.toLowerCase().includes('busy');
 
   return {
     connection: {
@@ -272,10 +339,13 @@ export function mapPreFeederState(snap: BackendSnapshot): PreFeederState {
       port: snap.pfLink.port,
     },
     isRunning: !!running,
-    statusText: pf.status?.text ?? '',
-    hasError: pf.status?.kind === 'error',
+    statusText,
+    hasError: pf.status?.kind === 'error' && !!statusText,
+    idleMode: !!(pf.sides?.L?.idleMode || pf.sides?.R?.idleMode),
     sensorsL: buildSensors(snap, 'L'),
     sensorsR: buildSensors(snap, 'R'),
+    refillL: mapPfRefill(pf.sides?.L),
+    refillR: mapPfRefill(pf.sides?.R),
   };
 }
 

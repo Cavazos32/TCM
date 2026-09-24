@@ -314,15 +314,21 @@ class MotionClient(ModuleTcpClient):
         ok = self.cmd_enc_measure_r()
         return self.cmd_enc_measure_l() and ok
 
-    def cmd_feed_r(self, *, skip_validate: bool = False) -> bool:
+    def cmd_feed_r(self, *, skip_validate: bool = False, feed_mm: float | None = None) -> bool:
+        extra: dict = {}
         if skip_validate:
-            return self.cmd_byte(CMD_FEED_R, skipValidate=True)
-        return self.cmd_byte(CMD_FEED_R)
+            extra["skipValidate"] = True
+            if feed_mm is not None:
+                extra["mm"] = float(feed_mm)
+        return self.cmd_byte(CMD_FEED_R, **extra) if extra else self.cmd_byte(CMD_FEED_R)
 
-    def cmd_feed_l(self, *, skip_validate: bool = False) -> bool:
+    def cmd_feed_l(self, *, skip_validate: bool = False, feed_mm: float | None = None) -> bool:
+        extra: dict = {}
         if skip_validate:
-            return self.cmd_byte(CMD_FEED_L, skipValidate=True)
-        return self.cmd_byte(CMD_FEED_L)
+            extra["skipValidate"] = True
+            if feed_mm is not None:
+                extra["mm"] = float(feed_mm)
+        return self.cmd_byte(CMD_FEED_L, **extra) if extra else self.cmd_byte(CMD_FEED_L)
 
     def cmd_reset_errors(self) -> bool:
         return self.cmd_byte(CMD_MOT_RESET_ERR)

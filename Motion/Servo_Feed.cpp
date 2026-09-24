@@ -496,6 +496,8 @@ struct FeedSideRt {
   bool active = false;
   // Purga/refill HMI: feed físico sin validar láser ni OM (LengthOK al fin de servo).
   bool skipValidate = false;
+  // >0 solo en skipValidate (override de FEED_TARGET_FIXED_MM). 0 = 55 mm.
+  float overrideTargetMm = 0.0f;
   uint32_t gen = 0;
   FeedSidePhase phase = FSP_IDLE;
   float targetMm = FEED_TARGET_FIXED_MM;
@@ -733,8 +735,9 @@ static const char* feedSidePhaseName(FeedSidePhase p)
 }
 
 // Feed Validator: solo sobre OM oficial post-SETTLE (nunca sobre approachMm del servo).
-// Aceptación: PHYS 50–58 + láser ON → FEED_OK (p.ej. 50 mm + laser OK continúa).
-// 1ª medida post-approach puede ser ~44 (comando 80%) → CORREGIR hacia 55.
+// 1ª medida: ~44 (80%) → CORREGIR a 55. PHYS 50–58 no salta la corrección (evita que R
+// con offset/overshoot se quede solo en approach). |err|≤0.5 + láser → OK ya en target.
+// FINAL: PHYS 50–58 + láser ON → FEED_OK.
 static FeedValResult feedValidatorEvaluate(float omOfficialMm, bool laserOn, bool isFinal,
                                            float* correctionOut)
 {
@@ -747,13 +750,10 @@ static FeedValResult feedValidatorEvaluate(float omOfficialMm, bool laserOn, boo
     // Solo absurdo: sin lectura útil o por encima del techo físico.
     if (omOfficialMm <= 0.0f || omOfficialMm > FEED_OM_PHYS_MAX_MM + 1e-4f)
       return FVR_NG;
-    // 54.5 / 55.0 / 55.5 → OK; PHYS 50–58 + láser → OK; resto (~44) → corregir a 55
     if (fabsf(err) <= FEED_OM_QUANTUM_MM + 1e-4f) {
       if (!laserOn) return FVR_INCONSISTENT;
       return FVR_OK;
     }
-    if (feedInPhysical(omOfficialMm) && laserOn)
-      return FVR_OK;
     if (correctionOut) *correctionOut = err;
     return FVR_CORRECT;
   }
@@ -867,6 +867,7 @@ static void feedSideFinish(bool sideR, FeedValResult result, uint8_t errByte, co
   s.result = result;
   s.errByte = errByte;
   s.skipValidate = false;
+  s.overrideTargetMm = 0.0f;
   if (reason && reason[0]) {
     strncpy(s.fault, reason, sizeof(s.fault) - 1);
     s.fault[sizeof(s.fault) - 1] = '\0';
@@ -985,7 +986,9 @@ static void feedSideStartApproach(bool sideR)
   FeedSideRt& s = feedSideAt(sideR);
   feedSideClearDiag(s);
   s.targetMm = FEED_TARGET_FIXED_MM;
-  s.approachMm = FEED_TARGET_FIXED_MM * (feedApproachPct / 100.0f);
+  if (s.skipValidate && s.overrideTargetMm >= 1.0f)
+    s.targetMm = clampFeedTargetMm(s.overrideTargetMm);
+  s.approachMm = s.targetMm * (feedApproachPct / 100.0f);
   // Purga: un solo movimiento a target (sin corrección OM/láser).
   if (s.skipValidate)
     s.approachMm = s.targetMm;
@@ -1000,8 +1003,11 @@ static void feedSideStartApproach(bool sideR)
   s.moveStartMs = 0;
   s.absDueMs = 0;
 
+  // Purga: un movimiento a target+offset. Ciclo: approach = % de 55, sin offset
+  // (si se suma offR al 80%, R manda ~50–55 y el validador se saltaba la corrección).
   const float offset = sideR ? feedOffsetMmB : feedOffsetMm;
-  FeedEncPlan plan = feedPlanEncTarget(s.approachMm, offset, sideR);
+  const float planOffset = s.skipValidate ? offset : 0.0f;
+  FeedEncPlan plan = feedPlanEncTarget(s.approachMm, planOffset, sideR);
   if (!plan.ok) {
     s.phase = FSP_APPROACH;
     feedSideFinish(sideR, FVR_NG,
@@ -1043,11 +1049,11 @@ static void feedSideService(bool sideR, uint32_t now)
       if (now < s.settleUntilMs) break;
       {
         // Misma secuencia física: halt → settle → reset OM del lado → approach move.
-        feedOmResetSide(sideR);
+        feedOmResetSide(sideR, false);
         const int32_t steps = s.moveSteps;
         Serial.printf("FEED %c gen=%lu APPROACH %.1fmm (%.0f%% of %.1f) steps=%ld\n",
                       sideR ? 'R' : 'L', (unsigned long)s.gen, (double)s.approachMm,
-                      (double)feedApproachPct, (double)FEED_TARGET_FIXED_MM, (long)steps);
+                      (double)feedApproachPct, (double)s.targetMm, (long)steps);
         feedCanPrimeHaltDecelSide(sideR);
         if (!feedSideIssueMove(sideR, steps, now)) {
           feedSideFinish(sideR, FVR_NG, feedSideNoFbErr(sideR), "FEED: sin feedback 6064");
@@ -1099,7 +1105,10 @@ static void feedSideService(bool sideR, uint32_t now)
         float live = 0.0f;
         if (!s.dirChecked && feedOmReadLiveMmSide(sideR, &live) && fabsf(live) >= FEED_OM_DIR_CHECK_MM) {
           s.dirChecked = true;
-          if (live > 0.0f) {
+          // L: feed = cuentas (−). R es espejo (SERVO_CMD_SIGN_R=+1): (+) es el
+          // sentido correcto. Exigir (−) en R abortaba tras approach (E030).
+          const bool wrongDir = sideR ? (live < 0.0f) : (live > 0.0f);
+          if (wrongDir) {
             canHaltSide(sideR);
             feedSideFinish(sideR, FVR_NG, MOT_ERR_FEED_DIR_CW, "FEED: sentido horario");
             break;
@@ -1371,7 +1380,7 @@ String feedStatusJson()
   return j;
 }
 
-bool feedQueueTestSide(int8_t onlySide, String& err, bool skipValidate)
+bool feedQueueTestSide(int8_t onlySide, String& err, bool skipValidate, float targetMm)
 {
   if (!servoCanReady) {
     // EXXX oficial E023 / 0x61 (no texto suelto sin código).
@@ -1380,16 +1389,20 @@ bool feedQueueTestSide(int8_t onlySide, String& err, bool skipValidate)
     err = uiBuf;
     return false;
   }
+  const float overrideMm =
+      (skipValidate && targetMm >= 1.0f) ? clampFeedTargetMm(targetMm) : 0.0f;
   if (onlySide == 0) {
     if (feedSides[0].active || feedSides[0].pending) { err = "Feed L ocupado"; return false; }
     feedSides[0].pending = true;
     feedSides[0].skipValidate = skipValidate;
+    feedSides[0].overrideTargetMm = overrideMm;
     return true;
   }
   if (onlySide == 1) {
     if (feedSides[1].active || feedSides[1].pending) { err = "Feed R ocupado"; return false; }
     feedSides[1].pending = true;
     feedSides[1].skipValidate = skipValidate;
+    feedSides[1].overrideTargetMm = overrideMm;
     return true;
   }
   // both
@@ -1401,6 +1414,8 @@ bool feedQueueTestSide(int8_t onlySide, String& err, bool skipValidate)
   feedSides[1].pending = true;
   feedSides[0].skipValidate = skipValidate;
   feedSides[1].skipValidate = skipValidate;
+  feedSides[0].overrideTargetMm = overrideMm;
+  feedSides[1].overrideTargetMm = overrideMm;
   return true;
 }
 

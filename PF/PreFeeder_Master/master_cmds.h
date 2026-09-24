@@ -22,6 +22,7 @@ static inline PfCmdScope pfMasterCmdScope(const String& cmd)
       || cmd == "setTestMode" || cmd == "testMode"
       || cmd == "materialistaCall" || cmd == "setMaterialistaCall"
       || cmd == "setInProcess" || cmd == "inProcess"
+      // HTTP Master: refill L+R. HMI TCP Materialist JOG usa side L|R (pfTcpDoRefill).
       || cmd == "refillMaterial" || cmd == "refillDereeler"
       || cmd == "refillServo" || cmd == "refillFeeder"
       || cmd == "halt" || cmd == "motionStop" || cmd == "hardStop"

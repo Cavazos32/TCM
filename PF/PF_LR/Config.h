@@ -37,11 +37,11 @@ constexpr uint8_t  FAULT_CODE_BASE     = 30;  // wire: base+PfErrorId → ver St
 #endif
 
 // ====================== GPIO ======================
-// Holgura GPIO22: LED OFF/libre=HIGH; LED ON/bloqueado=LOW. Cilindro: opto 24V→3.3V HIGH=abierto.
+// Holgura GPIO22: LED ON/detecta=LOW=OK; LED OFF/libre=HIGH=sin holgura → helper. Cilindro: opto 24V→3.3V HIGH=abierto.
 constexpr uint8_t PIN_SENSOR_BUFFER_FULL = 19;  // HIGH = activo
 constexpr uint8_t PIN_SENSOR_TENSION     = 23;  // HIGH = activo
 constexpr uint8_t PIN_SENSOR_BUFFER_MAX  = 21;  // HIGH = activo
-constexpr uint8_t PIN_SENSOR_HOLGURA     = 22;
+constexpr uint8_t PIN_SENSOR_HOLGURA     = 22;  // LOW (LED ON) = OK; HIGH (LED OFF) = helper
 constexpr uint8_t PIN_SENSOR_CILINDRO    = 25;
 constexpr uint8_t PIN_SENSOR_HOSE_BELT   = 27;  // HIGH = cinta/manguera ausente
 constexpr int PIN_DEREELER_PUL           = 32;
@@ -96,7 +96,7 @@ constexpr float TENSION_BOOST_RPM_OFFSET = 30.0f;
 // ====================== BUFFER / HOLGURA ======================
 // Legacy UI/JSON: el monitor ya no enclava FAULT_BUFFER_TIMEOUT.
 constexpr float BUFFER_REFILL_FAULT_SEC = 10.0f;
-constexpr float M2_HOLGURA_FAULT_SEC      = 1.5f;   // ausente ≥ esto → PF_ERR_HOLGURA (UI/NVS)
+constexpr float M2_HOLGURA_FAULT_SEC      = 1.5f;   // ausente ≥ esto + Buffer Full ON → PF_ERR_HOLGURA
 constexpr float M2_HOLGURA_FAULT_SEC_MIN  = 0.3f;
 constexpr float M2_HOLGURA_FAULT_SEC_MAX  = 30.0f;
 constexpr uint32_t M2_HOLGURA_FILTER_MS   = 80;

@@ -108,10 +108,31 @@ class PreFeederClient(ModuleTcpClient):
             byte=CMD_MATERIALIST, value="1" if on else "0"
         )
 
-    def cmd_in_process(self, on: bool = True) -> bool:
-        """In process L+R (misma ruta peer que Master /api/auto?in_process=)."""
+    def cmd_in_process(self, on: bool = True, side: str | None = None) -> bool:
+        """In process. side L|R = un lado; None = broadcast L+R (Master HTML)."""
+        extra: dict[str, str] = {}
+        side_u = str(side or "").strip().upper()
+        if side_u in ("L", "R"):
+            extra["side"] = side_u
         return self.send_command(
-            command="setInProcess", value="1" if on else "0"
+            command="setInProcess", value="1" if on else "0", **extra
+        )
+
+    def cmd_refill(self, channel: str, on: bool, side: str) -> bool:
+        """Refill Materialista por lado (HTML L/R). Pulso vive en el esclavo."""
+        cmd = {
+            "material": "refillMaterial",
+            "dereeler": "refillDereeler",
+            "servo": "refillServo",
+            "feeder": "refillFeeder",
+        }.get(channel)
+        if not cmd:
+            return False
+        side_u = str(side or "").strip().upper()
+        if side_u not in ("L", "R"):
+            return False
+        return self.send_command(
+            command=cmd, value="1" if on else "0", side=side_u
         )
 
     def cmd_trigger_r(self) -> bool:

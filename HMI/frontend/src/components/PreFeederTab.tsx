@@ -13,6 +13,8 @@ import { useApp } from '../context/AppContext';
 
 interface PreFeederTabProps {
   preFeederState: PreFeederState;
+  cycleMaterialist?: boolean;
+  cycleBusy?: boolean;
   onStart: () => void;
   onStop: () => void;
   onReset: () => void;
@@ -26,6 +28,8 @@ interface PreFeederTabProps {
 
 export const PreFeederTab: React.FC<PreFeederTabProps> = ({
   preFeederState,
+  cycleMaterialist = false,
+  cycleBusy = false,
   onStart,
   onStop,
   onReset,
@@ -39,14 +43,18 @@ export const PreFeederTab: React.FC<PreFeederTabProps> = ({
   const { t } = useApp();
 
   const renderSensorRow = (sensor: PreFeederSensor) => {
-    const alarm = sensor.active;
+    const alarm = sensor.status === 'error' || sensor.active;
+    const ok = !alarm && sensor.status === 'ok';
+    const warn = !alarm && sensor.status === 'warning';
     return (
       <div
         key={sensor.id}
         className={`flex items-center justify-between rounded-lg px-3.5 py-2.5 border shadow-2xs ${
           alarm
             ? 'bg-red-50/50 dark:bg-red-950/30 border-red-200 dark:border-red-800'
-            : 'bg-slate-50 dark:bg-slate-800/60 border-slate-200 dark:border-slate-700'
+            : warn
+              ? 'bg-amber-50/50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800'
+              : 'bg-slate-50 dark:bg-slate-800/60 border-slate-200 dark:border-slate-700'
         }`}
       >
         <div className="flex items-center gap-2.5">
@@ -54,9 +62,11 @@ export const PreFeederTab: React.FC<PreFeederTabProps> = ({
             className={`h-2.5 w-2.5 rounded-full transition-all ${
               alarm
                 ? 'bg-red-500 ring-2 ring-red-200 dark:ring-red-900'
-                : sensor.status === 'ok'
+                : ok
                   ? 'bg-emerald-500'
-                  : 'bg-slate-300 dark:bg-slate-600'
+                  : warn
+                    ? 'bg-amber-500'
+                    : 'bg-slate-300 dark:bg-slate-600'
             }`}
           />
           <span className="text-sm font-medium text-slate-800 dark:text-slate-200">
@@ -69,12 +79,14 @@ export const PreFeederTab: React.FC<PreFeederTabProps> = ({
             className={`font-bold transition ${
               alarm
                 ? 'text-red-700 dark:text-red-400'
-                : sensor.status === 'ok'
+                : ok
                   ? 'text-emerald-700 dark:text-emerald-400'
-                  : 'text-slate-400 dark:text-slate-500'
+                  : warn
+                    ? 'text-amber-700 dark:text-amber-400'
+                    : 'text-slate-400 dark:text-slate-500'
             }`}
           >
-            {alarm ? t('active') : sensor.status === 'ok' ? 'OK' : '—'}
+            {alarm ? t('active') : ok ? 'OK' : warn ? t('sensor_inactive') : '—'}
           </span>
         </div>
       </div>
@@ -83,6 +95,26 @@ export const PreFeederTab: React.FC<PreFeederTabProps> = ({
 
   const connected = preFeederState.connection.connected;
   const hasError = !!preFeederState.hasError && connected;
+  const pfMode = cycleMaterialist
+    ? 'materialist'
+    : cycleBusy || preFeederState.isRunning
+      ? 'busy'
+      : null;
+  const pfHeadline = !connected
+    ? t('node_disconnected')
+    : hasError
+      ? preFeederState.statusText || t('pf_need_reset_start')
+      : pfMode === 'materialist'
+        ? t('module_status_materialist')
+        : pfMode === 'busy'
+          ? t('module_status_busy')
+          : preFeederState.statusText || t('state_ready');
+  const pfFeedLabel =
+    pfMode === 'materialist'
+      ? t('status_materialist')
+      : pfMode === 'busy'
+        ? t('status_in_process')
+        : t('status_idle');
 
   return (
     <div className="space-y-4">
@@ -96,9 +128,11 @@ export const PreFeederTab: React.FC<PreFeederTabProps> = ({
                   ? 'bg-red-500'
                   : hasError
                     ? 'bg-red-500'
-                    : preFeederState.isRunning
-                      ? 'bg-emerald-500 animate-pulse'
-                      : 'bg-emerald-500'
+                    : pfMode === 'materialist'
+                      ? 'bg-violet-500'
+                      : pfMode === 'busy'
+                        ? 'bg-emerald-500 animate-pulse'
+                        : 'bg-emerald-500'
               }`}
             />
             <span
@@ -108,7 +142,7 @@ export const PreFeederTab: React.FC<PreFeederTabProps> = ({
                   : 'text-slate-900 dark:text-white'
               }`}
             >
-              {preFeederState.statusText || (preFeederState.isRunning ? t('prefeeder_active_desc') : t('state_ready'))}
+              {pfHeadline}
             </span>
           </div>
 
@@ -130,12 +164,14 @@ export const PreFeederTab: React.FC<PreFeederTabProps> = ({
             <span className="text-slate-500 dark:text-slate-400">{t('feed_status')}:</span>
             <span
               className={`font-bold px-2 py-0.5 rounded-md border text-xs ${
-                preFeederState.isRunning
-                  ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
-                  : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-700'
+                pfMode === 'materialist'
+                  ? 'bg-violet-50 dark:bg-violet-950/40 text-violet-800 dark:text-violet-200 border-violet-200 dark:border-violet-800'
+                  : pfMode === 'busy'
+                    ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
+                    : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-700'
               }`}
             >
-              {preFeederState.isRunning ? 'FEEDING' : 'IDLE'}
+              {pfFeedLabel}
             </span>
           </div>
         </div>
@@ -187,7 +223,11 @@ export const PreFeederTab: React.FC<PreFeederTabProps> = ({
         <button
           id="btn-materialist-prefeeder"
           onClick={onMaterialist}
-          className="group flex items-center justify-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 px-3.5 py-2 text-xs font-bold text-slate-700 dark:text-slate-200 transition active:scale-95 shadow-2xs cursor-pointer"
+          className={`group flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-bold transition active:scale-95 shadow-2xs cursor-pointer border ${
+            cycleMaterialist
+              ? 'border-amber-400 bg-amber-100 dark:bg-amber-950/50 text-amber-900 dark:text-amber-200'
+              : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200'
+          }`}
         >
           <Package className="h-3.5 w-3.5 text-slate-600 dark:text-slate-400" />
           <span>{t('btn_materialist')}</span>

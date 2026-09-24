@@ -16,17 +16,28 @@ import {
   Package,
   Activity,
 } from 'lucide-react';
-import { MachineState, LogEntry, MotionState, PlcState, PreFeederState } from '../types';
+import { MachineState, LogEntry, MotionState, PfRefillChannel, PlcState, PreFeederState } from '../types';
 import { LogTerminal } from './LogTerminal';
 import { useApp } from '../context/AppContext';
 
 type FaultModuleKind = 'motion' | 'plc' | 'prefeeder' | 'other';
 
+function isPrefeederFaultModule(module?: string): boolean {
+  const m = (module || '').toLowerCase();
+  return (
+    m.includes('pre-feeder') ||
+    m.includes('prefeeder') ||
+    m === 'pf' ||
+    m.startsWith('pf-') ||
+    m.startsWith('pf ')
+  );
+}
+
 function faultModuleKind(module?: string): FaultModuleKind {
   const m = (module || '').toLowerCase();
   if (m.includes('motion')) return 'motion';
   if (m.includes('plc')) return 'plc';
-  if (m.includes('pre') || m.includes('feeder')) return 'prefeeder';
+  if (isPrefeederFaultModule(module)) return 'prefeeder';
   return 'other';
 }
 
@@ -39,12 +50,22 @@ function operatorModuleStatus(
   statusText: string | undefined,
   hasError: boolean,
   connected: boolean,
-  t: (key: 'node_disconnected' | 'module_status_ok' | 'state_error' | 'state_ready' | 'module_status_busy') => string
+  t: (key: 'node_disconnected' | 'module_status_ok' | 'state_error' | 'state_ready' | 'module_status_busy' | 'module_status_materialist' | 'pf_need_reset_start') => string,
+  mode?: 'materialist' | 'busy' | null
 ): string {
   if (!connected) return t('node_disconnected');
+  if (mode === 'materialist' && !hasError) {
+    return t('module_status_materialist');
+  }
   const raw = (statusText || '').trim();
   if (hasError) {
-    return raw || t('state_error');
+    if (/errorstate/i.test(raw) || /0x03c/i.test(raw)) {
+      return t('pf_need_reset_start');
+    }
+    return raw || t('pf_need_reset_start');
+  }
+  if (mode === 'busy') {
+    return t('module_status_busy');
   }
   const lower = raw.toLowerCase();
   if (!raw || lower.includes(' ok') || /(?:^|\b)ok(?:\b|$)/i.test(raw)) {
@@ -86,12 +107,15 @@ interface MaquinaTabProps {
   onRefill?: () => void;
   onRefillConfirm?: (ok: boolean) => void;
   onRefillRetry?: () => void;
+  onRefillLongFeed?: () => void;
+  onRecoveryReview?: (ok: boolean) => void;
   onGotoCycle?: () => void;
   onPfStart?: () => void;
   onPfStop?: () => void;
   onPfReset?: () => void;
   onPfJogL?: () => void;
   onPfJogR?: () => void;
+  onPfRefill?: (side: 'L' | 'R', channel: PfRefillChannel, on: boolean) => void;
   onBusy?: () => void;
   onMaterialist?: () => void;
   showLogs?: boolean;
@@ -119,12 +143,15 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
   onRefill,
   onRefillConfirm,
   onRefillRetry,
+  onRefillLongFeed,
+  onRecoveryReview,
   onGotoCycle,
   onPfStart,
   onPfStop,
   onPfReset,
   onPfJogL,
   onPfJogR,
+  onPfRefill,
   onBusy,
   onMaterialist,
   showLogs = true,
@@ -164,9 +191,13 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
     return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
   };
 
-  const hasFault = !!(machineState.errorActive || machineState.fault);
+  const hasFault = !!(
+    machineState.errorActive ||
+    machineState.fault ||
+    machineState.workBlocked
+  );
   const modKind = faultModuleKind(machineState.faultModule);
-  const modulePanelError = !!preFeederState.hasError;
+  const modulePanelError = !!preFeederState.hasError || !!plcState.hasError;
   const faultLabel =
     machineState.fault ||
     (machineState.faultCode
@@ -175,10 +206,15 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
             ? `: ${machineState.faultModule || '—'}, ${machineState.faultDescription}`
             : ''
         }`
-      : '');
+      : hasFault
+        ? plcState.statusText || machineState.statusText || ''
+        : '');
+  const interlockError = !hasFault && machineState.statusKind === 'error';
   const generalStatus = hasFault
     ? faultLabel || t('state_error')
-    : machineState.isPaused
+    : interlockError
+      ? machineState.statusText || t('err_materialist_start')
+      : machineState.isPaused
       ? t('state_paused')
       : machineState.isRunning
         ? t('state_producing')
@@ -193,13 +229,242 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
   const plcHasError = !!plcState.hasError && plcConnected;
   const pfConnected = preFeederState.connection.connected;
   const pfHasError = !!preFeederState.hasError && pfConnected;
+  const pfRecoverError =
+    pfHasError ||
+    (!!machineState.errorActive &&
+      isPrefeederFaultModule(machineState.faultModule));
+
+  const [pfRecoverStep, setPfRecoverStep] = useState<'idle' | 'reset' | 'go'>('idle');
+
+  useEffect(() => {
+    if (pfRecoverError) {
+      setPfRecoverStep('reset');
+      return;
+    }
+    // Sin EXXX de Pre-Feeder el coach no se queda: Start/Materialist no son recovery.
+    if (
+      machineState.isRunning ||
+      (machineState.cycleActive && !machineState.isPaused) ||
+      !machineState.cycleMaterialist
+    ) {
+      setPfRecoverStep('idle');
+      return;
+    }
+    setPfRecoverStep((prev) => (prev === 'reset' ? 'go' : prev));
+  }, [
+    pfRecoverError,
+    machineState.isRunning,
+    machineState.cycleActive,
+    machineState.isPaused,
+    machineState.cycleMaterialist,
+  ]);
+
+  const recoverReset = pfRecoverStep === 'reset';
+  const recoverGo = pfRecoverStep === 'go';
+  const recoverGoResume = recoverGo && !!resumeEnabled;
+  const machineResetDisabled = recoverReset;
+  // Reset local PF (0x02C) desde Module Controls: siempre si hay enlace.
+  // Un EXXX de Motion/PLC no debe bloquear el Res del PreFeeder.
+  const pfResetDisabled = !onPfReset || !pfConnected;
+  const recoveryStage =
+    machineState.recoveryPrompt ||
+    (machineState.recoveryAfterError || machineState.e050Lot
+      ? machineState.refillPrompt ||
+        (machineState.refillActive ? 'working' : '')
+      : '');
+  const showRecoveryTrack = !!recoveryStage;
+  const e050Lot = !!machineState.e050Lot;
+  const skipCut = !!machineState.refillSkipCut;
+  const faultCls = (machineState.faultClass || '').toUpperCase();
+  const machineC1 =
+    !e050Lot && (faultCls === 'C1' || !!machineState.errorNeedsHome);
+  const lotHeld =
+    machineState.cycleActive ||
+    machineState.recoveryAfterError ||
+    machineState.isPaused;
+  const processKind: 'c1' | 'c2' | 'e050' = e050Lot
+    ? 'e050'
+    : machineC1
+      ? 'c1'
+      : 'c2';
+  const processStep: string = e050Lot
+    ? recoveryStage === 'e050_insufficient' ||
+      recoveryStage === 'e050_finish_process'
+      ? 'ask'
+      : recoveryStage === 'e050_empty_material' ||
+          ((recoveryStage === 'working' || recoveryStage === 'after_feed') &&
+            skipCut)
+        ? 'empty'
+        : recoveryStage === 'review_piece'
+          ? 'review'
+          : hasFault
+            ? 'reset'
+            : machineState.e050FinishPiece && machineState.isRunning
+              ? 'piece'
+              : resumeEnabled || machineState.isPaused
+                ? 'resume'
+                : ''
+    : machineC1
+    ? machineState.errorNeedsConfirm || hasFault
+      ? 'reset'
+      : machineState.errorNeedsHome
+        ? 'home'
+        : 'start'
+    : recoveryStage === 'continue_cycle'
+      ? 'continue'
+      : recoveryStage === 'review_piece'
+        ? 'review'
+        : recoveryStage === 'working' ||
+            recoveryStage === 'after_feed' ||
+            recoveryStage === 'after_cut'
+          ? 'purge'
+          : hasFault
+            ? 'reset'
+            : machineState.recoveryAfterError && machineState.isRunning
+              ? 'piece'
+              : resumeEnabled || machineState.isPaused
+                ? 'resume'
+                : '';
+  const showErrorProcess =
+    hasFault ||
+    machineState.recoveryAfterError ||
+    e050Lot ||
+    showRecoveryTrack ||
+    !!(machineC1 && (machineState.errorNeedsHome || machineState.errorNeedsConfirm));
+  const showMachineResetCoach = showErrorProcess && processStep === 'reset';
+  const showMachineResumeCoach = showErrorProcess && processStep === 'resume';
+  const c2Steps: { id: string; label: string }[] = [
+    { id: 'reset', label: t('lot_recover_step_reset') },
+    { id: 'resume', label: t('lot_recover_step_resume') },
+    { id: 'piece', label: t('lot_recover_step_piece') },
+    { id: 'review', label: t('lot_recover_step_review') },
+    { id: 'purge', label: t('lot_recover_step_purge') },
+    { id: 'continue', label: t('lot_recover_step_continue') },
+  ];
+  const c1Steps: { id: string; label: string }[] = [
+    { id: 'reset', label: t('lot_recover_step_reset') },
+    { id: 'home', label: t('lot_recover_step_home') },
+    { id: 'start', label: t('lot_recover_step_start') },
+  ];
+  const e050Steps: { id: string; label: string }[] = [
+    { id: 'ask', label: t('lot_recover_step_ask') },
+    { id: 'reset', label: t('lot_recover_step_reset') },
+    { id: 'resume', label: t('lot_recover_step_resume') },
+    { id: 'piece', label: t('lot_recover_step_piece') },
+    { id: 'review', label: t('lot_recover_step_review') },
+    { id: 'empty', label: t('lot_recover_step_empty') },
+  ];
+  const processSteps = e050Lot ? e050Steps : machineC1 ? c1Steps : c2Steps;
+  const showManualRefill =
+    !machineState.recoveryAfterError &&
+    !machineState.e050Lot &&
+    !!machineState.refillActive &&
+    !!machineState.refillPrompt &&
+    !!onRefillConfirm;
+  const recoveryHint =
+    recoveryStage === 'e050_insufficient'
+      ? t('e050_insufficient_hint')
+      : recoveryStage === 'e050_finish_process'
+        ? t('e050_finish_hint')
+        : recoveryStage === 'e050_empty_material'
+          ? t('e050_empty_hint')
+          : recoveryStage === 'review_piece'
+            ? t('recovery_review_hint')
+            : recoveryStage === 'continue_cycle'
+              ? t('recovery_continue_hint')
+              : recoveryStage === 'after_cut'
+                ? t('refill_confirm_hint_cut')
+                : recoveryStage === 'working'
+                  ? t('refill_confirm_hint_working')
+                  : skipCut
+                    ? t('refill_confirm_hint_feed_nocut')
+                    : t('refill_confirm_hint_feed');
+  const processHint = e050Lot
+    ? processStep === 'ask'
+      ? recoveryStage === 'e050_finish_process'
+        ? t('lot_recover_hint_e050_finish')
+        : t('lot_recover_hint_e050_ask')
+      : processStep === 'reset'
+        ? t('lot_recover_hint_e050_reset')
+        : processStep === 'resume'
+          ? t('lot_recover_hint_e050_resume')
+          : processStep === 'piece'
+            ? t('lot_recover_hint_piece')
+            : processStep === 'review'
+              ? t('recovery_review_hint')
+              : processStep === 'empty'
+                ? recoveryHint
+                : t('lot_recover_hint_e050_reset')
+    : machineC1
+    ? processStep === 'home'
+      ? t('lot_recover_hint_c1_home')
+      : processStep === 'start'
+        ? t('lot_recover_hint_c1_start')
+        : t('lot_recover_hint_c1')
+    : processStep === 'reset'
+      ? recoverReset
+        ? t('lot_recover_hint_reset_pf')
+        : lotHeld
+          ? t('lot_recover_hint_reset')
+          : t('lot_recover_hint_reset_idle')
+      : processStep === 'resume'
+        ? t('lot_recover_hint_resume')
+        : processStep === 'piece'
+          ? t('lot_recover_hint_piece')
+          : processStep === 'review'
+            ? t('recovery_review_hint')
+            : processStep === 'continue'
+              ? t('recovery_continue_hint')
+              : processStep === 'purge'
+                ? recoveryHint
+                : t('lot_recover_hint_reset');
+  /** Indicaciones PF solo si no hay lote (el lote usa el proceso C2/C3). */
+  const showPfCoach =
+    !machineState.isRunning &&
+    ((recoverReset && !lotHeld) || machineState.cycleMaterialist);
+  const startDisabled =
+    hasFault ||
+    machineState.isRunning ||
+    machineState.refillActive ||
+    recoverReset;
+  const resumeDisabled =
+    hasFault ||
+    !resumeEnabled ||
+    machineState.refillAwaitingConfirm ||
+    machineState.recoveryAwaitingConfirm ||
+    machineState.refillActive ||
+    recoverReset;
+  // Error activo: no producir. Tras Reset, Materialist + JOG deben poder alimentar.
+  const pfProdLocked = recoverReset;
+  const pfInMaterialist = machineState.cycleMaterialist;
+  const pfMode = pfInMaterialist
+    ? 'materialist'
+    : machineState.cycleBusy || preFeederState.isRunning
+      ? 'busy'
+      : null;
+  const pfHeadline = !pfConnected
+    ? t('node_disconnected')
+    : pfHasError
+      ? preFeederState.statusText || t('pf_need_reset_start')
+      : pfMode === 'materialist'
+        ? t('module_status_materialist')
+        : pfMode === 'busy'
+          ? t('module_status_busy')
+          : preFeederState.statusText || t('state_ready');
+  const pfFeedLabel =
+    pfMode === 'materialist'
+      ? t('status_materialist')
+      : pfMode === 'busy'
+        ? t('status_in_process')
+        : t('status_idle');
 
   const moduleCard = (
     title: string,
     statusText: string | undefined,
     connected: boolean,
     hasError: boolean,
-    actions: React.ReactNode
+    actions: React.ReactNode,
+    mode?: 'materialist' | 'busy' | null
   ) => {
     const showError = hasError && connected;
     return (
@@ -233,9 +498,65 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               : 'text-slate-600 dark:text-slate-400'
           }`}
         >
-          {operatorModuleStatus(statusText, showError, connected, t)}
+          {operatorModuleStatus(statusText, showError, connected, t, mode)}
         </p>
         <div className="flex flex-wrap items-center gap-1.5">{actions}</div>
+      </div>
+    );
+  };
+
+  const pfJogCard = (side: 'L' | 'R') => {
+    const refill = (side === 'L' ? preFeederState.refillL : preFeederState.refillR) || {
+      material: false,
+      dereeler: false,
+      servo: false,
+      feeder: false,
+    };
+    const enabled =
+      !!onPfRefill &&
+      pfInMaterialist &&
+      preFeederState.connection.connected &&
+      !machineState.cycleActive;
+    const channels: { id: PfRefillChannel; label: 'pf_refill_material' | 'pf_refill_dereeler' | 'pf_refill_servo' | 'pf_refill_feeder' }[] = [
+      { id: 'material', label: 'pf_refill_material' },
+      { id: 'dereeler', label: 'pf_refill_dereeler' },
+      { id: 'servo', label: 'pf_refill_servo' },
+      { id: 'feeder', label: 'pf_refill_feeder' },
+    ];
+    return (
+      <div
+        key={side}
+        className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-800/40 p-3 min-w-0"
+      >
+        <div className="flex items-center justify-between gap-2 mb-2">
+          <h3 className="text-xs font-bold uppercase tracking-wider text-slate-800 dark:text-slate-200">
+            {side === 'L' ? t('pf_jog_l') : t('pf_jog_r')}
+          </h3>
+        </div>
+        <p className="text-[10px] text-slate-500 dark:text-slate-400 mb-3">
+          {enabled ? t('pf_refill_hint') : t('pf_jog_need_materialist')}
+        </p>
+        <div className="grid grid-cols-2 gap-1.5">
+          {channels.map((ch) => {
+            const on = refill[ch.id];
+            return (
+              <button
+                key={ch.id}
+                id={`btn-main-pf-refill-${side.toLowerCase()}-${ch.id}`}
+                type="button"
+                onClick={() => onPfRefill?.(side, ch.id, !on)}
+                disabled={!enabled}
+                className={`${btnBase} ${
+                  on
+                    ? 'border-amber-400 bg-amber-100 dark:bg-amber-950/50 text-amber-900 dark:text-amber-200'
+                    : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50'
+                } disabled:opacity-40`}
+              >
+                <span>{t(ch.label)}</span>
+              </button>
+            );
+          })}
+        </div>
       </div>
     );
   };
@@ -246,7 +567,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
         <div className="flex items-center gap-2.5 min-w-0">
           <div
             className={`h-2.5 w-2.5 shrink-0 rounded-full ${
-              hasFault
+              hasFault || interlockError
                 ? 'bg-red-500'
                 : machineState.isRunning
                 ? 'bg-emerald-500 animate-pulse'
@@ -261,11 +582,11 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
           />
           <span
             className={`text-sm font-semibold tracking-tight min-w-0 truncate ${
-              hasFault
+              hasFault || interlockError
                 ? 'text-red-700 dark:text-red-300'
                 : 'text-slate-900 dark:text-white'
             }`}
-            title={hasFault ? generalStatus : undefined}
+            title={hasFault || interlockError ? generalStatus : undefined}
           >
             {hasFault ? t('state_error') : generalStatus}
           </span>
@@ -274,6 +595,11 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               {faultLabel}
             </span>
           ) : null}
+          {showErrorProcess && (
+            <span className="rounded border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/50 px-2 py-0.5 text-[11px] font-semibold text-amber-900 dark:text-amber-100">
+              {processHint}
+            </span>
+          )}
           {machineState.cycleCompleted && !hasFault && (
             <span className="text-xs font-mono text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 px-2 py-0.5 rounded">
               {t('cycle_complete')}
@@ -452,7 +778,130 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               )}
             </div>
 
-            {machineState.refillActive && machineState.refillPrompt && onRefillConfirm && (
+            {showErrorProcess && (
+              <div className="flex flex-wrap items-center gap-3 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/50 px-4 py-3">
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-bold text-amber-950 dark:text-amber-100">
+                    {e050Lot
+                      ? t('lot_recover_title_e050')
+                      : machineC1
+                        ? t('lot_recover_title_c1')
+                        : t('lot_recover_title_c2')}
+                  </p>
+                  <p className="text-[11px] text-amber-900/80 dark:text-amber-200/80 mt-0.5">
+                    {processHint}
+                  </p>
+                  <p className="mt-1 font-mono text-[10px] text-amber-800 dark:text-amber-200 flex flex-wrap gap-x-1">
+                    {processSteps.map((s, i) => (
+                      <span key={s.id}>
+                        {i > 0 ? ' → ' : ''}
+                        <span
+                          className={
+                            s.id === processStep ? 'font-bold underline' : 'opacity-50'
+                          }
+                        >
+                          {s.label}
+                        </span>
+                      </span>
+                    ))}
+                  </p>
+                </div>
+                {recoveryStage === 'after_feed' && onRefillRetry && (
+                  <button
+                    id="btn-recovery-refill-retry"
+                    type="button"
+                    onClick={onRefillRetry}
+                    disabled={!machineState.refillAwaitingConfirm}
+                    className="flex items-center gap-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 px-3.5 py-2 text-xs font-bold text-white disabled:opacity-40"
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                    {t('btn_refill_confirm_retry')}
+                  </button>
+                )}
+                {recoveryStage === 'after_feed' && onRefillLongFeed && (
+                  <button
+                    id="btn-recovery-refill-long"
+                    type="button"
+                    onClick={onRefillLongFeed}
+                    disabled={!machineState.refillAwaitingConfirm}
+                    className="flex items-center gap-1.5 rounded-lg bg-sky-600 hover:bg-sky-700 px-3.5 py-2 text-xs font-bold text-white disabled:opacity-40"
+                  >
+                    <Activity className="h-3.5 w-3.5" />
+                    {t('btn_refill_confirm_long')}
+                  </button>
+                )}
+                {recoveryStage === 'after_feed' && onRefillConfirm && (
+                  <button
+                    id="btn-recovery-next-cut"
+                    type="button"
+                    onClick={() => onRefillConfirm(true)}
+                    disabled={!machineState.refillAwaitingConfirm}
+                    className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 text-xs font-bold text-white disabled:opacity-40"
+                  >
+                    <Check className="h-3.5 w-3.5" />
+                    {skipCut
+                      ? t('btn_refill_confirm_continue')
+                      : t('btn_refill_confirm_next_cut')}
+                  </button>
+                )}
+                {recoveryStage === 'after_cut' && onRefillConfirm && (
+                  <button
+                    id="btn-recovery-asda-0"
+                    type="button"
+                    onClick={() => onRefillConfirm(true)}
+                    disabled={!machineState.refillAwaitingConfirm}
+                    className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 text-xs font-bold text-white disabled:opacity-40"
+                  >
+                    <Check className="h-3.5 w-3.5" />
+                    {t('btn_refill_confirm_yes')}
+                  </button>
+                )}
+                {(recoveryStage === 'e050_insufficient' ||
+                  recoveryStage === 'e050_finish_process' ||
+                  recoveryStage === 'e050_empty_material') &&
+                  onRecoveryReview && (
+                  <>
+                    <button
+                      id="btn-recovery-e050-yes"
+                      type="button"
+                      onClick={() => onRecoveryReview(true)}
+                      disabled={!machineState.recoveryAwaitingConfirm}
+                      className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 text-xs font-bold text-white disabled:opacity-40"
+                    >
+                      <Check className="h-3.5 w-3.5" />
+                      {t('btn_e050_yes')}
+                    </button>
+                    <button
+                      id="btn-recovery-e050-omit"
+                      type="button"
+                      onClick={() => onRecoveryReview(false)}
+                      disabled={!machineState.recoveryAwaitingConfirm}
+                      className="flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3.5 py-2 text-xs font-bold text-slate-700 dark:text-slate-200 disabled:opacity-40"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                      {t('btn_e050_omit')}
+                    </button>
+                  </>
+                )}
+                {(recoveryStage === 'review_piece' ||
+                  recoveryStage === 'continue_cycle') &&
+                  onRecoveryReview && (
+                  <button
+                    id="btn-recovery-review-ok"
+                    type="button"
+                    onClick={() => onRecoveryReview(true)}
+                    disabled={!machineState.recoveryAwaitingConfirm}
+                    className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 text-xs font-bold text-white disabled:opacity-40"
+                  >
+                    <Check className="h-3.5 w-3.5" />
+                    {recoveryStage === 'continue_cycle'
+                      ? t('btn_recovery_continue')
+                      : t('btn_recovery_review_ok')}
+                  </button>
+                )}
+              </div>
+            )}
+            {showManualRefill && (
               <div className="flex flex-wrap items-center gap-3 rounded-lg border border-sky-300 dark:border-sky-700 bg-sky-50 dark:bg-sky-950/50 px-4 py-3">
                 <div className="min-w-0 flex-1">
                   <p className="text-xs font-bold text-sky-900 dark:text-sky-100">
@@ -480,6 +929,18 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                   >
                     <RotateCcw className="h-3.5 w-3.5" />
                     {t('btn_refill_confirm_retry')}
+                  </button>
+                )}
+                {machineState.refillPrompt === 'after_feed' && onRefillLongFeed && (
+                  <button
+                    id="btn-refill-confirm-long"
+                    type="button"
+                    onClick={onRefillLongFeed}
+                    disabled={!machineState.refillAwaitingConfirm}
+                    className="flex items-center gap-1.5 rounded-lg bg-sky-600 hover:bg-sky-700 px-3.5 py-2 text-xs font-bold text-white shadow-2xs active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
+                  >
+                    <Activity className="h-3.5 w-3.5" />
+                    {t('btn_refill_confirm_long')}
                   </button>
                 )}
                 {machineState.refillPrompt !== 'working' && (
@@ -513,14 +974,76 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
           </div>
 
           <div className="w-full lg:w-40 shrink-0 flex flex-col gap-2 border-t lg:border-t-0 lg:border-l border-slate-100 dark:border-slate-800 pt-4 lg:pt-0 lg:pl-4">
+            {showErrorProcess && (
+              <div className="rounded-md border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-2 py-1.5 text-[10px] leading-snug text-amber-900 dark:text-amber-100">
+                <p className="font-bold uppercase tracking-wide">
+                  {e050Lot
+                    ? t('lot_recover_title_e050')
+                    : machineC1
+                      ? t('lot_recover_title_c1')
+                      : t('lot_recover_title_c2')}
+                </p>
+                <p className="mt-0.5">{processHint}</p>
+                <p className="mt-1 font-mono text-[10px] text-amber-800 dark:text-amber-200">
+                  {processSteps.map((s, i) => (
+                    <span key={s.id}>
+                      {i > 0 ? ' → ' : ''}
+                      <span
+                        className={
+                          s.id === processStep ? 'font-bold underline' : 'opacity-50'
+                        }
+                      >
+                        {s.label}
+                      </span>
+                    </span>
+                  ))}
+                </p>
+              </div>
+            )}
+            {showPfCoach && (
+              <div className="rounded-md border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-2 py-1.5 text-[10px] leading-snug text-amber-900 dark:text-amber-100">
+                <p className="font-bold uppercase tracking-wide">
+                  {recoverReset ? t('pf_recover_title') : t('status_materialist')}
+                </p>
+                <p className="mt-0.5">
+                  {recoverReset
+                    ? t('pf_recover_hint_reset')
+                    : resumeEnabled
+                      ? t('pf_recover_hint_jog_resume')
+                      : t('pf_recover_hint_jog')}
+                </p>
+                {recoverReset && (
+                  <p className="mt-1 font-mono text-[10px] text-amber-800 dark:text-amber-200">
+                    <span className="font-bold underline">{t('pf_recover_step_reset')}</span>
+                    {' → '}
+                    <span className="opacity-50">{t('pf_recover_step_setup')}</span>
+                    {' → '}
+                    <span className="opacity-50">
+                      {resumeEnabled ? t('pf_recover_step_resume') : t('pf_recover_step_start')}
+                    </span>
+                  </p>
+                )}
+              </div>
+            )}
             <button
               id="btn-start-maquina"
               onClick={onStart}
-              disabled={machineState.isRunning || machineState.refillActive}
+              disabled={startDisabled}
+              title={
+                recoverReset
+                  ? t('pf_recover_hint_reset')
+                  : showErrorProcess && processKind === 'c2'
+                    ? processHint
+                    : machineState.cycleMaterialist
+                      ? t('err_materialist_start')
+                      : undefined
+              }
               className={`flex w-full items-center justify-center gap-1.5 rounded-lg px-3 py-2.5 text-xs font-bold tracking-wide transition-all shadow-2xs ${
-                machineState.isRunning || machineState.refillActive
+                startDisabled
                   ? 'bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed border border-slate-200 dark:border-slate-700'
-                  : 'bg-emerald-600 hover:bg-emerald-700 text-white active:scale-[0.98]'
+                  : processStep === 'start'
+                    ? 'bg-emerald-600 hover:bg-emerald-700 text-white ring-2 ring-emerald-300 ring-offset-1 animate-pulse'
+                    : 'bg-emerald-600 hover:bg-emerald-700 text-white active:scale-[0.98]'
               }`}
             >
               <Play className="h-3.5 w-3.5 fill-current" />
@@ -530,7 +1053,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
             <button
               id="btn-pause-maquina"
               onClick={onPause}
-              disabled={!machineState.pauseEnabled}
+              disabled={!machineState.pauseEnabled || pfProdLocked}
               className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 hover:bg-amber-100 px-3 py-2.5 text-xs font-semibold text-amber-800 dark:text-amber-200 transition shadow-2xs disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <Pause className="h-3.5 w-3.5" />
@@ -549,7 +1072,19 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
             <button
               id="btn-reset-maquina"
               onClick={onReset}
-              className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 px-3 py-2.5 text-xs font-semibold text-slate-700 dark:text-slate-200 transition shadow-2xs"
+              disabled={machineResetDisabled}
+              title={
+                recoverReset
+                  ? t('pf_recover_hint_reset')
+                  : showMachineResetCoach
+                    ? t('lot_recover_hint_reset')
+                    : undefined
+              }
+              className={`flex w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-2.5 text-xs font-semibold transition shadow-2xs disabled:opacity-40 disabled:cursor-not-allowed ${
+                showMachineResetCoach && !machineResetDisabled
+                  ? 'border-amber-400 bg-amber-100 dark:bg-amber-950/60 text-amber-950 dark:text-amber-100 ring-2 ring-amber-300 ring-offset-1 animate-pulse'
+                  : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 text-slate-700 dark:text-slate-200'
+              }`}
             >
               <RotateCcw className="h-3.5 w-3.5 text-amber-600" />
               <span>{t('btn_reset_cycle')}</span>
@@ -558,8 +1093,21 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
             <button
               id="btn-reanudar-maquina"
               onClick={onResume}
-              disabled={!resumeEnabled || machineState.refillAwaitingConfirm}
-              className="group flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 px-3 py-2.5 text-xs font-semibold text-slate-700 dark:text-slate-200 transition shadow-2xs disabled:opacity-40 disabled:cursor-not-allowed"
+              disabled={resumeDisabled}
+              title={
+                recoverReset
+                  ? t('pf_recover_hint_reset')
+                  : showMachineResumeCoach
+                    ? t('lot_recover_hint_resume')
+                    : showMachineResetCoach
+                      ? t('lot_recover_hint_reset')
+                      : undefined
+              }
+              className={`group flex w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-2.5 text-xs font-semibold transition shadow-2xs disabled:opacity-40 disabled:cursor-not-allowed ${
+                recoverGoResume || showMachineResumeCoach
+                  ? 'border-emerald-400 bg-emerald-100 dark:bg-emerald-950/50 text-emerald-900 dark:text-emerald-100 ring-2 ring-emerald-300 ring-offset-1 animate-pulse'
+                  : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 text-slate-700 dark:text-slate-200'
+              }`}
             >
               <RotateCcw className="h-3.5 w-3.5 group-hover:rotate-45 transition-transform" />
               <span>
@@ -593,24 +1141,45 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               id="btn-home-maquina"
               type="button"
               onClick={onMachineHome}
-              disabled={!onMachineHome || machineState.isRunning || machineState.cycleActive}
-              title={t('btn_machine_home_hint')}
+              disabled={!onMachineHome || machineState.isRunning}
+              title={
+                processStep === 'home'
+                  ? t('lot_recover_hint_c1_home')
+                  : t('btn_machine_home_hint')
+              }
               className={`flex w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-2.5 text-xs font-bold transition shadow-2xs ${
-                !onMachineHome || machineState.isRunning || machineState.cycleActive
+                !onMachineHome || machineState.isRunning
                   ? 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed'
-                  : 'border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 active:scale-[0.98]'
+                  : processStep === 'home'
+                    ? 'border-emerald-400 bg-emerald-100 dark:bg-emerald-950/50 text-emerald-900 dark:text-emerald-100 ring-2 ring-emerald-300 ring-offset-1 animate-pulse'
+                    : 'border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 active:scale-[0.98]'
               }`}
             >
               <Home className="h-3.5 w-3.5" />
               <span>{t('btn_machine_home')}</span>
             </button>
 
-            <div
-              id="ind-coming-soon"
-              className="flex w-full items-center justify-center rounded-lg border border-dashed border-slate-300 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-800/40 px-3 py-2.5 text-[11px] font-semibold text-slate-400 dark:text-slate-500 select-none"
+            <button
+              id="btn-main-pf-materialist"
+              type="button"
+              onClick={onMaterialist}
+              disabled={!onMaterialist || machineState.cycleActive}
+              title={
+                machineState.cycleMaterialist
+                  ? t('pf_recover_hint_jog')
+                  : t('pf_jog_need_materialist')
+              }
+              className={`flex w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-2.5 text-xs font-bold transition shadow-2xs ${
+                !onMaterialist || machineState.cycleActive
+                  ? 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed'
+                  : machineState.cycleMaterialist
+                    ? 'border-violet-400 bg-violet-100 dark:bg-violet-950/50 text-violet-900 dark:text-violet-100 ring-2 ring-violet-300/80 ring-offset-1 dark:ring-offset-slate-900'
+                    : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 active:scale-[0.98]'
+              }`}
             >
-              {t('coming_soon')}
-            </div>
+              <Package className="h-3.5 w-3.5" />
+              <span>{t('btn_materialist_cycle')}</span>
+            </button>
           </div>
         </div>
       </div>
@@ -721,9 +1290,11 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     ? 'bg-red-500'
                     : pfHasError
                       ? 'bg-red-500'
-                      : preFeederState.isRunning
-                        ? 'bg-emerald-500 animate-pulse'
-                        : 'bg-emerald-500'
+                      : pfMode === 'materialist'
+                        ? 'bg-violet-500'
+                        : pfMode === 'busy'
+                          ? 'bg-emerald-500 animate-pulse'
+                          : 'bg-emerald-500'
                 }`}
               />
               <span
@@ -733,7 +1304,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     : 'text-slate-900 dark:text-white'
                 }`}
               >
-                {preFeederState.statusText || (preFeederState.isRunning ? t('prefeeder_active_desc') : t('state_ready'))}
+                {pfHeadline}
               </span>
             </div>
 
@@ -755,12 +1326,14 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               <span className="text-slate-500 dark:text-slate-400">{t('feed_status')}:</span>
               <span
                 className={`font-bold px-2 py-0.5 rounded-md border text-xs ${
-                  preFeederState.isRunning
-                    ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
-                    : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-700'
+                  pfMode === 'materialist'
+                    ? 'bg-violet-50 dark:bg-violet-950/40 text-violet-800 dark:text-violet-200 border-violet-200 dark:border-violet-800'
+                    : pfMode === 'busy'
+                      ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
+                      : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-700'
                 }`}
               >
-                {preFeederState.isRunning ? 'FEEDING' : 'IDLE'}
+                {pfFeedLabel}
               </span>
             </div>
           </div>
@@ -788,8 +1361,17 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
             {machineState.fault} — {t('module_recovery_use_machine')}
           </p>
         ) : null}
+        {showPfCoach ? (
+          <p className="mt-3 text-xs text-amber-800 dark:text-amber-200">
+            {recoverReset
+              ? t('pf_recover_hint_reset')
+              : resumeEnabled
+                ? t('pf_recover_hint_jog_resume')
+                : t('pf_recover_hint_jog')}
+          </p>
+        ) : null}
 
-        <div className="mt-4 grid grid-cols-1 gap-3">
+        <div className="mt-4 grid gap-3 grid-cols-1 lg:grid-cols-3">
           {moduleCard(
             t('tab_prefeeder'),
             preFeederState.statusText,
@@ -800,8 +1382,12 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                 id="btn-main-pf-start"
                 type="button"
                 onClick={onPfStart}
-                disabled={!onPfStart}
-                className={`${btnBase} border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 disabled:opacity-40`}
+                disabled={!onPfStart || !pfConnected}
+                className={`${btnBase} ${
+                  recoverGo && !resumeEnabled
+                    ? 'border-emerald-400 bg-emerald-100 dark:bg-emerald-950/50 text-emerald-900 dark:text-emerald-100 ring-2 ring-emerald-300 ring-offset-1'
+                    : 'border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100'
+                } disabled:opacity-40`}
               >
                 <Play className="h-3.5 w-3.5 fill-current" />
                 <span>{t('btn_start')}</span>
@@ -820,8 +1406,17 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                 id="btn-main-pf-reset"
                 type="button"
                 onClick={onPfReset}
-                disabled={!onPfReset}
-                className={`${btnBase} border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 disabled:opacity-40`}
+                disabled={pfResetDisabled}
+                title={
+                  recoverReset || pfHasError
+                    ? t('pf_recover_hint_reset')
+                    : undefined
+                }
+                className={`${btnBase} ${
+                  recoverReset || pfHasError
+                    ? 'border-amber-400 bg-amber-100 dark:bg-amber-950/60 text-amber-950 dark:text-amber-100 ring-2 ring-amber-300 ring-offset-1 animate-pulse'
+                    : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50'
+                } disabled:opacity-40`}
               >
                 <RotateCcw className="h-3.5 w-3.5 text-amber-600" />
                 <span>{t('btn_reset')}</span>
@@ -850,7 +1445,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                 id="btn-main-pf-busy"
                 type="button"
                 onClick={onBusy}
-                disabled={!onBusy || machineState.cycleActive}
+                disabled={!onBusy || machineState.cycleActive || pfProdLocked}
                 className={`${btnBase} ${
                   machineState.cycleBusy
                     ? 'border-emerald-400 bg-emerald-100 dark:bg-emerald-950/50 text-emerald-900 dark:text-emerald-200'
@@ -860,22 +1455,11 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                 <Activity className="h-3.5 w-3.5" />
                 <span>{t('btn_busy_cycle')}</span>
               </button>
-              <button
-                id="btn-main-pf-materialist"
-                type="button"
-                onClick={onMaterialist}
-                disabled={!onMaterialist || machineState.cycleActive}
-                className={`${btnBase} ${
-                  machineState.cycleMaterialist
-                    ? 'border-amber-400 bg-amber-100 dark:bg-amber-950/50 text-amber-900 dark:text-amber-200'
-                    : 'border-amber-200 dark:border-amber-900/60 bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 hover:bg-amber-100'
-                } disabled:opacity-40`}
-              >
-                <Package className="h-3.5 w-3.5" />
-                <span>{t('btn_materialist_cycle')}</span>
-              </button>
-            </>
+            </>,
+            pfMode
           )}
+          {pfJogCard('L')}
+          {pfJogCard('R')}
         </div>
       </div>
 

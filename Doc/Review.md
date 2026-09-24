@@ -4,21 +4,23 @@
 
 | Segmento | ¿Cuenta en CT? | Ejemplos |
 |----------|----------------|----------|
-| Preparación | **No** | `prepareBeforeCut`, ASDA→0, PreFeeder In process ON |
-| Holgura pre-pieza | **No** | status/Tfeed antes de arrancar el reloj |
-| Secuencia productiva | **Sí** | Holder ON (1ª) → Tfeed → feed → pinzas → lineal → corte → depósito → WIP/HOME → asentar |
-| Holgura post-pieza | **No** | Tfeed post (CT ya congelado) |
+| Preparación | **No** | `prepareBeforeCut`, ASDA→0, PreFeeder In process ON, espera Buffer Full |
+| Holgura pre-pieza | **No** | El ciclo no fuerza Tfeed; holgura la recupera el helper PF |
+| Secuencia productiva | **Sí** | Holder ON (1ª) → Tfeed (piezas 2…N; 1ª y C2 omiten) → feed → pinzas → lineal → corte → depósito → WIP/HOME → asentar |
+| Holgura post-pieza | **No** | El ciclo no manda Tfeed extra; holgura la recupera el helper PF |
 | Pause | **No** | excluido del reloj |
 | Fin de lote | **No** | Finish tools, espera PF settled, In process OFF |
 
 **Reloj:**
-1. **Start** = tras holgura pre-pieza, justo antes de Holder/feed.
+1. **Start** = tras Buffer Full confirmado (y holgura pre-pieza si aplica), justo antes de Holder/feed.
 2. **Freeze** = al entrar a `post_piece` (después de asentar/HOME) — **no espera Finish/settled**.
 3. **Log** `Pieza OK · Xs` = solo si la pieza cierra bien (después de holgura post).
 4. **CT lote** = wall 1ª→última freeze − Pause; N piezas en serie se suman.
 5. UI (`elapsedSec`) usa el valor **congelado** durante Finish (no infla con settled).
 
 Ejemplo lote 1 pz: wall Start→Idle puede ser ~10 s; **CT ≈ tiempo Holder…asentar**.
+
+**Watchdog de pieza** (`pieceWatchTimeoutS`, default 12 s): corta E008/E009 si la pieza se atasca. La 1ª lleva feed (~5–6 s). El `prefetch_join` espera el feed de la **siguiente** y **no** usa este tope (sí `feedWaitTimeoutS`).
 
 ---
 
@@ -27,9 +29,10 @@ Ejemplo lote 1 pz: wall Start→Idle puede ser ~10 s; **CT ≈ tiempo Holder…a
 ### Preparación (fuera de CT)
 
 ```
-Modo prueba… / Cycle Start (0x040) …
+Cycle Start (0x040) …
 prepareBeforeCut: cutters/grippers safe + Holder/Encoder cerrados
 ASDA ya en 0 … / PreFeeder: In process ON …
+PreFeeder: Buffer Full confirmado · L:Full   # o espera Buffer Full (Start) · L:buffer≠Full
 BusyState
 ```
 
@@ -38,7 +41,7 @@ BusyState
 ```
 Holder+Encoder ON (inicio pieza 1)          # solo 1ª
 Delay · Delay Holder ON: …
-trigger PreFeeder Tfeed …                   # ← ANTES de Alimentación
+trigger PreFeeder: omitido (1ª pieza)       # Tfeed desde pieza 2; última sí manda
 Feed start lados=…
 Feed OK lados=…                             # ← antes faltaba
 Pinzas ON (cierran)                         # ← antes faltaba
@@ -62,9 +65,9 @@ Pinzas OFF (abren)                          # ← antes faltaba
 Delay · Delay tras abrir pinzas: …
 Despeje MOVE → … (+|clearance|=…)           # ← CMD
 Despeje MOVE ok → …; WIP fin ref=…          # ← RX
-WIP Delivery (continuo/match-lineal): … (blower=Xs (lineal))
+WIP Delivery (continuo/match-pieza): … (blower=Xs ≡ |L|)
 WIP Delivery MOVE continuo → HOME=0.0 mm …
-WIP Delivery blower ON @ HOME=0.0 mm hold=Xs (en vuelo)
+WIP Delivery blower ON @ HOME en vuelo hold=Xs (≡ |L|; PLC apaga)
 WIP Delivery move ok @ HOME=0.0 mm (continuo)
 Delay · Delay asentar: …
 Pieza 1/1 OK · 7.0s
@@ -78,7 +81,7 @@ PreFeeder: espera settled … → Idle
 Lote completado — 1/1 piezas · CT=7.0s
 ```
 
-> Nota WIP: con `WIP_BLOWER_CONTINUOUS=True` hay **un** soplo en vuelo (match duración del lineal), no stop–soplo–stop en fin/inicio.
+> Nota WIP: con `WIP_BLOWER_CONTINUOUS=True` hay **un** soplo en vuelo: pinzas abiertas → MOVE→0 → delay corto → blower ON ≡ |L| (no el HOME de batch). PLC apaga. No stop–soplo–stop.
 
 ---
 

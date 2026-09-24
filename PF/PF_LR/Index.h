@@ -575,7 +575,7 @@ const char index_html[] PROGMEM = R"rawliteral(
         <ol class="info-flow">
           <li class="info-step-note">Tarea <em>m2_holgura</em> · ciclo ~5 ms · feeder: trigger TCP / helper holgura / refill</li>
           <li class="info-step-note">Misma condición: ventana de relleno + Auto ON</li>
-          <li>Holgura GPIO 22: ausente ≥ <span class="info-param" data-info-key="holguraHelperMs">100 ms</span> → helper feed · ≥ <span class="info-param" data-info-key="holguraFault">1.5 s</span> → falla</li>
+          <li>Holgura GPIO 22: ON = OK · OFF ≥ <span class="info-param" data-info-key="holguraHelperMs">100 ms</span> → helper feed · ≥ <span class="info-param" data-info-key="holguraFault">1.5 s</span> y Buffer Full ON → falla (durante relleno no enclava)</li>
           <li>Helper holgura · <span class="info-param" data-info-key="holguraHelperRpm">60 RPM</span> · <span class="info-param" data-info-key="holguraHelperS">1.0 s</span> · no corta Tfeed TCP en curso</li>
           <li>Trigger TCP desde TCM → alimenta Tfeed · <span class="info-param" data-info-key="rpm2">60 RPM</span> · en paralelo con relleno</li>
           <li class="info-step-wait"><span class="info-param" data-info-key="triggerFeed">2.0 s</span> · duración Tfeed (editable) · no cortar hasta fin (salvo Stop/falla/Buffer Max)</li>
@@ -709,7 +709,7 @@ const char index_html[] PROGMEM = R"rawliteral(
     <div class="card" id="holgura-helper-card">
       <h2>Helper Holgura</h2>
       <p class="meta compact">
-        Si holgura ausente ≥ umbral → feeder a velocidad/duración propias (prioridad sobre trigger TCP).
+        Sensor ON = holgura OK. Sensor OFF ≥ umbral → feeder a velocidad/duración propias (prioridad sobre trigger TCP).
         Si ausente ≥ falla → error PF-006 / opcode Holgura L|R.
       </p>
       <div class="form-row">
@@ -728,7 +728,7 @@ const char index_html[] PROGMEM = R"rawliteral(
           <input type="number" id="holgura-helper-absent-ms" min="20" max="5000" step="10" value="100">
         </div>
         <div class="form-group">
-          <label for="holgura-fault-s">Ausente → falla (s)</label>
+          <label for="holgura-fault-s">Ausente + Full → falla (s)</label>
           <input type="number" id="holgura-fault-s" min="0.3" max="30" step="0.1" value="1.5">
         </div>
       </div>
@@ -1077,8 +1077,9 @@ const char index_html[] PROGMEM = R"rawliteral(
         else if (err.reason === 'hose_absent') txt = (err.exxx || 'E056') + ': Pre-Feeder, Manguera ausente';
         else if (err.reason === 'buffer_timeout') txt = (err.exxx || 'E052') + ': Pre-Feeder, Buffer sin relleno';
         else if (err.reason === 'holgura_timeout') txt = (err.exxx || 'E057') + ': Pre-Feeder, Sin holgura';
-        else if (err.reason === 'operator_stop') txt = 'PF-007: Pre-Feeder, Parada operador';
+        else if (err.reason === 'operator_stop') txt = 'Detenido · Reset + Iniciar';
         else txt = err.tag || 'Error';
+        if (txt.indexOf('Reset') < 0) txt += ' · Reset + Iniciar';
       } else if (idleOn) {
         txt = 'Materialista · solo manual';
       } else if (!a.enabled) {
@@ -1104,7 +1105,7 @@ const char index_html[] PROGMEM = R"rawliteral(
       }
       else if (a.state === 'operator_stop') {
         ok = false;
-        txt = 'Parada operador · falta Reset';
+        txt = 'Detenido · Reset + Iniciar';
       }
       else if (inProc) {
         txt = 'In process · sensores armados';
@@ -1221,7 +1222,7 @@ const char index_html[] PROGMEM = R"rawliteral(
         } else if (data.error.reason === 'holgura_timeout') {
           reason = (data.error.exxx || data.error.tag || 'E057') + ': Pre-Feeder, Sin holgura';
         } else if (data.error.reason === 'operator_stop') {
-          reason = 'PF-007: Pre-Feeder, Parada operador';
+          reason = 'Detenido · Reset + Iniciar';
         } else if (active && data.error.tag) {
           reason = data.error.tag + (data.error.reason ? ' · ' + data.error.reason : '');
         }

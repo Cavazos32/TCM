@@ -1664,16 +1664,19 @@ bool feedOmReadOfficialMmSide(bool sideR, float* officialOut, float* mmSignedOut
   return true;
 }
 
-bool feedOmResetSide(bool sideR)
+bool feedOmResetSide(bool sideR, bool settleZero)
 {
   if (!encSideHwOk(sideR)) return false;
   const uint8_t ix = encIxFromSideR(sideR);
   resetEncoderSide(ix);
-  // Lectura base inmediata a 0 (HTML Set0 / Feed reset). Offset interno intacto.
+  // Lectura base a 0. Offset interno intacto.
   encSide[ix].zeroRef = 0;
   encSide[ix].settledCount = 0;
-  encSide[ix].settled = true;
-  encSide[ix].wasMoving = false;
+  if (settleZero) {
+    // HTML Set0: mostrar 0 ya. Feed usa settleZero=false (exige settle real post-move).
+    encSide[ix].settled = true;
+    encSide[ix].wasMoving = false;
+  }
   feedOmLastMmAbs = 0.0f;
   feedOmLastMmSigned = 0.0f;
   feedOmLastOfficialMm = 0.0f;
@@ -2136,10 +2139,17 @@ void handleStatus() {
 }
 
 void handlePos() {
+  // Cache si hay: read32 bloquea el loop (hasta RESPONSE_TIMEOUT_MS) y
+  // retrasa serviceAsdaTcp / ACK de CMD_MOVE.
   int32_t pos = 0;
-  if (!read32(REG_P5_016, pos)) {
+  if (cachedPosOk) {
+    pos = cachedPosPuu;
+  } else if (!read32(REG_P5_016, pos)) {
     sendJson(503, errJson("No se pudo leer posicion"));
     return;
+  } else {
+    cachedPosPuu = pos;
+    cachedPosOk = true;
   }
   char buf[96];
   snprintf(buf, sizeof(buf),
@@ -2519,6 +2529,12 @@ static int asdaTcpJInt(const char* j, const char* k, int d) {
   return i < 0 ? d : String(j).substring(i + n.length()).toInt();
 }
 
+static float asdaTcpJFloat(const char* j, const char* k, float d) {
+  String n = String("\"") + k + "\":";
+  int i = String(j).indexOf(n);
+  return i < 0 ? d : String(j).substring(i + n.length()).toFloat();
+}
+
 static bool asdaTcpJBool(const char* j, const char* k, bool d) {
   String n = String("\"") + k + "\":";
   String s(j);
@@ -2684,13 +2700,15 @@ static bool feederTcpDoByte(uint8_t cmdByte, const char* line) {
   const bool sideR = (cmdByte == FEED_CMD_FEED_R);
   // Purga HMI: skipValidate=true → LengthOK sin láser/OM. Ciclo normal no lo envía.
   const bool skipValidate = asdaTcpJBool(line, "skipValidate", false);
+  // mm solo con skipValidate (Long feed). Ciclo normal ignora el campo.
+  const float targetMm = skipValidate ? asdaTcpJFloat(line, "mm", 0.0f) : 0.0f;
 
   switch (cmdByte) {
     case FEED_CMD_FEED_R:
-      ok = feedQueueTestSide(1, err, skipValidate);
+      ok = feedQueueTestSide(1, err, skipValidate, targetMm);
       break;
     case FEED_CMD_FEED_L:
-      ok = feedQueueTestSide(0, err, skipValidate);
+      ok = feedQueueTestSide(0, err, skipValidate, targetMm);
       break;
     default:
       err = "byte/cmd feeder desconocido";

@@ -19,7 +19,7 @@ DEFAULT_BLOWER_SEC = 2.0
 DEFAULT_ANDON_BUZZER_MUTE = False
 # CMD_MOVE (0x05): reintentos de transporte acotados (no loop infinito).
 MOTION_MOVE_TX_ATTEMPTS = 3  # 1 envío + 2 reintentos máx.
-MOTION_MOVE_ACK_TIMEOUT_S = 2.0
+MOTION_MOVE_ACK_TIMEOUT_S = 6.0
 MOTION_MOVE_LINK_WAIT_S = 5.0
 
 
@@ -109,6 +109,8 @@ from prefeeder import (
     DEFAULT_PORT as PF_PORT,
     ERROR_LABELS as PF_ERROR_LABELS,
     PF_ERROR_BYTES,
+    PF_ERROR_BYTES_L,
+    PF_ERROR_BYTES_R,
     PreFeederClient,
     TX_BUFFER_FULL_L,
     TX_BUFFER_FULL_R,
@@ -173,6 +175,7 @@ PF_STATE_TEXT = {
     TX_PF_INIT: "Inicializando PreFeeder (0x039)",
     TX_PF_IDLE: "PreFeeder en espera (0x03A)",
     TX_PF_BUSY: "PreFeeder ocupado (0x03B)",
+    # 0x3C no se pinta al técnico; la tarjeta usa el EXXX (ver _pf_paint_detail_status).
     TX_PF_ERROR: "PreFeeder — ErrorState (0x03C)",
     TX_PF_STOP: "PreFeeder detenido (0x03D)",
     TX_PF_RETURN: "PreFeeder — retorno tras stop (0x03E)",
@@ -319,9 +322,30 @@ class HmiState:
             },
             # Runtime L/R desde status Master (relleno / Tfeed / helper).
             "sides": {
-                "L": {"autoState": None, "triggerActive": None},
-                "R": {"autoState": None, "triggerActive": None},
+                "L": {
+                    "autoState": None,
+                    "triggerActive": None,
+                    "idleMode": False,
+                    "refillMaterial": False,
+                    "refillDereeler": False,
+                    "refillServo": False,
+                    "refillFeeder": False,
+                },
+                "R": {
+                    "autoState": None,
+                    "triggerActive": None,
+                    "idleMode": False,
+                    "refillMaterial": False,
+                    "refillDereeler": False,
+                    "refillServo": False,
+                    "refillFeeder": False,
+                },
             },
+            # Master errorAny (status). ErrorState 0x3C solo no implica EXXX.
+            "error_any": False,
+            # UI del Master (EXXX / PF-007). Nunca el texto genérico 0x3C.
+            "master_error_ui": "",
+            "master_error_side": "",
         }
 
         self._client = MotionClient(
@@ -374,6 +398,8 @@ class HmiState:
         self._asda_ack_gen = 0
         self._last_move_fail_kind = ""  # transport | rejected | ""
         self._pf_materialist = False
+        # OFF explícito (Start/Reset): no rearmar el interlock por idleMode residual.
+        self._pf_materialist_force_off = False
 
         self._error_policy = ErrorPolicy()
         self._cycle = CycleRunner(self)
@@ -460,6 +486,8 @@ class HmiState:
                 or (
                     bool(cycle_snap.get("paused"))
                     and not bool(cycle_snap.get("refillAwaitingConfirm"))
+                    and not bool(cycle_snap.get("recoveryAwaitingConfirm"))
+                    and not bool(cycle_snap.get("refillActive"))
                 )
             )
             return {
@@ -682,6 +710,31 @@ class HmiState:
         with self._lock:
             return self._pf.get("last_state_byte")
 
+    def pf_has_fault(self) -> bool:
+        """¿Hay fallo PF real (errorAny / EXXX)? ErrorState 0x3C solo no cuenta."""
+        with self._lock:
+            return self._pf_cached_has_fault()
+
+    def pf_is_ready(self) -> bool:
+        """Enlace + estado conocido + sin EXXX del lote (listo para ciclo)."""
+        with self._lock:
+            if not self._pf.get("connected"):
+                return False
+            if self._pf.get("last_state_byte") is None:
+                return False
+            return not self._pf_cached_has_fault()
+
+    def pf_fault_detail(self) -> str:
+        """Texto del fallo PF que bloquea el ciclo. Vacío si no hay EXXX del lote."""
+        with self._lock:
+            text = self._pf_detail_ui_text()
+            if text:
+                return text
+            if self._pf.get("error_any"):
+                side = str(self._pf.get("master_error_side") or "?").upper()
+                return f"errorAny lado={side}"
+            return ""
+
     def pf_holgura_present(self, side: str) -> bool | None:
         """Holgura L/R desde status Master: True=presente, False=ausente, None=sin dato.
 
@@ -747,7 +800,17 @@ class HmiState:
 
     def pf_is_materialist(self) -> bool:
         with self._lock:
-            return self._pf_materialist
+            return self._pf_materialist_now()
+
+    def _pf_materialist_now(self) -> bool:
+        """Materialist HMI o idleMode L/R. Llamar con o sin lock (RLock)."""
+        if self._pf_materialist:
+            return True
+        sides = self._pf.get("sides") or {}
+        return bool(
+            (sides.get("L") or {}).get("idleMode")
+            or (sides.get("R") or {}).get("idleMode")
+        )
 
     def clear_motion_wait_flags(self) -> None:
         self._motion_idle_or_reached.clear()
@@ -932,7 +995,8 @@ class HmiState:
     def cmd_motion_move_mm(self, mm: float, rpm: float) -> bool:
         """CMD_MOVE (0x05) con recuperación de transporte acotada.
 
-        True = Motion aceptó el MOVE (ACK ok) o ya está ejecutándolo.
+        True = Motion aceptó el MOVE (ACK ok), ya lo ejecuta, o el send
+        salió con enlace OK (ACK tardío: el caller espera Reached).
         False = rechazo ASDA (caller → E012/E013) o transporte agotado (E065).
         No reenvía si hay evidencia de que Motion ya recibió el comando.
         """
@@ -1049,7 +1113,15 @@ class HmiState:
                 self._clear_asda_ack(gen)
                 continue
 
+            t_ack = time.monotonic()
             ack = self._wait_asda_ack(gen, MOTION_MOVE_ACK_TIMEOUT_S)
+            ack_sec = max(0.0, time.monotonic() - t_ack)
+            if ack_sec >= 0.08:
+                self.cycle_log(
+                    f"CMD_MOVE: ACK {ack_sec * 1000.0:.0f} ms "
+                    f"(intento {attempt}/{MOTION_MOVE_TX_ATTEMPTS}"
+                    f"{'' if ack is True else ', no-ok'})"
+                )
             if ack is True:
                 self._clear_asda_ack(gen)
                 self._motion_idle_or_reached.clear()
@@ -1080,14 +1152,16 @@ class HmiState:
                 )
                 return True
             if self._client.connected:
-                # Enlace OK, Idle, sin ACK: no reenviar a ciegas (ambiguo).
+                # Send ya salió. Motion a veces tarda el ACK (HTTP/Modbus
+                # en el mismo loop). No reenviar (doble MOVE). No E013:
+                # el caller espera Reached. Si el comando no llegó → E008.
                 self._clear_asda_ack(gen)
-                with self._lock:
-                    self._last_move_fail_kind = "rejected"
+                if self._move_target_mm is not None:
+                    self._motion_idle_or_reached.clear()
                 self.cycle_log(
-                    "CMD_MOVE: timeout ACK con enlace OK — no se reenvía"
+                    "CMD_MOVE: timeout ACK con enlace OK — se espera movimiento (sin reenvío)"
                 )
-                return False
+                return True
 
             self.cycle_log(
                 f"CMD_MOVE: timeout ACK + enlace caído "
@@ -1124,21 +1198,27 @@ class HmiState:
     def cmd_motion_stop(self) -> bool:
         return self._client.cmd_stop()
 
-    def cmd_motion_feed_l(self, *, skip_validate: bool = False) -> bool:
+    def cmd_motion_feed_l(self, *, skip_validate: bool = False, feed_mm: float | None = None) -> bool:
         self._feed_ok_l.clear()
         self._feed_ng_l.clear()
         self._feed_fault_l = ""
         self._feed_gen_l += 1
         self._feed_armed_l = True
-        return self._client.cmd_feed_l(skip_validate=skip_validate)
+        ok = self._client.cmd_feed_l(skip_validate=skip_validate, feed_mm=feed_mm)
+        if not ok:
+            self._feed_armed_l = False
+        return ok
 
-    def cmd_motion_feed_r(self, *, skip_validate: bool = False) -> bool:
+    def cmd_motion_feed_r(self, *, skip_validate: bool = False, feed_mm: float | None = None) -> bool:
         self._feed_ok_r.clear()
         self._feed_ng_r.clear()
         self._feed_fault_r = ""
         self._feed_gen_r += 1
         self._feed_armed_r = True
-        return self._client.cmd_feed_r(skip_validate=skip_validate)
+        ok = self._client.cmd_feed_r(skip_validate=skip_validate, feed_mm=feed_mm)
+        if not ok:
+            self._feed_armed_r = False
+        return ok
 
     def cmd_motion_enc_set0_r(self) -> bool:
         return self._client.cmd_enc_set0_r()
@@ -1267,8 +1347,16 @@ class HmiState:
         return self._pf_client.cmd_stop()
 
     def cmd_pf_in_process(self, on: bool = True) -> bool:
-        """In process L+R vía Master (command setInProcess) — armar sensores/Tfeed."""
-        return self._manual_pf(lambda: self._pf_client.cmd_in_process(on))
+        """In process vía Master. ON solo a feedSides; OFF a L+R (congelar ambos)."""
+        if not on:
+            return self._manual_pf(lambda: self._pf_client.cmd_in_process(False))
+        mode = CycleConfig.normalize_feed_sides(self._cycle.get_config().feed_sides)
+        if mode == "LR":
+            return self._manual_pf(lambda: self._pf_client.cmd_in_process(True))
+        other = "R" if mode == "L" else "L"
+        ok = self._manual_pf(lambda: self._pf_client.cmd_in_process(True, mode))
+        self._manual_pf(lambda: self._pf_client.cmd_in_process(False, other))
+        return ok
 
     def cmd_pf_trigger_r(self) -> bool:
         return self._manual_pf(self._pf_client.cmd_trigger_r)
@@ -1296,19 +1384,28 @@ class HmiState:
     def cmd_start(self, qty: int | None = None) -> dict:
         """Start máquina (0x040): lote Cycle con mm/qty del modelo."""
         with self._lock:
-            latch = self._error_policy.latch
-            if latch.active:
-                ui = latch.ui_text or latch.code or "error activo"
-                return {
-                    "ok": False,
-                    "error": f"Error activo — {ui} (Reset antes de Start)",
-                }
+            blocked = self._work_blocked_error()
+            if blocked:
+                return {"ok": False, "error": blocked}
             mm, rpm = self._mm, self._rpm
             model = self._models[self._selected_model_idx] if self._models else {}
             model_qty = int(model.get("qty", model.get("cantidad", 1)))
             use_qty = int(qty) if qty is not None and qty >= 1 else model_qty
             self._progress = 0
-        return self._cycle.request_start(mm, use_qty, rpm)
+        # Start produce: salir de Materialist (HMI + PF) en vez de quedarse bloqueado.
+        if self._cycle.snapshot().get("materialist") or self.pf_is_materialist():
+            off = self.cmd_cycle_materialist(False)
+            if not off.get("ok"):
+                return off
+        res = self._cycle.request_start(mm, use_qty, rpm)
+        if not res.get("ok"):
+            err = str(res.get("error") or "Start rechazado")
+            if "Materialist" in err:
+                with self._lock:
+                    self._banner = {"text": err, "kind": "error"}
+                    _append_log(self._main_log, f"Start rechazado: {err}")
+                self._notify()
+        return res
 
     def cmd_stop(self) -> dict:
         if self._cycle.is_active() or self._cycle.snapshot().get("paused"):
@@ -1435,11 +1532,12 @@ class HmiState:
         soft_c2_c3 = self._cycle.is_active() and (
             (
                 latch.active
-                and recovery in ("restart_from_0", "retry_process")
+                and recovery in ("restart_from_0", "retry_process", "e050_material")
             )
             or bool(cycle_snap.get("paused"))
             or bool(cycle_snap.get("c3Pending"))
-            or cycle_snap.get("recovery") in ("restart_from_0", "retry_process")
+            or cycle_snap.get("recovery")
+            in ("restart_from_0", "retry_process", "e050_material")
         )
 
         if soft_c2_c3:
@@ -1462,7 +1560,10 @@ class HmiState:
                 }
             else:
                 self._broadcast_machine_state(MACH_PAUSE)
-                self._banner = {"text": "Errores reseteados — Resume", "kind": "ok"}
+                self._banner = {
+                    "text": "Errores reseteados — Resume para terminar la pieza",
+                    "kind": "ok",
+                }
             if ui:
                 _append_log(self._main_log, f"Reset (soft C2/C3) · {ui}")
             self._notify()
@@ -1485,6 +1586,13 @@ class HmiState:
         self._client.cmd_reset_errors()
         if self._pf_client.connected:
             self._pf_client.cmd_reset()
+            self._manual_pf(lambda: self._pf_client.cmd_materialist(False))
+        with self._lock:
+            self._pf_materialist = False
+            self._pf_materialist_force_off = True
+            for sk in ("L", "R"):
+                runtime = self._pf.setdefault("sides", {}).setdefault(sk, {})
+                runtime["idleMode"] = False
         plc_reset_ok = self._plc_reset_reflect_off(log_label="Reset máquina → PLC")
 
         old = self._error_policy.clear()
@@ -1573,10 +1681,18 @@ class HmiState:
         self._set_banner(ui, "error")
         # Caída de enlace: no bombardear TCP (el socket ya está muerto → spam E06x).
         link_codes = {"E065", "E066", "E067"}
+        e050_lot = (
+            result.get("code") == "E050"
+            and self._cycle.is_active()
+            and not self._cycle.is_refill_active()
+        )
         if result.get("code") in link_codes:
             self._cycle.apply_error_policy(
                 "link_down", ui, cls, result.get("recovery", "")
             )
+        elif e050_lot:
+            self._error_policy.apply_e050_lot_branch()
+            self._cycle.apply_e050_policy(ui, cls)
         else:
             self._cycle.apply_error_policy(
                 action, ui, cls, result.get("recovery", "")
@@ -1658,17 +1774,41 @@ class HmiState:
         self._notify()
 
     def cmd_cycle_materialist(self, on: bool = True) -> dict:
-        """Materialist (0x049) → Andon + PF Materialista; apaga In process."""
+        """Materialist (0x049) → Andon + PF Materialista; apaga In process.
+
+        El flag HMI solo queda ON si el PreFeeder aceptó 0x3F (HTML local idleMode).
+        OFF: si no hay enlace PF, igual se sale del interlock HMI.
+        """
+        if on and self._cycle.is_active():
+            return {"ok": False, "error": "No Materialist con ciclo activo"}
+        pf_ok = self._manual_pf(lambda: self._pf_client.cmd_materialist(bool(on)))
+        if on and pf_ok:
+            self._manual_pf(lambda: self._pf_client.cmd_in_process(False))
+        if on and not pf_ok:
+            with self._lock:
+                err = str(
+                    (self._pf.get("status") or {}).get("text")
+                    or "Materialist no enviado al PreFeeder"
+                )
+            return {"ok": False, "error": err}
         res = self._cycle.set_materialist(on)
         if not res.get("ok"):
+            self._manual_pf(lambda: self._pf_client.cmd_materialist(False))
             return res
         with self._lock:
-            self._pf_materialist = on
-        if on:
-            self._manual_pf(lambda: self._pf_client.cmd_in_process(False))
-            self._manual_pf(lambda: self._pf_client.cmd_materialist(True))
-        else:
-            self._manual_pf(lambda: self._pf_client.cmd_materialist(False))
+            self._pf_materialist = bool(on)
+            self._pf_materialist_force_off = not bool(on)
+            for sk in ("L", "R"):
+                runtime = self._pf.setdefault("sides", {}).setdefault(sk, {})
+                runtime["idleMode"] = bool(on)
+                if not on:
+                    runtime["refillMaterial"] = False
+                    runtime["refillDereeler"] = False
+                    runtime["refillServo"] = False
+                    runtime["refillFeeder"] = False
+            if not on and "Materialist" in str(self._banner.get("text") or ""):
+                self._banner = {"text": "Listo.", "kind": "ok"}
+        self._notify()
         return res
 
     def cmd_cycle_busy(self, on: bool = True) -> dict:
@@ -1679,6 +1819,10 @@ class HmiState:
         with self._lock:
             if on:
                 self._pf_materialist = False
+                self._pf_materialist_force_off = True
+                for sk in ("L", "R"):
+                    runtime = self._pf.setdefault("sides", {}).setdefault(sk, {})
+                    runtime["idleMode"] = False
         if on:
             self._manual_pf(lambda: self._pf_client.cmd_materialist(False))
             self._manual_pf(lambda: self._pf_client.cmd_in_process(True))
@@ -1689,9 +1833,6 @@ class HmiState:
     def cmd_cycle_step_by_step(self, on: bool = True) -> dict:
         return self._cycle.set_step_by_step(on)
 
-    def cmd_cycle_trial_mode(self, on: bool = True) -> dict:
-        return self._cycle.set_trial_mode(on)
-
     def cmd_cycle_refill(
         self,
         *,
@@ -1700,14 +1841,20 @@ class HmiState:
     ) -> dict:
         """Purga/refill material: ASDA park → feed → corte → confirm → HOME."""
         with self._lock:
+            blocked = self._work_blocked_error()
+            if blocked:
+                return {"ok": False, "error": blocked}
             rpm = self._rpm
         return self._cycle.request_refill(rpm, feed_mm=feed_mm, asda_mm=asda_mm)
 
     def cmd_cycle_refill_confirm(self, ok: bool = True) -> dict:
         return self._cycle.confirm_refill(ok)
 
-    def cmd_cycle_refill_retry(self) -> dict:
-        return self._cycle.retry_refill()
+    def cmd_cycle_refill_retry(self, feed_mm: float | None = None) -> dict:
+        return self._cycle.retry_refill(feed_mm=feed_mm)
+
+    def cmd_recovery_review(self, ok: bool = True) -> dict:
+        return self._cycle.confirm_recovery_review(ok)
 
     def cmd_motion(self, action: str, **kwargs) -> dict:
         handlers = {
@@ -1895,11 +2042,64 @@ class HmiState:
             return {"ok": False, "error": f"Acción PLC desconocida: {action}"}
         return {"ok": ok}
 
-    def cmd_pf(self, action: str) -> dict:
+    def cmd_pf_refill(self, side: str, channel: str, on: bool = True) -> dict:
+        """JOG Materialista: refill HTML L/R. Pulso configurable en el esclavo."""
+        side_u = str(side or "").strip().upper()
+        ch = str(channel or "").strip().lower()
+        if side_u not in ("L", "R"):
+            return {"ok": False, "error": "side L|R requerido"}
+        if ch not in ("material", "dereeler", "servo", "feeder"):
+            return {"ok": False, "error": "canal refill inválido"}
+        side_idle = bool(
+            (self._pf.get("sides") or {}).get(side_u, {}).get("idleMode")
+        )
+        if not self._pf_materialist and not side_idle:
+            return {"ok": False, "error": "Refill solo en Materialist"}
+        ok = self._manual_pf(lambda: self._pf_client.cmd_refill(ch, bool(on), side_u))
+        if not ok:
+            with self._lock:
+                err = str(
+                    (self._pf.get("status") or {}).get("text")
+                    or f"Fallo refill {ch} {side_u}"
+                )
+            return {"ok": False, "error": err}
+        with self._lock:
+            runtime = self._pf.setdefault("sides", {}).setdefault(side_u, {})
+            key = {
+                "material": "refillMaterial",
+                "dereeler": "refillDereeler",
+                "servo": "refillServo",
+                "feeder": "refillFeeder",
+            }[ch]
+            runtime[key] = bool(on)
+            if ch == "material":
+                runtime["refillDereeler"] = bool(on)
+                runtime["refillServo"] = bool(on)
+                runtime["refillFeeder"] = bool(on)
+                runtime["refillMaterial"] = bool(on)
+            else:
+                runtime["refillMaterial"] = bool(
+                    runtime.get("refillDereeler")
+                    and runtime.get("refillServo")
+                    and runtime.get("refillFeeder")
+                )
+            text = f"Refill {ch} {side_u} → {'ON' if on else 'OFF'}"
+            _append_log(self._pf_log, text)
+            self._pf["status"] = {"text": text, "kind": "ok"}
+        self._notify()
+        return {"ok": True}
+
+    def cmd_pf(self, action: str, **kwargs) -> dict:
         if action == "materialist":
             return self.cmd_cycle_materialist(True)
         if action in ("in_process", "busy"):
             return self.cmd_cycle_busy(True)
+        if action == "refill":
+            return self.cmd_pf_refill(
+                str(kwargs.get("side", "")),
+                str(kwargs.get("channel", "")),
+                bool(kwargs.get("on", True)),
+            )
         handlers = {
             "start": self._pf_client.cmd_start,
             "stop": self._pf_client.cmd_stop,
@@ -1919,11 +2119,11 @@ class HmiState:
                 )
             return {"ok": False, "error": err}
         if action == "reset":
+            # Reset local PF (0x02C): limpia ErrorState + latch HMI.
+            # No request_reset de ciclo ni Home/PLC — eso es Reset de máquina y pierde setup.
             with self._lock:
                 self._pf["status"] = {"text": "Reset enviado L+R (0x02C)", "kind": "ok"}
-                self._pf_materialist = False
                 self._clear_latch_for_module("prefeeder")
-            self._cycle.request_reset()
             self._notify()
         if action == "start":
             with self._lock:
@@ -2188,6 +2388,42 @@ class HmiState:
             return False
         return b != TX_ERROR
 
+    def _plc_primary_active_error_byte(self) -> int | None:
+        """EXXX PLC activo en caché de válvulas (Cutter/Gripper/Holder/Encoder)."""
+        for _label, cmd, err_b, _sf in PLC_VALVES:
+            if err_b is None:
+                continue
+            v = self._plc.get("valves", {}).get(str(cmd), {})
+            if isinstance(v, dict) and v.get("error"):
+                return err_b
+        return None
+
+    def _plc_has_fault(self) -> bool:
+        """Fallo PLC en caché: ErrorState o sensor de seguridad. No exige latch."""
+        if self._plc.get("last_state_byte") == TX_PLC_ERROR:
+            return True
+        return self._plc_primary_active_error_byte() is not None
+
+    def _plc_try_latch_once(self) -> bool:
+        """Un solo Set/log/Andon por fallo PLC. Espejo de _pf_try_latch_once."""
+        if self._error_policy.latch.active:
+            return False
+        primary = self._plc_primary_active_error_byte()
+        if primary is None:
+            return False
+        return self._apply_detail_error(primary, source="plc")
+
+    def _work_blocked_error(self) -> str | None:
+        """Motivo para rechazar Start/Refill. Latch EXXX o fallo PLC en caché."""
+        latch = self._error_policy.latch
+        if latch.active:
+            ui = latch.ui_text or latch.code or "error activo"
+            return f"Error activo — {ui} (Reset antes de Start)"
+        if self._plc.get("connected") and self._plc_has_fault():
+            st = (self._plc.get("status") or {}).get("text") or "PLC en error"
+            return f"Error activo — {st} (Reset antes de Start)"
+        return None
+
     def _plc_is_healthy(self) -> bool:
         """PLC OK: enlace up, no ErrorState, sin sensor de seguridad activo."""
         if not self._plc.get("connected"):
@@ -2195,20 +2431,44 @@ class HmiState:
         b = self._plc.get("last_state_byte")
         if b is None or b == TX_PLC_ERROR:
             return False
-        for v in self._plc.get("valves", {}).values():
-            if isinstance(v, dict) and v.get("error"):
-                return False
-        return True
+        return self._plc_primary_active_error_byte() is None
 
-    def _pf_is_healthy(self) -> bool:
-        """PreFeeder OK: enlace up, no ErrorState ni EXXX activo en caché."""
-        if not self._pf.get("connected"):
-            return False
-        if self._pf.get("last_state_byte") == TX_PF_ERROR:
-            return False
+    def _pf_is_generic_state_text(self, text: str) -> bool:
+        s = (text or "").lower()
+        return "errorstate" in s or "0x03c" in s
+
+    def _pf_is_operator_stop_only(self) -> bool:
+        """PF-007 / parada: no es EXXX. No pintar ErrorState al técnico."""
         if self._pf_primary_active_error_byte() is not None:
             return False
-        return True
+        ui = str(self._pf.get("master_error_ui") or "").lower()
+        return (
+            "pf-007" in ui
+            or "operator_stop" in ui
+            or "parada operador" in ui
+        )
+
+    def _pf_cached_has_fault(self) -> bool:
+        """Fallo PF del lote (EXXX / sensor). 0x3C, PF-007 y lado no alimentado no cuentan."""
+        # Materialist: el esclavo ignora manguera/sensores; no re-pintar E056/E062.
+        if self._pf_materialist_now():
+            return False
+        if self._pf_is_operator_stop_only():
+            return False
+        if self._pf_primary_active_error_byte() is not None:
+            return True
+        if not self._pf.get("error_any"):
+            return False
+        ui = str(self._pf.get("master_error_ui") or "")
+        if not ui or self._pf_is_generic_state_text(ui):
+            return False
+        return self._pf_master_error_in_lot()
+
+    def _pf_is_healthy(self) -> bool:
+        """PreFeeder OK: enlace up y sin EXXX/errorAny (no exige salir de 0x3C)."""
+        if not self._pf.get("connected"):
+            return False
+        return not self._pf_cached_has_fault()
 
     def _latch_source_is_healthy(self) -> bool:
         """¿El módulo (o máquina) del EXXX latcheado ya está OK en caché?"""
@@ -2240,6 +2500,7 @@ class HmiState:
 
         No manda Reset/All Off a esclavos (preserva setup). Con ciclo activo
         (C2/C3 Pause u otro) el Res sigue siendo explícito.
+        No aplica a E068 ni si el último lote abortó (PF Idle no borra el EXXX).
         Espera AUTO_RES_MIN_AGE_SEC tras el Set para no ganar la carrera
         Idle→ErrorState del esclavo.
         """
@@ -2250,6 +2511,14 @@ class HmiState:
             if self._cycle.is_active():
                 return False
         except Exception:
+            return False
+        # Lote abortado: In process OFF deja PF Idle; no borrar el EXXX.
+        try:
+            if self._cycle.abort_needs_ack():
+                return False
+        except Exception:
+            pass
+        if (latch.code or "") == "E068":
             return False
         set_at = float(getattr(latch, "set_at", 0) or 0)
         if set_at and (time.monotonic() - set_at) < AUTO_RES_MIN_AGE_SEC:
@@ -2285,6 +2554,13 @@ class HmiState:
         latch = self._error_policy.latch
         if not latch.active:
             return False
+        if auto:
+            try:
+                if self._cycle.abort_needs_ack() or (latch.code or "") == "E068":
+                    return False
+            except Exception:
+                if (latch.code or "") == "E068":
+                    return False
         mod = (latch.module or "").lower()
         src = (source or "").lower()
         if src == "motion" and "motion" not in mod:
@@ -2341,7 +2617,10 @@ class HmiState:
         self._broadcast_machine_state(MACH_RESET)
         if soft:
             self._broadcast_machine_state(MACH_PAUSE)
-            self._banner = {"text": "Errores reseteados — Resume", "kind": "ok"}
+            self._banner = {
+                "text": "Errores reseteados — Resume para terminar la pieza",
+                "kind": "ok",
+            }
         else:
             self._broadcast_machine_state(MACH_IDLE)
         return True
@@ -2587,16 +2866,33 @@ class HmiState:
                 }
             else:
                 self._pf["last_state_byte"] = None
+                self._pf["error_any"] = False
+                self._pf["master_error_ui"] = ""
+                self._pf["master_error_side"] = ""
                 for e in self._pf["errors"].values():
                     e["active"] = None
                 for k in self._pf["fault_active"]:
                     self._pf["fault_active"][k] = False
                 for sk in ("L", "R"):
                     self._pf.setdefault("sides", {}).setdefault(
-                        sk, {"autoState": None, "triggerActive": None}
+                        sk,
+                        {
+                            "autoState": None,
+                            "triggerActive": None,
+                            "idleMode": False,
+                            "refillMaterial": False,
+                            "refillDereeler": False,
+                            "refillServo": False,
+                            "refillFeeder": False,
+                        },
                     )
                     self._pf["sides"][sk]["autoState"] = None
                     self._pf["sides"][sk]["triggerActive"] = None
+                    self._pf["sides"][sk]["idleMode"] = False
+                    self._pf["sides"][sk]["refillMaterial"] = False
+                    self._pf["sides"][sk]["refillDereeler"] = False
+                    self._pf["sides"][sk]["refillServo"] = False
+                    self._pf["sides"][sk]["refillFeeder"] = False
                 self._banner = {
                     "text": f"Reconectando PreFeeder ({PF_HOST}:{PF_PORT})…",
                     "kind": "warn",
@@ -2669,6 +2965,9 @@ class HmiState:
     def apply_detail_error(self, code_or_byte: str | int) -> bool:
         return self._apply_detail_error(code_or_byte)
 
+    def error_is_latched(self) -> bool:
+        return bool(self._error_policy.latch.active)
+
     def _set_banner(self, text: str, kind: str) -> None:
         if self._banner.get("text") == text and self._banner.get("kind") == kind:
             return
@@ -2687,6 +2986,12 @@ class HmiState:
         self._plc["status"] = {"text": text, "kind": kind}
 
     def _set_pf_status(self, text: str, kind: str) -> None:
+        if self._pf_is_generic_state_text(text):
+            detail = self._pf_detail_ui_text()
+            if not detail:
+                return
+            text = detail
+            kind = "error"
         cur = self._pf.get("status", {})
         if cur.get("text") == text and cur.get("kind") == kind:
             return
@@ -3011,6 +3316,7 @@ class HmiState:
                 kind = "info"
                 if byte_code == TX_PLC_ERROR:
                     kind = "error"
+                    self._plc_try_latch_once()
                     # No pisar EXXX (p.ej. E047) con "Error (0x027)" genérico.
                     latch = self._error_policy.latch
                     if (
@@ -3019,11 +3325,15 @@ class HmiState:
                         and "plc" in (latch.module or "").lower()
                     ):
                         text = latch.ui_text
+                    else:
+                        # ErrorState sin EXXX aún: banner de máquina (como Motion 0x0C).
+                        self._set_banner(text, "error")
+                        _append_log(self._main_log, text)
                 elif byte_code == TX_PLC_STOP:
                     kind = "warn"
                 elif byte_code in (TX_PLC_IDLE, TX_PLC_RETURN):
-                    # Res observacional (incl. C1) si PLC ya no está en ErrorState.
-                    if prev == TX_PLC_ERROR:
+                    # Res solo si sensores ya OK. Si sigue valve.error, el latch queda.
+                    if prev == TX_PLC_ERROR and self._plc_is_healthy():
                         self._clear_latch_for_module("plc", auto=True)
                     else:
                         self._try_auto_clear_error_if_healthy()
@@ -3062,6 +3372,9 @@ class HmiState:
                             self._plc_log,
                             f"{sensor_log[field]} — sensor de seguridad activo",
                         )
+                        self._plc_try_latch_once()
+                    else:
+                        self._try_auto_clear_error_if_healthy()
                     return True
                 valve_field_map = {
                     "cutterR": CMD_CUTTER_R,
@@ -3084,15 +3397,12 @@ class HmiState:
                 return False
             if mtype == "status" and msg.get("role") == "plca":
                 self._plc_sync_valves_from_status(msg)
-                sensor_fields = {
-                    "sensorGripper": CMD_GRIPPER,
-                    "sensorHolder": CMD_HOLDER,
-                    "sensorCutter": CMD_CUTTER_R,
-                    "sensorTray": CMD_ENCODER,
-                }
-                for sf, cmd_b in sensor_fields.items():
-                    if sf in msg:
-                        self._plc["valves"][str(cmd_b)]["error"] = bool(msg[sf])
+                for _label, cmd, _err_b, sf in PLC_VALVES:
+                    if sf and sf in msg:
+                        self._plc["valves"][str(cmd)]["error"] = bool(msg[sf])
+                self._plc_try_latch_once()
+                if not self._plc_has_fault():
+                    self._try_auto_clear_error_if_healthy()
                 return True
             if mtype == "ack":
                 ok = msg.get("ok", True)
@@ -3122,8 +3432,22 @@ class HmiState:
                 changed = True
         side_key = "L" if is_left else "R"
         runtime = self._pf.setdefault("sides", {}).setdefault(
-            side_key, {"autoState": None, "triggerActive": None}
+            side_key,
+            {
+                "autoState": None,
+                "triggerActive": None,
+                "idleMode": False,
+                "refillMaterial": False,
+                "refillDereeler": False,
+                "refillServo": False,
+                "refillFeeder": False,
+            },
         )
+        if "idleMode" in side:
+            idle = bool(side.get("idleMode"))
+            if runtime.get("idleMode") != idle:
+                runtime["idleMode"] = idle
+                changed = True
         if "autoState" in side:
             st = str(side.get("autoState") or "").strip().lower() or None
             if runtime.get("autoState") != st:
@@ -3134,19 +3458,89 @@ class HmiState:
             if runtime.get("triggerActive") != trig:
                 runtime["triggerActive"] = trig
                 changed = True
+        for src, dst in (
+            ("refillMaterial", "refillMaterial"),
+            ("refillDereeler", "refillDereeler"),
+            ("refillServo", "refillServo"),
+            ("refillFeeder", "refillFeeder"),
+        ):
+            if src not in side:
+                continue
+            val = bool(side.get(src))
+            if runtime.get(dst) != val:
+                runtime[dst] = val
+                changed = True
         return changed
+
+    def _pf_feed_sides(self) -> str:
+        try:
+            return CycleConfig.normalize_feed_sides(self._cycle.get_config().feed_sides)
+        except Exception:
+            return "LR"
+
+    def _pf_side_in_lot(self, is_left: bool) -> bool:
+        """¿Este lado alimenta el lote? L-only no cuenta fallos de R (y al revés)."""
+        mode = self._pf_feed_sides()
+        if mode == "LR":
+            return True
+        return is_left if mode == "L" else (not is_left)
+
+    def _pf_error_byte_in_lot(self, byte: int) -> bool:
+        """¿El opcode EXXX pertenece al lado del lote?"""
+        mode = self._pf_feed_sides()
+        if mode == "LR":
+            return True
+        if mode == "L":
+            return byte in PF_ERROR_BYTES_L
+        return byte in PF_ERROR_BYTES_R
+
+    def _pf_ok_when_active_in_lot(self, byte: int) -> bool:
+        """Buffer/Holgura del lado del lote. El lado que no alimenta no enclava EXXX."""
+        if byte not in _PF_OK_WHEN_ACTIVE:
+            return True
+        return self._pf_error_byte_in_lot(byte)
+
+    def _pf_master_error_in_lot(self) -> bool:
+        """errorAny del Master solo bloquea si el lado es el del lote."""
+        if not self._pf.get("error_any"):
+            return False
+        if self._pf_is_operator_stop_only():
+            return False
+        side = str(self._pf.get("master_error_side") or "").upper()
+        mode = self._pf_feed_sides()
+        if side in ("L", "R"):
+            return mode == "LR" or side == mode
+        return self._pf_primary_active_error_byte() is not None
+
+    def _pf_side_wire_err_id(self, side: dict) -> int:
+        wire = int(side.get("errorCode") or 0)
+        if 21 <= wire <= 27:
+            return wire - 20
+        if 31 <= wire <= 37:
+            return wire - 30
+        return 0
+
+    def _pf_side_error_in_lot(self, side: dict, is_left: bool) -> bool:
+        """¿El error enclavado del lado cuenta para la máquina (lote)?"""
+        if not isinstance(side, dict) or not side.get("error"):
+            return False
+        if not self._pf_side_in_lot(is_left):
+            return False
+        err_id = self._pf_side_wire_err_id(side)
+        if err_id == 5:
+            byte = TX_BUFFER_FULL_L if is_left else TX_BUFFER_FULL_R
+            return self._pf_ok_when_active_in_lot(byte)
+        if err_id == 6:
+            byte = TX_HOLGURA_L if is_left else TX_HOLGURA_R
+            return self._pf_ok_when_active_in_lot(byte)
+        return True
 
     def _apply_pf_side_fault(self, side: dict, is_left: bool) -> bool:
         """Sincroniza fault_active Buffer/Holgura desde error enclavado del lado."""
         if not isinstance(side, dict):
             return False
         err_on = bool(side.get("error"))
-        wire = int(side.get("errorCode") or 0)
-        err_id = 0
-        if 21 <= wire <= 27:
-            err_id = wire - 20
-        elif 31 <= wire <= 37:
-            err_id = wire - 30
+        err_id = self._pf_side_wire_err_id(side)
         # PfErrorId: BUFFER=5, HOLGURA=6 → opcodes TCP
         want: dict[int, bool] = {
             (TX_BUFFER_FULL_L if is_left else TX_BUFFER_FULL_R): False,
@@ -3171,6 +3565,8 @@ class HmiState:
         Con ciclo activo: C1 > C3 > C2 — así Buffer Max (C3) gana a Holgura (C2)
         y el lote puede terminar/cortar la pieza antes de Pause/Resume.
         """
+        if self._pf_materialist_now():
+            return None
         prefer_c3 = False
         try:
             prefer_c3 = bool(self._cycle.is_active())
@@ -3188,8 +3584,10 @@ class HmiState:
                 byte = int(key)
             except (TypeError, ValueError):
                 continue
+            if not self._pf_error_byte_in_lot(byte):
+                continue
             if byte in _PF_OK_WHEN_ACTIVE:
-                # Sensor ON ≠ EXXX; solo fallo enclavado (timeout).
+                # Sensor ON ≠ EXXX; solo fallo enclavado (timeout) del lado del lote.
                 if not self._pf["fault_active"].get(key):
                     continue
             elif not info.get("active"):
@@ -3205,17 +3603,79 @@ class HmiState:
 
     def _pf_status_kind_for_byte(self, byte_code: int) -> str:
         if byte_code == TX_PF_ERROR:
-            return "error"
+            return "error" if self._pf_cached_has_fault() else "info"
         if byte_code == TX_PF_STOP:
             return "warn"
         if byte_code in (TX_PF_IDLE, TX_PF_RETURN):
             return "ok"
         return "info"
 
+    def _pf_latch_is_prefeeder(self) -> bool:
+        latch = self._error_policy.latch
+        if not latch.active:
+            return False
+        mod = (latch.module or "").lower()
+        return "pre" in mod or "feeder" in mod
+
+    def _pf_cache_master_error(self, msg: dict) -> None:
+        """Guarda el detalle del Master. Descarta ErrorState 0x3C."""
+        me = msg.get("masterError")
+        if not isinstance(me, dict):
+            return
+        if not me.get("active"):
+            self._pf["master_error_ui"] = ""
+            self._pf["master_error_side"] = ""
+            return
+        side = str(me.get("side") or "").strip().upper()
+        self._pf["master_error_side"] = side if side in ("L", "R") else ""
+        ui = str(me.get("ui") or "").strip()
+        low = ui.lower()
+        if ui and "errorstate" not in low and "0x03c" not in low:
+            self._pf["master_error_ui"] = ui
+            return
+        exxx = str(me.get("exxx") or me.get("tag") or "").strip()
+        if exxx.startswith("E") and lookup(exxx):
+            self._pf["master_error_ui"] = format_ui(exxx)
+            return
+        low_tag = exxx.lower()
+        if "007" in exxx or "operator" in low_tag:
+            self._pf["master_error_ui"] = "PF-007"
+            return
+        self._pf["master_error_ui"] = ""
+
+    def _pf_detail_ui_text(self) -> str | None:
+        """Texto para el técnico: EXXX (o UI Master). Nunca 0x3C ni PF-007."""
+        if self._pf_is_operator_stop_only():
+            return None
+        if self._pf_latch_is_prefeeder():
+            ui = (self._error_policy.latch.ui_text or "").strip()
+            if ui:
+                return ui
+        primary = self._pf_primary_active_error_byte()
+        if primary is not None:
+            return format_ui(primary)
+        ui = str(self._pf.get("master_error_ui") or "").strip()
+        return ui or None
+
+    def _pf_paint_detail_status(self) -> bool:
+        """Pinta el EXXX en la tarjeta PF. True si cambió el texto."""
+        ui = self._pf_detail_ui_text()
+        if not ui:
+            return False
+        before = (self._pf.get("status") or {}).get("text")
+        self._set_pf_status(ui, "error")
+        return before != ui
+
     def _refresh_pf_status_from_state(self) -> None:
         """Tras Res: no dejar el banner del módulo en EXXX si el Master ya salió."""
+        if self._pf_cached_has_fault():
+            self._pf_paint_detail_status()
+            return
         byte_code = self._pf.get("last_state_byte")
         if not byte_code:
+            self._set_pf_status("Listo.", "ok")
+            return
+        if int(byte_code) == TX_PF_ERROR:
             self._set_pf_status("Listo.", "ok")
             return
         text = PF_STATE_TEXT.get(
@@ -3229,33 +3689,45 @@ class HmiState:
             return False
         prev_byte = self._pf["last_state_byte"]
         self._pf["last_state_byte"] = byte_code
-        text = PF_STATE_TEXT.get(
-            byte_code, f"Estado PreFeeder 0x{byte_code:02X}"
-        )
-        kind = self._pf_status_kind_for_byte(byte_code)
         if (
             prev_byte == TX_PF_ERROR
             and byte_code in _PF_CLEAR_LATCH_STATES
         ):
             # Auto ON → Busy (no Idle): antes solo Idle/Return hacían Res.
             self._clear_latch_for_module("prefeeder", auto=True)
-        self._set_pf_status(text, kind)
+        if self._pf_cached_has_fault():
+            # Idle/Busy no deben tapar un EXXX del lote (UI verde + ciclo bloqueado).
+            self._pf_paint_detail_status()
+            return True
+        if byte_code == TX_PF_ERROR:
+            # Como PLC: 0x3C no se pinta. El técnico ve el EXXX o nada aún.
+            return True
+        text = PF_STATE_TEXT.get(
+            byte_code, f"Estado PreFeeder 0x{byte_code:02X}"
+        )
+        self._set_pf_status(text, self._pf_status_kind_for_byte(byte_code))
         return True
 
     def _pf_master_has_fault(self, msg: dict) -> bool:
-        """¿Master reporta fallo? errorAny / masterError / lados / espejo local."""
-        if "errorAny" in msg:
-            return bool(msg.get("errorAny"))
-        me = msg.get("masterError")
-        if isinstance(me, dict) and "active" in me:
-            return bool(me.get("active"))
-        for side_key in ("l", "r"):
+        """¿Master reporta fallo del lote? El lado que no alimenta no cuenta."""
+        if self._pf_materialist_now():
+            return False
+        has_sides = False
+        for side_key, is_left in (("l", True), ("r", False)):
             side = msg.get(side_key)
-            if isinstance(side, dict) and bool(side.get("error")):
+            if not isinstance(side, dict):
+                continue
+            has_sides = True
+            if self._pf_side_error_in_lot(side, is_left):
                 return True
-        if self._pf.get("last_state_byte") == TX_PF_ERROR:
-            return True
-        return self._pf_primary_active_error_byte() is not None
+        if has_sides:
+            return False
+        if "errorAny" in msg and bool(msg.get("errorAny")):
+            return self._pf_master_error_in_lot()
+        me = msg.get("masterError")
+        if isinstance(me, dict) and me.get("active"):
+            return self._pf_master_error_in_lot()
+        return False
 
     def _pf_try_clear_if_healthy(self, msg: dict) -> bool:
         """Res HMI si Master ya OK (evita E063 enclavado con HTML en verde)."""
@@ -3276,6 +3748,9 @@ class HmiState:
     def _pf_try_latch_once(self) -> bool:
         """Un solo Set/log/Andon por fallo PF. Sensores viven en el panel HMI."""
         if self._error_policy.latch.active:
+            # Latch ya puesto: no dejar la tarjeta en 0x3C genérico.
+            if self._pf_latch_is_prefeeder():
+                self._pf_paint_detail_status()
             return False
         primary = self._pf_primary_active_error_byte()
         if primary is None:
@@ -3295,16 +3770,19 @@ class HmiState:
             if mtype == "status" and msg.get("actuator") == "prefeeder":
                 changed = False
                 entered_error = False
+                any_rose = False
                 byte_code = int(msg.get("byte") or 0)
                 prev_byte = self._pf["last_state_byte"]
-                if self._pf_apply_state_byte(byte_code):
-                    changed = True
-                    entered_error = (
-                        byte_code == TX_PF_ERROR and prev_byte != TX_PF_ERROR
-                    )
+                if "errorAny" in msg:
+                    any_fault = bool(msg.get("errorAny"))
+                    any_rose = any_fault and not bool(self._pf.get("error_any"))
+                    if bool(self._pf.get("error_any")) != any_fault:
+                        changed = True
+                    self._pf["error_any"] = any_fault
+                self._pf_cache_master_error(msg)
                 side_l = msg.get("l")
                 side_r = msg.get("r")
-                # status.error es la fuente de verdad Buffer/Holgura (no el sensor home).
+                # Lados primero: el EXXX debe existir antes de pintar estado.
                 prev_faults = {
                     k: bool(v) for k, v in self._pf["fault_active"].items()
                 }
@@ -3314,13 +3792,39 @@ class HmiState:
                 if isinstance(side_r, dict):
                     changed = self._apply_pf_side_sensors(side_r, False) or changed
                     changed = self._apply_pf_side_fault(side_r, False) or changed
+                pf_idle = bool(
+                    (self._pf.get("sides") or {}).get("L", {}).get("idleMode")
+                    or (self._pf.get("sides") or {}).get("R", {}).get("idleMode")
+                )
+                if self._pf_materialist_force_off:
+                    if not pf_idle:
+                        self._pf_materialist_force_off = False
+                        if self._pf_materialist:
+                            self._pf_materialist = False
+                            changed = True
+                elif self._pf_materialist != pf_idle:
+                    self._pf_materialist = pf_idle
+                    changed = True
+                if self._pf_apply_state_byte(byte_code):
+                    changed = True
+                    entered_error = (
+                        byte_code == TX_PF_ERROR and prev_byte != TX_PF_ERROR
+                    )
                 fault_rose = any(
                     bool(self._pf["fault_active"].get(k)) and not prev_faults.get(k)
                     for k in self._pf["fault_active"]
                 )
-                if entered_error or fault_rose:
-                    changed = self._pf_try_latch_once() or changed
+                if self._pf_cached_has_fault():
+                    if entered_error or fault_rose or any_rose:
+                        changed = self._pf_try_latch_once() or changed
+                    changed = self._pf_paint_detail_status() or changed
                 elif self._pf_try_clear_if_healthy(msg):
+                    changed = True
+                elif (
+                    byte_code == TX_PF_ERROR
+                    and not self._pf_cached_has_fault()
+                ):
+                    self._refresh_pf_status_from_state()
                     changed = True
                 return changed
             if mtype == "state" and msg.get("actuator") == "prefeeder":
@@ -3331,6 +3835,7 @@ class HmiState:
                 # Buffer/Holgura: fault_active ya viene de eventos previos o status.
                 if byte_code == TX_PF_ERROR and prev_byte != TX_PF_ERROR:
                     self._pf_try_latch_once()
+                    self._pf_paint_detail_status()
                 return True
             if mtype == "event":
                 byte_code = int(msg.get("byte", 0))
@@ -3351,6 +3856,7 @@ class HmiState:
                     # Sensores → panel. Un solo Set/log/Andon (el EXXX primario).
                     if active and prev is not True:
                         self._pf_try_latch_once()
+                        self._pf_paint_detail_status()
                     return prev != active
             if mtype == "ack":
                 ok = msg.get("ok", True)

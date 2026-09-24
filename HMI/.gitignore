@@ -14,3 +14,6 @@ frontend/dist/
 .DS_Store
 Thumbs.db
 *.log
+
+# Timing de ciclo (generado en runtime)
+logs/

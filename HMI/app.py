@@ -356,12 +356,6 @@ def api_cycle_step_by_step():
     return jsonify(get_state().cmd_cycle_step_by_step(_parse_on(body)))
 
 
-@app.post("/api/cycle/trial-mode")
-def api_cycle_trial_mode():
-    body = request.get_json(silent=True) or {}
-    return jsonify(get_state().cmd_cycle_trial_mode(bool(body.get("on", True))))
-
-
 @app.post("/api/cycle/refill")
 def api_cycle_refill():
     body = request.get_json(silent=True) or {}
@@ -382,9 +376,22 @@ def api_cycle_refill_confirm():
     return jsonify(get_state().cmd_cycle_refill_confirm(bool(ok)))
 
 
+@app.post("/api/cycle/recovery/review")
+def api_cycle_recovery_review():
+    body = request.get_json(silent=True) or {}
+    ok = body.get("ok", body.get("confirm", True))
+    return jsonify(get_state().cmd_recovery_review(bool(ok)))
+
+
 @app.post("/api/cycle/refill/retry")
 def api_cycle_refill_retry():
-    return jsonify(get_state().cmd_cycle_refill_retry())
+    body = request.get_json(silent=True) or {}
+    feed_mm = body.get("mm", body.get("feedMm"))
+    return jsonify(
+        get_state().cmd_cycle_refill_retry(
+            feed_mm=float(feed_mm) if feed_mm is not None else None
+        )
+    )
 
 
 @app.get("/api/cycle/config")
@@ -442,8 +449,8 @@ def api_plc():
 @app.post("/api/prefeeder")
 def api_pf():
     body = request.get_json(silent=True) or {}
-    action = body.get("action", "")
-    return jsonify(get_state().cmd_pf(action))
+    action = body.pop("action", "")
+    return jsonify(get_state().cmd_pf(action, **body))
 
 
 @app.post("/api/andon")

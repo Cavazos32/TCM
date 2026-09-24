@@ -11,7 +11,8 @@ String jsonEscape(const String& in);
 bool feedOmReadOfficialMmSide(bool sideR, float* officialOut,
                               float* mmSignedOut = nullptr, float* mmAbsOut = nullptr);
 bool feedOmReadLiveMmSide(bool sideR, float* mmSignedOut);
-bool feedOmResetSide(bool sideR);
+// settleZero=true: UI/Set0 (OM oficial=0 ya). false: inicio de feed (exige settle real).
+bool feedOmResetSide(bool sideR, bool settleZero = true);
 bool feedOmIsSettledSide(bool sideR);
 float feedOmGetOffsetMmSide(bool sideR);
 
@@ -98,7 +99,9 @@ String feedStatusJson();
 
 bool feedQueueTest(const FeedTestReq& req, String& err);
 // skipValidate: purga/refill — LengthOK al fin de servo, sin láser ni ventana OM.
-bool feedQueueTestSide(int8_t onlySide, String& err, bool skipValidate = false);
+// targetMm>0 solo con skipValidate (p.ej. Long feed 100 mm). Ciclo normal: 0 → 55 fijo.
+bool feedQueueTestSide(int8_t onlySide, String& err, bool skipValidate = false,
+                       float targetMm = 0.0f);
 bool feedResetRuntime();
 
 void motionTcpOnEncoderError();

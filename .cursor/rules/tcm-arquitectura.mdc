@@ -23,12 +23,12 @@ Al cerrar el cambio: indicar qué archivos se alinearon.
 
 ## Comunicación
 
-- Flip-flop **Set / Res**: no polling de sensores ni de “¿sigues en error?”. Res también puede ser **observacional** (módulo fuente ya OK + ciclo inactivo → limpia latch HMI sin Reset a esclavos; ver `Doc/normas_arquitectura.md`).
+- Flip-flop **Set / Res**: no polling de sensores ni de “¿sigues en error?”. Res también puede ser **observacional** (módulo fuente ya OK + ciclo inactivo → limpia latch HMI sin Reset a esclavos; ver `Doc/normas_arquitectura.md`). No aplica a E06x ni a lote abortado (E068 / último lote NO OK).
 - Heartbeat TCP solo valida enlace; no sustituye eventos de aplicación.
 - Opcode = contrato (Excel / Opcodes). No inventar bytes sueltos.
-- PLC válvulas: pulso ON/OFF (KEEP); no enclavado en GPIO ESP. Excepción: Blower (nivel + durationSec del comando).
+- PLC válvulas: pulso ON/OFF (KEEP); no enclavado en GPIO ESP. Excepción: Blower (nivel + durationSec del comando). C2/C3 Pause y soft-Res pueden mandar **solo Blower OFF** (cancelar timer).
 - Reset PLC `0x1E`: control PLC **o** Reset HMI hard; tras Reset estados lógicos OFF (HMI refleja). All Off solo bajo demanda (UI / ciclo / Home máquina).
-- Stop, Pause y soft-Res C2/C3 **no** mandan válvulas ni Reset PLC. Reset HMI hard sí manda Reset PLC. Home máquina: ASDA→0 + encoders Set0 + All Off.
+- Stop, Pause y soft-Res C2/C3 **no** mandan válvulas KEEP ni Reset PLC. Reset HMI hard sí manda Reset PLC. Home máquina: ASDA→0 + encoders Set0 + All Off.
 - Andon: solo estado máquina `0x40–0x49` (no EXXX); TCP `:8769`; mute buzzer desde HMI Debug.
 
 ## M5 — Communication Core protegido
@@ -48,7 +48,8 @@ Detalle operativo: `.cursor/rules/tcm-communication.mdc` (+ `Doc/normas_arquitec
 - EXXX no se reenvía entre esclavos; se alinean por estado / stop / reset.
 - Mismo EXXX + descripción en Main y en HTML local del módulo (R0).
 - Catálogo oficial: hoja Error list en `Doc/TCM - D.xlsx`.
-- Salida de fallo: secuencia fija de su clase; no atajos por EXXX ni por módulo.
+- Salida de fallo: secuencia fija de su clase; no atajos por EXXX ni por módulo. **Excepción:** E050 con lote/pieza activo — Pause, preguntar (material / terminar / vaciar sin corte), Reset soft, Resume (Start si el lote ya cerró). Fuera de lote E050 = C1. Detalle: `Doc/normas_arquitectura.md`.
+- C2/C3 con lote activo: Reset → Resume → terminar pieza → review OK → purga (refill existente) → Continuar ciclo → el lote sigue. Stop solo si el operador pulsa Stop.
 
 ## Código
 

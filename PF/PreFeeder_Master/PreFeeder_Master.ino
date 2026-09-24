@@ -79,6 +79,10 @@ struct SideView {
   bool inProcess = false;
   bool sensorsArmed = false;
   bool triggerActive = false;  // Motor2 Tfeed / helper holgura en curso
+  bool refillMaterial = false;
+  bool refillDereeler = false;
+  bool refillServo = false;
+  bool refillFeeder = false;
   String machineState = "idle";
   uint32_t lastMsAgo = 99999;
 };
@@ -177,6 +181,10 @@ static bool pfDispatchCmd(const String& cmd, const String& val, char sideArg)
   const PfCmdScope scope = pfMasterCmdScope(cmd);
   if (scope == PfCmdScope::Global)
   {
+    // setInProcess con side L|R: solo ese esclavo (lote L-only no arma holgura del otro).
+    if ((cmd == "setInProcess" || cmd == "inProcess")
+        && (sideArg == 'L' || sideArg == 'R'))
+      return pfSendSideCmd(sideArg, cmd, val);
     if (!pfClientL.connected() && !pfClientR.connected()) return false;
     pfBroadcastCmd(cmd, val);
     return true;
@@ -303,6 +311,10 @@ static void parseSideSnapshot(const char* j, SideView& s)
   s.inProcess = jBool(j, "inProcess", s.inProcess);
   s.sensorsArmed = jBool(j, "sensorsArmed", s.sensorsArmed);
   s.triggerActive = jBool(j, "triggerActive", s.triggerActive);
+  s.refillMaterial = jBool(j, "refillMaterial", s.refillMaterial);
+  s.refillDereeler = jBool(j, "refillDereeler", s.refillDereeler);
+  s.refillServo = jBool(j, "refillServo", s.refillServo);
+  s.refillFeeder = jBool(j, "refillFeeder", s.refillFeeder);
   String ms = jStr(j, "machineState");
   if (ms.length()) s.machineState = ms;
   applySideError(s, jBool(j, "error", s.error),
@@ -313,8 +325,19 @@ static void parseSideSnapshot(const char* j, SideView& s)
 static void parseSideEvent(const char* line, SideView& s)
 {
   String field = jStr(line, "field");
-  // error: solo desde status periódico (evita parpadeo PAUSE por eventos delta)
-  if (field == "error") return;
+  // Set de error: solo status periódico (evita parpadeo PAUSE / carrera post-Reset).
+  // Res: el esclavo ya no tiene systemFault — no dejar ErrorState colgado
+  // si el status se retrasa o se pierde (HTML L/R verde, Master/HMI en 0x3C).
+  if (field == "error")
+  {
+    const bool active = jBool(line, "value", s.error);
+    if (!active && s.error)
+    {
+      applySideError(s, false, 0, String("none"));
+      recomputeMasterError();
+    }
+    return;
+  }
   if (field == "home") s.home = jBool(line, "value", s.home);
   else if (field == "endstop") s.endstop = jBool(line, "value", s.endstop);
   else if (field == "tension") s.tension = jBool(line, "value", s.tension);
@@ -325,6 +348,13 @@ static void parseSideEvent(const char* line, SideView& s)
   else if (field == "inProcess") s.inProcess = jBool(line, "value", s.inProcess);
   else if (field == "sensorsArmed") s.sensorsArmed = jBool(line, "value", s.sensorsArmed);
   else if (field == "triggerActive") s.triggerActive = jBool(line, "value", s.triggerActive);
+  else if (field == "refill")
+  {
+    s.refillMaterial = jBool(line, "material", s.refillMaterial);
+    s.refillDereeler = jBool(line, "dereeler", s.refillDereeler);
+    s.refillServo = jBool(line, "servo", s.refillServo);
+    s.refillFeeder = jBool(line, "feeder", s.refillFeeder);
+  }
   else if (field == "machineState")
   {
     String ms = jStr(line, "value");
@@ -571,6 +601,10 @@ static void appendSideJson(String& j, const char* key, const SideView& s)
   j += ",\"inProcess\":"; j += s.inProcess ? "true" : "false";
   j += ",\"sensorsArmed\":"; j += s.sensorsArmed ? "true" : "false";
   j += ",\"triggerActive\":"; j += s.triggerActive ? "true" : "false";
+  j += ",\"refillMaterial\":"; j += s.refillMaterial ? "true" : "false";
+  j += ",\"refillDereeler\":"; j += s.refillDereeler ? "true" : "false";
+  j += ",\"refillServo\":"; j += s.refillServo ? "true" : "false";
+  j += ",\"refillFeeder\":"; j += s.refillFeeder ? "true" : "false";
   j += ",\"machineState\":"; jsonAppendStr(j, s.machineState);
   j += ",\"error\":"; j += s.error ? "true" : "false";
   j += ",\"errorCode\":"; j += s.errorCode;
@@ -1042,17 +1076,42 @@ static void pfTcpTxAck(uint8_t cmdByte, bool ok, const String& err)
 
 // InProcess vía command string (misma ruta peer que /api/auto?in_process=).
 // Sin opcode Excel dedicado: no inventar byte; HMI manda command+value.
-static bool pfTcpDoInProcess()
+static bool pfTcpDoInProcess(char side)
 {
   String err;
   bool ok = false;
   const String v = pfPeerOnOffVal(
       pfTcpCmdValue.length() ? pfTcpCmdValue : String("1"));
-  if (!pfGlobalLinkUp()) {
+  if (side == 'L' || side == 'R') {
+    ok = pfDispatchCmd("setInProcess", v, side);
+    if (!ok) {
+      err = String("InProcess sin enlace ");
+      err += side;
+    }
+  } else if (!pfGlobalLinkUp()) {
     err = "InProcess sin enlace L/R";
   } else {
     ok = pfDispatchCmd("setInProcess", v, '-');
     if (!ok) err = "InProcess no enviado a L/R";
+  }
+  pfTcpTxAck(0, ok, err);
+  return ok;
+}
+
+// Refill Materialista por lado (misma ruta peer que HTML L/R /api/refill).
+// Sin opcode Excel: no inventar byte; HMI manda command+value+side.
+static bool pfTcpDoRefill(const String& cmd, char side)
+{
+  String err;
+  bool ok = false;
+  const String v = pfPeerOnOffVal(
+      pfTcpCmdValue.length() ? pfTcpCmdValue : String("1"));
+  if (side != 'L' && side != 'R') {
+    err = "Refill requiere side L|R";
+  } else if (!pfSendSideCmd(side, cmd, v)) {
+    err = String("Refill sin enlace ") + side;
+  } else {
+    ok = true;
   }
   pfTcpTxAck(0, ok, err);
   return ok;
@@ -1144,7 +1203,12 @@ static void pfTcpOnLine(const char* line)
 
   const String cmdName = jStr(line, "command");
   if (cmdName == "setInProcess" || cmdName == "inProcess" || cmdName == "InProcess") {
-    pfTcpDoInProcess();
+    pfTcpDoInProcess(jSideChar(line, '-'));
+    return;
+  }
+  if (cmdName == "refillMaterial" || cmdName == "refillDereeler"
+      || cmdName == "refillServo" || cmdName == "refillFeeder") {
+    pfTcpDoRefill(cmdName, jSideChar(line, '-'));
     return;
   }
 

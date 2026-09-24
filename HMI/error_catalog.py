@@ -57,6 +57,7 @@ _ROWS: tuple[tuple[str, str, int, str, str, str], ...] = (
     ("E048", "PLC", 0x20, "PLC_ERR_GRIPPER", "Gripper / presion de aire baja o nula", CLASS_C1),
     ("E049", "PLC", 0x21, "PLC_ERR_HOLDER", "Holder error", CLASS_C1),
     # EncoderE (bandeja FG): también aire baja·nula, presencia de manguera o falla de cilindro
+    # E050 C1 fuera de lote. Con pieza/lote activo: Pause + pregunta (normas § E050).
     ("E050", "PLC", 0x22, "PLC_ERR_ENCODER", "Encoder / aire, manguera o cilindro", CLASS_C1),
     # --- PreFeeder ---
     ("E052", "Pre-Feeder", 0x2D, "PF_ERR_BUFFER_FULL_R", "Buffer sin relleno", CLASS_C2),

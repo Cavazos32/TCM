@@ -21,6 +21,7 @@ import type {
   LogEntry,
   MachineState,
   MotionState,
+  PfRefillChannel,
   PlcState,
   PreFeederState,
   TabType,
@@ -64,8 +65,13 @@ const DEFAULT_MACHINE: MachineState = {
   refillActive: false,
   refillAwaitingConfirm: false,
   refillPrompt: '',
+  recoveryPrompt: '',
+  recoveryAwaitingConfirm: false,
+  recoveryAfterError: false,
+  e050Lot: false,
+  e050FinishPiece: false,
+  refillSkipCut: false,
   stepByStep: false,
-  trialMode: false,
   pauseEnabled: false,
   progress: 0,
   cycleTimeSec: 0,
@@ -110,6 +116,9 @@ export function useHmiState() {
       isRunning: false,
       sensorsL: [],
       sensorsR: [],
+      idleMode: false,
+      refillL: { material: false, dereeler: false, servo: false, feeder: false },
+      refillR: { material: false, dereeler: false, servo: false, feeder: false },
     },
     andonState: {
       connection: { connected: false, ip: '10.10.32.61', port: 8769 },
@@ -259,15 +268,9 @@ export function useHmiState() {
   }, [applySnapshot]);
 
   const start = useCallback(() => {
-    // Trial quitado de la UI: forzar OFF. Paso a paso se respeta si está activo.
-    void (async () => {
-      try {
-        await api.setCycleTrialMode(false);
-      } catch {
-        // ignore
-      }
-      api.startCycle(targetQtyRef.current).catch(() => {});
-    })();
+    api.startCycle(targetQtyRef.current).then((res) => {
+      if (res && res.ok === false && res.error) window.alert(res.error);
+    }).catch(() => {});
   }, []);
 
   const stop = useCallback(() => {
@@ -348,6 +351,8 @@ export function useHmiState() {
     const cur =
       view.machineState.cycleMaterialist || !!(snap?.cycle.materialist ?? false);
     const next = !cur;
+    const prevBusy = view.machineState.cycleBusy;
+    const prevSnapBusy = snap?.cycle.busy;
     // Optimista: el botón refleja el clic al instante (SSE puede tardar).
     setView((prev) => ({
       ...prev,
@@ -367,16 +372,39 @@ export function useHmiState() {
         },
       };
     }
+    const revert = () => {
+      setView((prev) => ({
+        ...prev,
+        machineState: {
+          ...prev.machineState,
+          cycleMaterialist: cur,
+          cycleBusy: prevBusy,
+        },
+      }));
+      if (snapRef.current) {
+        snapRef.current = {
+          ...snapRef.current,
+          cycle: {
+            ...snapRef.current.cycle,
+            materialist: cur,
+            busy: prevSnapBusy,
+          },
+        };
+      }
+    };
     api
       .cycleMaterialist(next)
       .then((res) => {
         if (res && (res as { ok?: boolean }).ok === false) {
+          revert();
           const err = (res as { error?: string }).error;
           if (err) window.alert(err);
         }
       })
-      .catch(() => {});
-  }, [view.machineState.cycleMaterialist]);
+      .catch(() => {
+        revert();
+      });
+  }, [view.machineState.cycleMaterialist, view.machineState.cycleBusy]);
 
   const toggleCycleBusy = useCallback(() => {
     const snap = snapRef.current;
@@ -422,10 +450,6 @@ export function useHmiState() {
       .catch(() => {});
   }, []);
 
-  const setCycleTrialMode = useCallback((on: boolean) => {
-    api.setCycleTrialMode(on).catch(() => {});
-  }, []);
-
   const startRefill = useCallback(async (opts?: { mm?: number; asdaMm?: number }) => {
     try {
       const res = await api.startCycleRefill(opts);
@@ -448,9 +472,20 @@ export function useHmiState() {
     }
   }, []);
 
-  const retryRefill = useCallback(async () => {
+  const confirmRecoveryReview = useCallback(async (ok: boolean = true) => {
     try {
-      const res = await api.retryCycleRefill();
+      const res = await api.confirmRecoveryReview(ok);
+      if (res && res.ok === false && res.error) {
+        window.alert(res.error);
+      }
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const retryRefill = useCallback(async (mm?: number) => {
+    try {
+      const res = await api.retryCycleRefill(mm != null ? { mm } : undefined);
       if (res && res.ok === false && res.error) {
         window.alert(res.error);
       }
@@ -661,6 +696,29 @@ export function useHmiState() {
     }).catch(() => {});
   }, []);
 
+  const pfRefill = useCallback((side: 'L' | 'R', channel: PfRefillChannel, on: boolean) => {
+    const key = side === 'L' ? 'refillL' : 'refillR';
+    setView((prev) => {
+      const cur = prev.preFeederState[key];
+      const next = { ...cur, [channel]: on };
+      if (channel === 'material') {
+        next.dereeler = on;
+        next.servo = on;
+        next.feeder = on;
+        next.material = on;
+      } else {
+        next.material = next.dereeler && next.servo && next.feeder;
+      }
+      return {
+        ...prev,
+        preFeederState: { ...prev.preFeederState, [key]: next },
+      };
+    });
+    api.prefeederAction('refill', { side, channel, on }).then((res) => {
+      if (res.ok === false && res.error) window.alert(res.error);
+    }).catch(() => {});
+  }, []);
+
   const andonSetOut = useCallback((out: 'green' | 'yellow' | 'red' | 'buzzer', on: boolean) => {
     api.andonAction('set_out', { out, on }).catch(() => {});
   }, []);
@@ -726,10 +784,10 @@ export function useHmiState() {
     toggleCycleMaterialist,
     toggleCycleBusy,
     setCycleStepByStep,
-    setCycleTrialMode,
     startRefill,
     confirmRefill,
     retryRefill,
+    confirmRecoveryReview,
     reloadFeedOffset,
     saveCycleConfig,
     reloadCycleConfig,
@@ -757,6 +815,7 @@ export function useHmiState() {
     pfMaterialist,
     pfTriggerR,
     pfTriggerL,
+    pfRefill,
     andonSetOut,
     andonAllOff,
     andonResumeAuto,

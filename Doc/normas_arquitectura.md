@@ -52,7 +52,7 @@ Se trata como **flip-flop**:
 Mientras no haya **Set**, no hay acción obligatoria. No inventar polling de “por si acaso”.
 
 **Res observacional (HMI):** si el latch EXXX sigue activo pero el **módulo fuente ya no está en error** (caché HMI: no ErrorState, sensores/fallos del módulo OK, enlace up) y **no hay ciclo activo**, Main limpia el latch **sin** mandar Reset/All Off a los esclavos. Así el operador no pierde un setup ya hecho solo porque olvidó Reset.  
-No aplica a E06x de enlace (solo al recuperar socket). Con lote C2/C3 en Pause sigue haciendo falta soft-Res explícito antes de Resume.
+No aplica a E06x de enlace (solo al recuperar socket). **Tampoco a E068 (ciclo abortado) ni si el último lote quedó NO OK:** In process OFF / Idle del PreFeeder no borra el aborto; el Res es explícito. Con lote C2/C3 en Pause sigue haciendo falta soft-Res explícito antes de Resume.
 
 **Excepción de enlace:** el heartbeat TCP (`ping`/`pong` o keepalive) solo verifica que el socket vive.  
 No es sondeo de sensores ni de estado de aplicación. Los sensores/válvulas se publican por **evento** (cambio) o status push del esclavo.
@@ -80,7 +80,8 @@ HMI/ciclo siguen enviando `on: true|false` como hasta ahora.
 **Home de máquina** (control de máquina): ASDA → posición 0 + encoders Set0 L/R + **All Off** neumática.  
 Operar PLC manual = pulso ON/OFF, All Off, o Reset PLC.
 
-**Excepción Blower:** no es KEEP. El pin queda **ON (nivel)** durante `durationSec` (ajustable en UI PLC; el esclavo debe respetar ese valor, no un default fijo si viene en el comando) y luego **OFF** automático.
+**Excepción Blower:** no es KEEP. El pin queda **ON (nivel)** durante `durationSec` (ajustable en UI PLC; el esclavo debe respetar ese valor, no un default fijo si viene en el comando) y luego **OFF** automático.  
+C2/C3 Pause y soft-Res pueden mandar **solo Blower OFF** (cancela el timer). No es All Off ni pulso KEEP de otras válvulas.
 
 ---
 
@@ -156,6 +157,7 @@ Resto de módulos en red → estados / stop / reset.
 
 Salir de un error **solo** con la secuencia de su clase.  
 No hay caminos distintos por EXXX, por módulo ni por atajo de operador.  
+**Excepción documentada:** E050 con pieza/lote activo (abajo). Fuera de lote, E050 sigue C1.  
 Cambiar un paso u orden = cambiar **este documento** primero.
 
 #### Secuencia C1
@@ -169,46 +171,58 @@ Cambiar un paso u orden = cambiar **este documento** primero.
 7. **Homing general** obligatorio.  
 8. Idle / aceptar Start.
 
-**Atajo permitido:** si tras corregir la causa el operador ya validó / hizo Home/setup y el módulo fuente está Idle/OK (sin ErrorState) con **ciclo inactivo**, HMI aplica **Res observacional** del latch (sin Reset a esclavos ni All Off). No obliga a repetir Reset HMI solo para borrar el EXXX en barra.
+**Atajo permitido:** si tras corregir la causa el operador ya validó / hizo Home/setup y el módulo fuente está Idle/OK (sin ErrorState) con **ciclo inactivo**, HMI aplica **Res observacional** del latch (sin Reset a esclavos ni All Off). No obliga a repetir Reset HMI solo para borrar el EXXX en barra. No aplica si el lote abortó (E068 / último lote NO OK).
 
 Prohibido: Reset sin confirmación (salvo Res observacional con módulo ya OK); Start sin home tras Reset C1 formal; saltar validación en la secuencia formal; mandar **All Off** desde C1 (All Off = Home de máquina / control PLC).
 
-#### Secuencia C2
+#### Secuencia C2 / C3 (lote activo)
 
-1. Proceso pausado; no hubo siguiente step. **PLC no se toca.**  
+El lote **no se cierra** en el error. **Stop** solo si el operador pulsa Stop.
+
+1. Pause (no siguiente step). **PLC no se toca.** C2 y C3 igual: no auto-terminan la pieza.  
 2. Corregir causa si aplica.  
 3. **Reset HMI** (Res) — **soft**: limpia latch + reset Motion/PF; **no** aborta el lote ni va a Idle.  
-4. **Resume**.  
-5. Proceso desde **step 0**.
-   - Si el láser de los lados de `feedSides` ya detecta material → **omitir solo Alimentación (feed)**; el resto de la pieza sigue.
-   - Criterio: solo láser ON (no exige ventana OM).
+4. **Resume** → **terminar la pieza** con FLOW_STEPS actual (sin pasos nuevos).  
+5. Operario **revisa la pieza** y da OK.  
+6. **Purga** (secuencia refill existente: park → feed 55 mm → Next Cutting → corte → Next ASDA 0).  
+7. Operario pulsa **Continuar ciclo**. La siguiente pieza hace Tfeed + Feed real (sin handoff residual). Para parar: botón Stop.
 
-Prohibido: Resume sin Reset; matar el ciclo en el Reset C2; tocar válvulas desde C2.
+Pause C2/C3 no come timeouts de feed/lineal: un wait no debe `_finish` el lote.
 
-#### Secuencia C3
+Prohibido: Resume sin Reset; continuar lote sin review + purga + Continuar ciclo; matar el ciclo en el Reset C2/C3; Stop automático (solo el botón); tocar válvulas desde C2/C3; añadir pasos de recuperación a FLOW_STEPS.
 
-1. En lote productivo: completar la **pieza en curso** (avance + corte) de forma segura; luego Pause.  
-   Fuera de lote / paso suelto: terminar el paso en curso; luego Pause. **PLC no se toca.**  
-2. Corregir causa si aplica.  
-3. **Reset HMI** (Res) — **soft** (igual que C2: no aborta el lote). Si la pieza aún no terminó, el soft-Res deja seguir hasta el corte.  
-4. **Resume**.  
-5. **Reintentar el proceso / continuar lote** (no home C1 ni “desde step 0” C2).
-
-Con varios EXXX PF a la vez en lote activo: priorizar **C3** sobre **C2** (p. ej. Buffer Max + Holgura → terminar/cortar pieza). C1 sigue ganando.
-
-Prohibido: abortar el lote en el Pause C3 (debe quedar resumible); Resume sin Reset; tratar C3 como C1 o C2 sin cambiar esta norma; tocar válvulas desde C3.
+C1 sigue ganando (stop + Reset hard + home + Idle/Start). Fuera de lote, C3 termina el paso en curso y Pause.
 
 Orden resumido:
 
 - **C1:** Confirmación → Reset → Validar → Homing → Idle/Start (o Res observacional si módulo ya OK y ciclo inactivo)  
-- **C2:** Reset (soft) → Resume → desde step 0 (feed omitible si láser ya ON)  
-- **C3:** (pieza/paso seguro OK) → Reset (soft) → Resume → reintentar/continuar  
+- **C2/C3 (lote):** Reset (soft) → Resume → terminar pieza → review OK → purga → Continuar ciclo → sigue el lote (Stop = botón)  
+- **E050 + lote/pieza activo:** Pause (no C1 abort) → preguntar → Reset soft → Resume (o Start si el lote ya cerró)
+
+#### Excepción E050 (lote/pieza activo)
+
+E050 sigue siendo C1 en catálogo (Encoder / aire, manguera o cilindro). **Fuera de lote** (y durante refill/purga suelta): secuencia C1.
+
+Con **pieza/lote en curso** (no refill): no `stop_all`. Pause. HMI pregunta; no se inventa en qué pieza del lote se quedó.
+
+1. **¿Material insuficiente?**  
+   - **Omitir** → Reset soft → Pause. Resume continúa **la misma pieza**. Sin review, sin vaciar.  
+   - **Sí** → **¿Terminar proceso?**  
+     - **Omitir** → igual que Omitir anterior.  
+     - **Sí** → Reset soft → Resume → terminar la pieza (`FLOW_STEPS`) → **Revisar** OK → **¿Vaciar material?**  
+       - **Sí:** purga **sin corte** (ASDA park → feed → Retry / 100 mm / Continuar → ASDA 0).  
+       - **Omitir:** no vacía.  
+2. Tras salir del modo: **Pause**. Si quedan piezas → **Resume**. Si el lote ya cerró → Idle / **Start**. No hay “Continuar ciclo”.
+
+Stop solo si el operador pulsa Stop. Soft-Res: no PLC / no All Off. No añadir pasos a FLOW_STEPS.
 
 ---
 
 ### Feed / láser (Motion) — aceptación y post-corrección
 
-**FEED_OK** si OM oficial está en ventana PHYS **50–58 mm** y el láser está ON (p. ej. encoder 50 mm + láser OK → continúa; no exige 54–56). Fuera de PHYS → LengthNG; láser OFF en ventana → seek o E004/E005.
+**FEED_OK** (validación **final**) si OM oficial está en ventana PHYS **50–58 mm** y el láser está ON (p. ej. encoder 50 mm + láser OK → continúa; no exige 54–56). Fuera de PHYS → LengthNG; láser OFF en ventana → seek o E004/E005.
+
+Tras **approach** (p. ej. 80 % de 55 mm) L y R **corrigen hacia 55** salvo |OM−55|≤0.5 y láser ON. PHYS no se usa para saltarse esa corrección (si no, un lado con offset/overshoot solo hace approach). El offset de comando del servo (`offL`/`offR`) aplica en purga (un solo movimiento), no infla el approach de ciclo.
 
 Si tras approach + corrección el OM está ~target y el láser sigue OFF: **LASER_SEEK** avanza hasta flanco ON. El halt usa **GPIO crudo** (sin debounce HMI de 150 ms), re-prime QSDec y ráfaga de CW Halt. Tras halt → **FEED_OK** sin exigir ventana PHYS OM (50–58). El seek puede sacar el encoder de rango; eso no es LengthNG.
 
@@ -364,7 +378,7 @@ Prohibido aprovechar correcciones de rutina, Motion, PreFeeder, PLC, encoder, fe
 | Quién aplica C1/C2/C3 | Solo Main |
 | Cómo se activa/limpia | Flip-flop Set / Res (Reset HMI o Res observacional si módulo OK) |
 | PLC válvulas | Pulso ON/OFF / All Off / Reset PLC; Reset HMI hard → Reset PLC; Home máquina → All Off; no desde Stop/Pause/soft C2/C3 |
-| Cómo se sale de un fallo | Secuencia fija C1 / C2 / C3 |
+| Cómo se sale de un fallo | Secuencia fija C1 / C2 / C3; E050+lote: Pause → preguntar → Reset → Resume |
 | De dónde salen códigos | Excel + GPIO doc |
 | Debug | Solo si se pide |
 | Norma nueva/cambiada | Reflejar en todos los archivos necesarios (M4) |

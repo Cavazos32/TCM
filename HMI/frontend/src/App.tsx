@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { TabType } from './types';
+import { REFILL_LONG_FEED_MM, TabType } from './types';
 import { Header } from './components/Header';
 import { Navigation } from './components/Navigation';
 import { MaquinaTab } from './components/MaquinaTab';
@@ -23,10 +23,10 @@ function AppMain() {
   const {
     onTabChange,
     reconnectNetwork,
-    setCycleTrialMode,
     setCycleStepByStep,
     stop,
     start,
+    resume,
     motionStop,
     pfStop,
   } = hmi;
@@ -50,9 +50,6 @@ function AppMain() {
   );
 
   const handleDebugModeDisable = useCallback(() => {
-    if (view.machineState.trialMode) {
-      void setCycleTrialMode(false);
-    }
     if (view.machineState.stepByStep) {
       void setCycleStepByStep(false);
     }
@@ -63,9 +60,7 @@ function AppMain() {
   }, [
     currentTab,
     onTabChange,
-    setCycleTrialMode,
     setCycleStepByStep,
-    view.machineState.trialMode,
     view.machineState.stepByStep,
   ]);
 
@@ -96,7 +91,14 @@ function AppMain() {
         e.preventDefault();
         if (currentTab === 'maquina') {
           if (view.machineState.isRunning) stop();
-          else start();
+          else if (
+            !view.machineState.errorActive &&
+            !view.machineState.fault &&
+            !view.machineState.workBlocked
+          ) {
+            if (view.resumeEnabled) resume();
+            else start();
+          }
         }
       } else if (e.key === 'Escape') {
         if (isSettingsOpen) setIsSettingsOpen(false);
@@ -113,12 +115,17 @@ function AppMain() {
   }, [
     currentTab,
     view.machineState.isRunning,
+    view.machineState.errorActive,
+    view.machineState.fault,
+    view.machineState.workBlocked,
+    view.resumeEnabled,
     isSettingsOpen,
     setIsSettingsOpen,
     handleTabChange,
     debugMode,
     stop,
     start,
+    resume,
     motionStop,
     pfStop,
   ]);
@@ -136,6 +143,8 @@ function AppMain() {
         andonConn={view.andonConn}
         hasErrors={{
           motion: view.motionState.hasError,
+          plc: view.plcState.hasError,
+          prefeeder: view.preFeederState.hasError,
         }}
       />
 
@@ -169,12 +178,19 @@ function AppMain() {
             onRefillRetry={() => {
               void hmi.retryRefill();
             }}
+            onRefillLongFeed={() => {
+              void hmi.retryRefill(REFILL_LONG_FEED_MM);
+            }}
+            onRecoveryReview={(ok) => {
+              void hmi.confirmRecoveryReview(ok);
+            }}
             onGotoCycle={debugMode ? () => handleTabChange('cycle') : undefined}
             onPfStart={hmi.pfStart}
             onPfStop={hmi.pfStop}
             onPfReset={hmi.pfReset}
             onPfJogL={hmi.pfTriggerL}
             onPfJogR={hmi.pfTriggerR}
+            onPfRefill={hmi.pfRefill}
             onBusy={hmi.toggleCycleBusy}
             onMaterialist={hmi.toggleCycleMaterialist}
             showLogs={logsVisible}
@@ -207,6 +223,12 @@ function AppMain() {
             }}
             onRefillRetry={() => {
               void hmi.retryRefill();
+            }}
+            onRefillLongFeed={() => {
+              void hmi.retryRefill(REFILL_LONG_FEED_MM);
+            }}
+            onRecoveryReview={(ok) => {
+              void hmi.confirmRecoveryReview(ok);
             }}
           />
         )}
@@ -256,6 +278,8 @@ function AppMain() {
         {debugMode && currentTab === 'prefeeder' && (
           <PreFeederTab
             preFeederState={view.preFeederState}
+            cycleMaterialist={view.machineState.cycleMaterialist}
+            cycleBusy={view.machineState.cycleBusy}
             onStart={hmi.pfStart}
             onStop={hmi.pfStop}
             onReset={hmi.pfReset}

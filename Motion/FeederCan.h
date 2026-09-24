@@ -109,7 +109,8 @@
 #define FEED_HALT_OPTION_CODE       2
 #define FEED_HALT_DECEL_PP          8000000u
 
-#define FEED_OM_SETTLE_MS           250
+// ≥ ENC_SETTLE_MS (250): si es menor, R (y a veces L) lee OM antes de settle → solo approach.
+#define FEED_OM_SETTLE_MS           280
 #define FEED_OM_TARGET_TOL_MM       0.5f   // legacy overview; Feed usa ventanas abajo
 #define FEED_OM_CORR_RETRY_MAX      1      // 1 corrección (aprox. no cuenta)
 #define FEED_OM_READ_RETRY_MAX      3

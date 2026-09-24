@@ -81,7 +81,7 @@ volatile Motor2Phase motor2Phase      = M2_PHASE_IDLE;
 volatile Motor2FeedSource motor2FeedSource = M2_FEED_NONE;
 volatile float motor2ActiveFeedRpm = 0.0f;   // RPM del timed feed en curso
 volatile uint32_t motor2TriggerFeedEndMs = 0;
-volatile bool motor2BufferActiveHigh  = true;   // Holgura: activo en HIGH (LED sensor OFF / pull-up)
+volatile bool motor2BufferActiveHigh  = false;  // Holgura: LED ON/LOW = OK; LED OFF/HIGH = helper
 // Helper holgura (alivio rápido; prioridad > trigger TCP) — params UI propios
 volatile float    holguraHelperRpm       = M2_HOLGURA_HELPER_RPM_DEFAULT;
 volatile float    holguraHelperSec       = M2_HOLGURA_HELPER_SEC_DEFAULT;
@@ -166,8 +166,8 @@ static void loadSettings()
   autoEnabled = prefs.getBool("auto_en", true);
   motor2RpmSetting = prefs.getFloat("m2_rpm", MOTOR_RPM_DEFAULT);
   motor2TriggerFeedSec = prefs.getFloat("m2_trig_s", M2_TRIGGER_FEED_DEFAULT);
-  const bool bufMigrated = prefs.getBool("m2_buf_v2", false);
-  motor2BufferActiveHigh = prefs.getBool("m2_buf_hi", true);
+  const bool bufMigratedV3 = prefs.getBool("m2_buf_v3", false);
+  motor2BufferActiveHigh = prefs.getBool("m2_buf_hi", false);
   holguraHelperRpm = prefs.getFloat("h_help_rpm", M2_HOLGURA_HELPER_RPM_DEFAULT);
   holguraHelperSec = prefs.getFloat("h_help_s", M2_HOLGURA_HELPER_SEC_DEFAULT);
   holguraHelperAbsentMs = prefs.getUInt("h_help_ms", M2_HOLGURA_HELPER_ABSENT_MS);
@@ -179,12 +179,13 @@ static void loadSettings()
   if (refillPulseMs > REFILL_PULSE_MS_MAX) refillPulseMs = REFILL_PULSE_MS_MAX;
   prefs.end();
 
-  if (!bufMigrated)
+  if (!bufMigratedV3)
   {
-    motor2BufferActiveHigh = true;
+    // v3: LED ON = holgura OK (active LOW). Pisa NVS v2 (HIGH=OK).
+    motor2BufferActiveHigh = false;
     prefs.begin(PREFS_NS, false);
-    prefs.putBool("m2_buf_hi", true);
-    prefs.putBool("m2_buf_v2", true);
+    prefs.putBool("m2_buf_hi", false);
+    prefs.putBool("m2_buf_v3", true);
     prefs.end();
   }
 
@@ -514,6 +515,7 @@ static void tensionMarkRoutineTriggered()
 
 static void stopAllMotors();
 static void enterSystemFault(SystemFault fault, bool pushPeer = true);
+static void peerPushNow(bool fullStatus);
 static void updateTensionFaultMonitor();
 static void updateBufferRefillFaultMonitor();
 
@@ -955,20 +957,20 @@ static uint8_t systemFaultCode()
   return pfErrorWireCodeFromFault(systemFault, FAULT_CODE_BASE);
 }
 
-// Detener = enclavamiento operador hasta Reset (mismo modelo que fallas de sensor).
+// Detener: para motores y queda Idle. No es fallo — no enclava PF-007 ni ErrorState.
+// Sensor / timeout sí enclavan EXXX y piden Reset + Iniciar.
 static void autoDisable()
 {
   tcmInProcess = false;
-  if (systemFault == FAULT_NONE)
-  {
-    enterSystemFault(FAULT_OPERATOR_STOP);
-    return;
-  }
-  // Ya enclavado (otra falla): reforzar parada total.
   refillClearFlags();
   clearFillUntilReady("detener");
   stopAllMotors();
+  autoEnabled = false;
+  if (systemFault == FAULT_NONE)
+    autoState = AUTO_OFF;
   syncServoToAutoState();
+  if (peerLinkOk)
+    peerPushNow(true);
 }
 
 static void autoEnable(bool openFillWindow = true)
@@ -1013,8 +1015,6 @@ static void autoEnable(bool openFillWindow = true)
     syncServoToAutoState();
   }
 }
-
-static void peerPushNow(bool fullStatus);
 
 static void applyIdleMode(bool on)
 {
@@ -1615,11 +1615,13 @@ static void updateBufferRefillFaultMonitor()
   bufferFullRecoverSinceMs = 0;
 }
 
-// Sin holgura estable ≥ fault_s (ventana armada): falla PF_ERR_HOLGURA.
+// Sin holgura estable ≥ fault_s: falla solo con Buffer Full ya ON.
+// Durante relleno (Full OFF) el helper puede correr; no enclavar E057/E063
+// — el slack aparece al formar el lazo, y Start aún no está produciendo.
 static void updateHolguraFaultMonitor()
 {
   if (systemFault != FAULT_NONE || idleMode || refillOverrideActive()
-      || !sensorsMotionArmed())
+      || !sensorsMotionArmed() || !bufferFullActive())
   {
     holguraAbsentSinceMs = 0;
     return;
@@ -3245,8 +3247,8 @@ void setup()
   Serial.println("========================================");
 
   loadSettings();
-  if (!motor2BufferActiveHigh)
-    Serial.println("AVISO M2: holgura en LOW; con opto normal (LED OFF=holgura) debe ser HIGH en la web.");
+  if (motor2BufferActiveHigh)
+    Serial.println("AVISO M2: holgura en HIGH; contrato actual: LED ON=OK / LED OFF=helper (active LOW).");
   Serial.printf("NVS: auto %s, %.0f RPM, rev %.1fs, tensión espera %.1fs, error tensión %.1fs, buffer refill %.1fs, servo %u us, M2 feed %.0f RPM\n",
                 autoEnabled ? "ON" : "OFF", autoRpm, autoReverseSec, tensionCooldownSec,
                 TENSION_FAULT_SEC, BUFFER_REFILL_FAULT_SEC, servoActivePwmUs, (float)motor2RpmSetting);

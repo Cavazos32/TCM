@@ -25,12 +25,15 @@ export interface BackendCycleConfig {
   dwellAtDestMs: number;
   depositBatchSize: number;
   depositExtraMm: number;
+  depositStackGapMm?: number;
+  depositMaxTravelMm?: number;
   gripperClearanceMm?: number;
   cutOffsetMm?: number;
   wipBlowerInicioOffsetMm?: number;
   motionWaitTimeoutS: number;
   feedWaitTimeoutS: number;
   pfReadyTimeoutS: number;
+  pieceWatchTimeoutS?: number;
   feedSides?: 'L' | 'R' | 'LR' | string;
   refillMm?: number;
   refillAsdaMm?: number;
@@ -55,7 +58,6 @@ export interface BackendCycleSnapshot {
   materialist: boolean;
   busy?: boolean;
   stepByStep: boolean;
-  trialMode?: boolean;
   refillActive?: boolean;
   refillAwaitingConfirm?: boolean;
   refillPrompt?: string;
@@ -75,6 +77,11 @@ export interface BackendCycleSnapshot {
   fault: string;
   faultClass?: string;
   recovery?: string;
+  recoveryAfterError?: boolean;
+  recoveryPrompt?: string;
+  recoveryAwaitingConfirm?: boolean;
+  e050FinishPiece?: boolean;
+  refillSkipCut?: boolean;
   c3Pending?: boolean;
   config: BackendCycleConfig;
   flow: BackendFlowStep[];
@@ -118,11 +125,26 @@ export interface BackendPfError {
   active: boolean | null;
 }
 
+export interface BackendPfSide {
+  autoState?: string | null;
+  triggerActive?: boolean | null;
+  idleMode?: boolean;
+  refillMaterial?: boolean;
+  refillDereeler?: boolean;
+  refillServo?: boolean;
+  refillFeeder?: boolean;
+}
+
 export interface BackendPreFeeder {
   connected: boolean;
   status: BackendBanner;
   last_state_byte: number | null;
   errors: Record<string, BackendPfError>;
+  fault_active?: Record<string, boolean>;
+  sides?: {
+    L?: BackendPfSide;
+    R?: BackendPfSide;
+  };
 }
 
 export interface BackendErrorLatch {
