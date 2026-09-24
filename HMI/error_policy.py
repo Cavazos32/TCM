@@ -97,6 +97,7 @@ class ErrorPolicy:
 
     def __init__(self) -> None:
         self.latch = ErrorLatch()
+        self._last: Optional[dict[str, Any]] = None
 
     def set_error(self, code_or_byte: str | int) -> Optional[dict[str, Any]]:
         """
@@ -133,6 +134,7 @@ class ErrorPolicy:
             confirmed=False,
             set_at=time.monotonic(),
         )
+        self._last = self.latch.snapshot()
         return {
             "ui": ui,
             "class": cls,
@@ -149,6 +151,7 @@ class ErrorPolicy:
         self.latch.needs_home = False
         self.latch.recovery = "e050_material"
         self.latch.confirmed = True
+        self._last = self.latch.snapshot()
 
     def confirm(self) -> bool:
         """Operador confirma ventana C1."""
@@ -165,10 +168,15 @@ class ErrorPolicy:
         return True, ""
 
     def clear(self) -> ErrorLatch:
-        """Res del flip-flop."""
+        """Res del flip-flop. Conserva last para la UI de recuperación."""
         old = self.latch
+        if old.active:
+            self._last = old.snapshot()
         self.latch = ErrorLatch()
         return old
 
     def snapshot(self) -> dict[str, Any]:
-        return self.latch.snapshot()
+        data = self.latch.snapshot()
+        if self._last:
+            data["last"] = dict(self._last)
+        return data

@@ -11,6 +11,9 @@ String jsonEscape(const String& in);
 bool feedOmReadOfficialMmSide(bool sideR, float* officialOut,
                               float* mmSignedOut = nullptr, float* mmAbsOut = nullptr);
 bool feedOmReadLiveMmSide(bool sideR, float* mmSignedOut);
+// Live redondeado (mismo criterio oficial). Si settle aún no marcó pero el
+// encoder ya incrementó, evita E028 falso.
+bool feedOmReadLiveOfficialMmSide(bool sideR, float* officialOut);
 // settleZero=true: UI/Set0 (OM oficial=0 ya). false: inicio de feed (exige settle real).
 bool feedOmResetSide(bool sideR, bool settleZero = true);
 bool feedOmIsSettledSide(bool sideR);
@@ -24,10 +27,9 @@ float feedOmGetOffsetMm();
 bool feedOmIsSettled();
 float feedOmOfficialFromRaw(float mmAbs);
 
-// Laser en ventana Feed VALIDATE*: Active/ON = material OK; OFF = E004/E005.
-// Excepción gated: post-corrección, LASER_SEEK avanza hasta ON o timeout;
-// al flanco ON → halt inmediato y FEED_OK (sin ventana PHYS OM 50–58).
-// ioLaser*Active = sensor ON (material presente). Fuera de ventana no genera EXXX.
+// Laser = tope de feed (L y R). ON → FEED_OK (no pasar la referencia).
+// Hunt (láser OFF al start): sin approach rápido; creep a trozos + freeze al ON.
+// Prefetch (láser ya ON): approach normal, sin halt por nivel.
 bool feedLaserMaterialPresent(bool sideR);
 // Pin crudo (sin debounce HMI) — halt en seek/corrección.
 bool feedLaserMaterialPresentRaw(bool sideR);
@@ -75,6 +77,10 @@ void feedInit();
 void feedLoadConfig();
 void feedSaveConfig();
 void feedLoop();
+// HMI TCP conectado: no bloquear loop() con setup CAN (retrasa ACK CMD_MOVE).
+bool motionHostTcpLinked();
+// ASDA prep/job activo — tampooco bloquear el loop con setup CAN.
+bool motionHostIsOccupied();
 void feedRegisterHttpRoutes(WebServer& server);
 
 bool feedPhaseIsActive();

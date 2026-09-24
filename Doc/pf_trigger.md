@@ -4,7 +4,9 @@ El **trigger** es el Tfeed al PreFeeder (`0x4C` derecha / `0x51` izquierda). No 
 
 Va en el **paso 3** de la pieza (no en el 22). El 22 solo abre pinzas. El 21 es prefetch de alimentación Motion.
 
-**Regla de lote:** la 1ª pieza ya trae feed de referencia (el operador lo dejó, o el Tfeed de la última pieza del lote anterior). Por eso la 1ª **omite**. Las demás, incluida la última, **mandan** Tfeed: así el lote siguiente puede arrancar sin otra referencia.
+**Interruptor de ciclo** (`pfTriggerEnabled` en `cycle_config.json`, UI Cycle → Material handling): **ON** (default) manda Tfeed entre piezas. **OFF** omite siempre el paso 3; el PreFeeder se queda solo con el helper de holgura. No es `Tfeed (s) = 0` en el HTML de L/R: ese valor se clampa a 0.1 s y el feeder igual arranca.
+
+**Regla de lote:** la 1ª pieza ya trae feed de referencia (el operador lo dejó, o el Tfeed de la última pieza del lote anterior). Por eso la 1ª **omite**. Las demás, incluida la última, **mandan** Tfeed si el interruptor está ON: así el lote siguiente puede arrancar sin otra referencia.
 
 Si **holgura** está ausente o choca con un Tfeed, holgura gana siempre. Es aviso de que algo va mal: se le hace caso y se prioriza su recuperación (helper, con sus settings). El ciclo no “arregla” holgura mandando otro trigger.
 
@@ -15,12 +17,13 @@ Si **holgura** está ausente o choca con un Tfeed, holgura gana siempre. Es avis
 | Acción | Resultado | Por qué |
 |---|---|---|
 | 1ª pieza del lote (inicio de proceso, paso 3) | **Omite** | El operador ya dejó longitud de referencia; el feed de esa pieza es el adecuado. Mandar Tfeed aquí es un trigger de más. |
-| Piezas intermedias | **Trigger** a `feedSides` | Reponer para la siguiente. |
-| Última pieza del lote | **Trigger** a `feedSides` | Deja el feed listo para el lote siguiente. Sin este Tfeed, el próximo lote no tendría referencia. |
+| `pfTriggerEnabled` = OFF | **Omite** | El operador quiere solo holgura. No se manda 0x4C/0x51. |
+| Piezas intermedias | **Trigger** a `feedSides` | Reponer para la siguiente. Si el interruptor está OFF, omite. |
+| Última pieza del lote | **Trigger** a `feedSides` | Deja el feed listo para el lote siguiente. Sin este Tfeed (y con interruptor ON), el próximo lote no tendría referencia. Si OFF, omite. |
 | C2 Resume (reinicio de la pieza desde 0) | **Omite** | El Tfeed de esa pieza ya se mandó; no hace falta otro. |
 | C3: misma pieza que ya pasó el paso 3 | **Omite** | No vuelve al paso 3. |
 | C3 Resume → pieza siguiente | **Trigger** | Esa pieza entra por el paso 3 (si no es la 1ª del lote). |
-| Pause / Resume normal (sin C2) | **Omite** | Sigue donde iba; no re-manda. |
+| Pause / Resume normal (sin C2) | **Omite** | Sigue donde iba; no re-manda. Pause/Error desarman PF (`In process OFF` → Idle); Resume rearma In process y espera Buffer Full (como Start), no Tfeed. |
 | C1, Stop o aborto del lote | **Omite** | Las piezas que no se ejecutan no reciben Tfeed. |
 | Error a mitad de pieza (sin C2) | **Omite** | El lote se corta; no hay Tfeed en el resto. |
 | PreFeeder sin enlace | **Omite** | No hay a quién mandar. |
@@ -57,6 +60,7 @@ El ciclo **no** tiene un Tfeed extra “si falta holgura” (pre-pieza / post-pi
 | Acción | Qué es |
 |---|---|
 | Arranque de lote: Start + *In process ON* | Arma sensores. **Espera Buffer Full confirmado** (1ª vez de cada Start) antes de la 1ª pieza. No es Tfeed. |
+| Resume máquina (Pause/Error) | Rearma In process. **Espera Buffer Full confirmado** (igual que Start) antes de seguir. No es Tfeed. |
 | Paso 4 — Feed / handoff | Alimentación Motion. |
 | Paso 21 — Prefetch (piezas 1…N−1) | Feed Motion en paralelo. |
 | Paso 21 — última pieza | Prefetch Motion **omitido**. |
@@ -65,4 +69,4 @@ El ciclo **no** tiene un Tfeed extra “si falta holgura” (pre-pieza / post-pi
 
 ---
 
-**Regla corta:** Tfeed en paso 3 de cada pieza **excepto** la 1ª del lote y excepto C2 (ya se mandó). La última sí manda, para el lote siguiente. Holgura ausente o en curso **siempre** gana al trigger.
+**Regla corta:** Con `pfTriggerEnabled` ON, Tfeed en paso 3 de cada pieza **excepto** la 1ª del lote y excepto C2 (ya se mandó). La última sí manda, para el lote siguiente. Con OFF, el paso 3 siempre omite. Holgura ausente o en curso **siempre** gana al trigger.

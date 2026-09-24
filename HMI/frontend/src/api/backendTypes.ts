@@ -35,6 +35,7 @@ export interface BackendCycleConfig {
   pfReadyTimeoutS: number;
   pieceWatchTimeoutS?: number;
   feedSides?: 'L' | 'R' | 'LR' | string;
+  pfTriggerEnabled?: boolean;
   refillMm?: number;
   refillAsdaMm?: number;
 }
@@ -84,7 +85,8 @@ export interface BackendCycleSnapshot {
   refillSkipCut?: boolean;
   c3Pending?: boolean;
   config: BackendCycleConfig;
-  flow: BackendFlowStep[];
+  /** Ausente en SSE slim (la UI conserva el último flow). */
+  flow?: BackendFlowStep[];
 }
 
 export interface BackendLink {
@@ -133,6 +135,7 @@ export interface BackendPfSide {
   refillDereeler?: boolean;
   refillServo?: boolean;
   refillFeeder?: boolean;
+  refillPulseS?: number;
 }
 
 export interface BackendPreFeeder {
@@ -159,6 +162,8 @@ export interface BackendErrorLatch {
   needsHome: boolean;
   recovery: string;
   confirmed: boolean;
+  /** EXXX ya reseteado; contexto de recuperación C2/C3. */
+  last?: BackendErrorLatch;
 }
 
 export interface BackendSnapshot {

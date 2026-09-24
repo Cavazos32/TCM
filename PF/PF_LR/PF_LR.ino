@@ -81,7 +81,7 @@ volatile Motor2Phase motor2Phase      = M2_PHASE_IDLE;
 volatile Motor2FeedSource motor2FeedSource = M2_FEED_NONE;
 volatile float motor2ActiveFeedRpm = 0.0f;   // RPM del timed feed en curso
 volatile uint32_t motor2TriggerFeedEndMs = 0;
-volatile bool motor2BufferActiveHigh  = false;  // Holgura: LED ON/LOW = OK; LED OFF/HIGH = helper
+volatile bool motor2BufferActiveHigh  = true;  // Holgura: HIGH = OK; LOW = helper (revierte v3)
 // Helper holgura (alivio rápido; prioridad > trigger TCP) — params UI propios
 volatile float    holguraHelperRpm       = M2_HOLGURA_HELPER_RPM_DEFAULT;
 volatile float    holguraHelperSec       = M2_HOLGURA_HELPER_SEC_DEFAULT;
@@ -166,8 +166,8 @@ static void loadSettings()
   autoEnabled = prefs.getBool("auto_en", true);
   motor2RpmSetting = prefs.getFloat("m2_rpm", MOTOR_RPM_DEFAULT);
   motor2TriggerFeedSec = prefs.getFloat("m2_trig_s", M2_TRIGGER_FEED_DEFAULT);
-  const bool bufMigratedV3 = prefs.getBool("m2_buf_v3", false);
-  motor2BufferActiveHigh = prefs.getBool("m2_buf_hi", false);
+  const bool bufMigratedV4 = prefs.getBool("m2_buf_v4", false);
+  motor2BufferActiveHigh = prefs.getBool("m2_buf_hi", true);
   holguraHelperRpm = prefs.getFloat("h_help_rpm", M2_HOLGURA_HELPER_RPM_DEFAULT);
   holguraHelperSec = prefs.getFloat("h_help_s", M2_HOLGURA_HELPER_SEC_DEFAULT);
   holguraHelperAbsentMs = prefs.getUInt("h_help_ms", M2_HOLGURA_HELPER_ABSENT_MS);
@@ -179,13 +179,13 @@ static void loadSettings()
   if (refillPulseMs > REFILL_PULSE_MS_MAX) refillPulseMs = REFILL_PULSE_MS_MAX;
   prefs.end();
 
-  if (!bufMigratedV3)
+  if (!bufMigratedV4)
   {
-    // v3: LED ON = holgura OK (active LOW). Pisa NVS v2 (HIGH=OK).
-    motor2BufferActiveHigh = false;
+    // v4: HIGH = holgura OK (active HIGH). Revierte v3 (LED ON/LOW=OK).
+    motor2BufferActiveHigh = true;
     prefs.begin(PREFS_NS, false);
-    prefs.putBool("m2_buf_hi", false);
-    prefs.putBool("m2_buf_v3", true);
+    prefs.putBool("m2_buf_hi", true);
+    prefs.putBool("m2_buf_v4", true);
     prefs.end();
   }
 
@@ -836,14 +836,13 @@ static void refillStopChannel(volatile bool& onFlag, volatile uint32_t& pulseUnt
   pulseUntilMs = 0;
 }
 
-// Si ya está ON no reinicia el temporizador (evita “apagar y relanzar 1 s”).
+// Clic = pulso de refillPulseMs (misma duración para todos). Relanza el timer.
 static bool refillStartChannel(volatile bool& onFlag, volatile uint32_t& pulseUntilMs)
 {
-  if (onFlag)
-    return false;
+  const bool wasOn = onFlag;
   onFlag = true;
   pulseUntilMs = millis() + refillPulseNowMs();
-  return true;
+  return !wasOn;
 }
 
 static void serviceRefillPulses()
@@ -868,7 +867,7 @@ static void serviceRefillPulses()
 }
 
 // which: "material" | "dereeler" | "servo" | "feeder".
-// on=true → un pulso de refillPulseMs (no relanza si ya está ON).
+// on=true → un pulso de refillPulseMs (misma duración; relanza el timer).
 // on=false → apaga de inmediato.
 static bool applyRefillCommand(const String& which, bool on)
 {
@@ -3247,8 +3246,8 @@ void setup()
   Serial.println("========================================");
 
   loadSettings();
-  if (motor2BufferActiveHigh)
-    Serial.println("AVISO M2: holgura en HIGH; contrato actual: LED ON=OK / LED OFF=helper (active LOW).");
+  if (!motor2BufferActiveHigh)
+    Serial.println("AVISO M2: holgura en LOW; contrato actual: HIGH=OK / LOW=helper (active HIGH).");
   Serial.printf("NVS: auto %s, %.0f RPM, rev %.1fs, tensión espera %.1fs, error tensión %.1fs, buffer refill %.1fs, servo %u us, M2 feed %.0f RPM\n",
                 autoEnabled ? "ON" : "OFF", autoRpm, autoReverseSec, tensionCooldownSec,
                 TENSION_FAULT_SEC, BUFFER_REFILL_FAULT_SEC, servoActivePwmUs, (float)motor2RpmSetting);

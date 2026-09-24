@@ -19,8 +19,13 @@ DEFAULT_BLOWER_SEC = 2.0
 DEFAULT_ANDON_BUZZER_MUTE = False
 # CMD_MOVE (0x05): reintentos de transporte acotados (no loop infinito).
 MOTION_MOVE_TX_ATTEMPTS = 3  # 1 envío + 2 reintentos máx.
-MOTION_MOVE_ACK_TIMEOUT_S = 6.0
+# Peek corto: si el ACK ya está, se usa. Si no, el ciclo sigue a Reached
+# (como HOME). Esperar 6 s aquí congelaba lineal/depósito/despeje 0.4–0.9 s.
+MOTION_MOVE_ACK_PEEK_S = 0.02
+MOTION_MOVE_ACK_TIMEOUT_S = 6.0  # solo recuperación de transporte / boot
 MOTION_MOVE_LINK_WAIT_S = 5.0
+# SSE/poll: cola interna 400; al aire solo cola reciente (UI no reparsea 2000).
+SSE_LOG_TAIL = 48
 
 
 @dataclass
@@ -65,6 +70,7 @@ from motion import (
     TX_LENGTH_OK_L,
     TX_LENGTH_OK_R,
     motion_http_asda_position_mm,
+    motion_http_asda_status,
     motion_http_stage2_start,
     motion_http_stage2_status,
     TX_REACHED,
@@ -332,6 +338,7 @@ class HmiState:
                     "refillDereeler": False,
                     "refillServo": False,
                     "refillFeeder": False,
+                    "refillPulseS": 1.0,
                 },
                 "R": {
                     "autoState": None,
@@ -341,6 +348,7 @@ class HmiState:
                     "refillDereeler": False,
                     "refillServo": False,
                     "refillFeeder": False,
+                    "refillPulseS": 1.0,
                 },
             },
             # Master errorAny (status). ErrorState 0x3C solo no implica EXXX.
@@ -402,6 +410,8 @@ class HmiState:
         self._pf_materialist = False
         # OFF explícito (Start/Reset): no rearmar el interlock por idleMode residual.
         self._pf_materialist_force_off = False
+        # JOG refill: gen por (lado, canal) para invalidar timers al cancelar/relanzar.
+        self._pf_refill_timer_gen: dict[tuple[str, str], int] = {}
 
         self._error_policy = ErrorPolicy()
         self._cycle = CycleRunner(self)
@@ -477,8 +487,12 @@ class HmiState:
     def _notify(self) -> None:
         self._notify_event.set()
 
-    def snapshot(self) -> dict[str, Any]:
+    def snapshot(self, *, slim: bool = False) -> dict[str, Any]:
         cycle_snap = self._cycle.snapshot()
+        if slim:
+            # FLOW_STEPS es estático; la UI ya lo tiene del primer snapshot.
+            cycle_snap = dict(cycle_snap)
+            cycle_snap.pop("flow", None)
         with self._lock:
             # Res observacional sobre caché (sin preguntar al esclavo).
             self._try_auto_clear_error_if_healthy()
@@ -492,6 +506,13 @@ class HmiState:
                     and not bool(cycle_snap.get("refillActive"))
                 )
             )
+
+            def _log_out(dq: deque[str]) -> list[str]:
+                lines = list(dq)
+                if len(lines) > SSE_LOG_TAIL:
+                    return lines[-SSE_LOG_TAIL:]
+                return lines
+
             return {
                 "models": self._models,
                 "selectedModel": self._selected_model_idx,
@@ -543,11 +564,11 @@ class HmiState:
                     "errors": {k: dict(v) for k, v in self._pf["errors"].items()},
                 },
                 "logs": {
-                    "main": list(self._main_log),
-                    "motion": list(self._motion_log),
-                    "plc": list(self._plc_log),
-                    "prefeeder": list(self._pf_log),
-                    "andon": list(self._andon_log),
+                    "main": _log_out(self._main_log),
+                    "motion": _log_out(self._motion_log),
+                    "plc": _log_out(self._plc_log),
+                    "prefeeder": _log_out(self._pf_log),
+                    "andon": _log_out(self._andon_log),
                 },
             }
 
@@ -618,7 +639,8 @@ class HmiState:
 
     def _enc_poll_loop(self) -> None:
         while not self._enc_poll_stop.is_set():
-            if self._client.connected:
+            # Mismo TCP que CMD_MOVE: no sondear encoders durante lote.
+            if self._client.connected and not self._cycle.is_active():
                 self.cmd_motion("enc_poll")
             time.sleep(0.6)
 
@@ -680,6 +702,24 @@ class HmiState:
             return False
         with self._lock:
             return bool(self._motion.get(key))
+
+    def refresh_motion_lasers(self) -> bool:
+        """GET /api/status: actualiza laserL/R. El ciclo de lote no lo usa (caché TCP)."""
+        host = getattr(self._client, "_host", DEFAULT_HOST)
+        try:
+            data = motion_http_asda_status(host=str(host), timeout=0.35)
+        except Exception:
+            return False
+        if not isinstance(data, dict):
+            return False
+        if "laserL" not in data and "laserR" not in data:
+            return False
+        with self._lock:
+            if "laserL" in data:
+                self._motion["laserL"] = bool(data["laserL"])
+            if "laserR" in data:
+                self._motion["laserR"] = bool(data["laserR"])
+        return True
 
     def refresh_asda_position_mm(self) -> float | None:
         """Posición ASDA live vía HTTP /api/status; actualiza caché.
@@ -1007,10 +1047,9 @@ class HmiState:
     def cmd_motion_move_mm(self, mm: float, rpm: float) -> bool:
         """CMD_MOVE (0x05) con recuperación de transporte acotada.
 
-        True = Motion aceptó el MOVE (ACK ok), ya lo ejecuta, o el send
-        salió con enlace OK (ACK tardío: el caller espera Reached).
-        False = rechazo ASDA (caller → E012/E013) o transporte agotado (E065).
-        No reenvía si hay evidencia de que Motion ya recibió el comando.
+        True = send salió (o Motion ya activo). El caller espera Reached.
+        False = rechazo ASDA inmediato (E012/E013) o transporte agotado (E065).
+        No espera el ACK lento: no reenvía si hay evidencia de recepción.
         """
         mm = abs(float(mm))
         lat_mark("0", source="motion", cmd="move_mm", mm=mm)
@@ -1025,6 +1064,19 @@ class HmiState:
         """transport | rejected | '' tras el último cmd_motion_move_mm."""
         with self._lock:
             return self._last_move_fail_kind
+
+    def move_ack_rejected(self) -> str:
+        """Si el ACK de rechazo llegó después del send: mensaje. '' si no."""
+        with self._lock:
+            pending = self._pending_asda_ack
+            if pending is None or pending.ok is not False:
+                return ""
+            msg = str(pending.message or "")
+            if "ocupado" in msg.lower():
+                return ""
+            self._last_move_fail_kind = "rejected"
+        self._clear_asda_ack()
+        return msg or "rechazado"
 
     def _arm_asda_ack(self, byte_code: int) -> int:
         with self._lock:
@@ -1125,15 +1177,9 @@ class HmiState:
                 self._clear_asda_ack(gen)
                 continue
 
-            t_ack = time.monotonic()
-            ack = self._wait_asda_ack(gen, MOTION_MOVE_ACK_TIMEOUT_S)
-            ack_sec = max(0.0, time.monotonic() - t_ack)
-            if ack_sec >= 0.08:
-                self.cycle_log(
-                    f"CMD_MOVE: ACK {ack_sec * 1000.0:.0f} ms "
-                    f"(intento {attempt}/{MOTION_MOVE_TX_ATTEMPTS}"
-                    f"{'' if ack is True else ', no-ok'})"
-                )
+            # Peek: si el ACK ya llegó, úsalo. Si no, no congelar el ciclo
+            # (HOME ya es fire-and-forget). El caller espera Reached.
+            ack = self._wait_asda_ack(gen, MOTION_MOVE_ACK_PEEK_S)
             if ack is True:
                 self._clear_asda_ack(gen)
                 self._motion_idle_or_reached.clear()
@@ -1154,36 +1200,19 @@ class HmiState:
                 )
                 return False
 
-            # Timeout ACK: ¿Busy/Reached real, o corte a mitad?
-            if self._motion_move_evidence_active(gen):
-                self._clear_asda_ack(gen)
+            if self._client.connected or self._motion_move_evidence_active(gen):
                 if self._move_target_mm is not None:
                     self._motion_idle_or_reached.clear()
-                self.cycle_log(
-                    "CMD_MOVE: sin ACK a tiempo pero Motion activo — no se reenvía"
-                )
-                return True
-            if self._client.connected:
-                # Send ya salió. Motion a veces tarda el ACK (HTTP/Modbus
-                # en el mismo loop). No reenviar (doble MOVE). No E013:
-                # el caller espera Reached. Si el comando no llegó → E008.
-                self._clear_asda_ack(gen)
-                if self._move_target_mm is not None:
-                    self._motion_idle_or_reached.clear()
-                self.cycle_log(
-                    "CMD_MOVE: timeout ACK con enlace OK — se espera movimiento (sin reenvío)"
-                )
                 return True
 
             self.cycle_log(
-                f"CMD_MOVE: timeout ACK + enlace caído "
+                f"CMD_MOVE: send ok pero enlace caído "
                 f"(intento {attempt}/{MOTION_MOVE_TX_ATTEMPTS})"
             )
             self._client.reconnect(silent=True)
             if self._wait_motion_link(MOTION_MOVE_LINK_WAIT_S) and self._motion_move_evidence_active(
                 gen
             ):
-                self._clear_asda_ack(gen)
                 if self._move_target_mm is not None:
                     self._motion_idle_or_reached.clear()
                 self.cycle_log(
@@ -1818,6 +1847,7 @@ class HmiState:
                     runtime["refillDereeler"] = False
                     runtime["refillServo"] = False
                     runtime["refillFeeder"] = False
+                    self._pf_refill_bump_side(sk)
             if not on and "Materialist" in str(self._banner.get("text") or ""):
                 self._banner = {"text": "Listo.", "kind": "ok"}
         self._notify()
@@ -2054,13 +2084,81 @@ class HmiState:
             return {"ok": False, "error": f"Acción PLC desconocida: {action}"}
         return {"ok": ok}
 
+    _PF_REFILL_CHANS = ("material", "dereeler", "servo", "feeder")
+    _PF_REFILL_KEYS = {
+        "material": "refillMaterial",
+        "dereeler": "refillDereeler",
+        "servo": "refillServo",
+        "feeder": "refillFeeder",
+    }
+
+    def _pf_refill_channels(self, channel: str) -> tuple[str, ...]:
+        if channel == "material":
+            return self._PF_REFILL_CHANS
+        return (channel,)
+
+    def _pf_refill_bump(self, side: str, channels: tuple[str, ...]) -> None:
+        for ch in channels:
+            key = (side, ch)
+            self._pf_refill_timer_gen[key] = int(
+                self._pf_refill_timer_gen.get(key, 0)
+            ) + 1
+
+    def _pf_refill_bump_side(self, side: str) -> None:
+        self._pf_refill_bump(side, self._PF_REFILL_CHANS)
+
+    def _pf_refill_pulse_s(self, side: str) -> float:
+        raw = (self._pf.get("sides") or {}).get(side, {}).get("refillPulseS", 1.0)
+        try:
+            sec = float(raw)
+        except (TypeError, ValueError):
+            sec = 1.0
+        return max(0.2, min(10.0, sec))
+
+    def _pf_refill_schedule_off(
+        self, side: str, channels: tuple[str, ...], pulse_s: float
+    ) -> None:
+        self._pf_refill_bump(side, channels)
+        for ch in channels:
+            gen = self._pf_refill_timer_gen[(side, ch)]
+            timer = threading.Timer(
+                pulse_s, self._pf_refill_auto_off, args=(side, ch, gen)
+            )
+            timer.daemon = True
+            timer.start()
+
+    def _pf_refill_auto_off(self, side: str, channel: str, gen: int) -> None:
+        """Apaga el indicador JOG al expirar el pulso del esclavo."""
+        key = (side, channel)
+        with self._lock:
+            if self._pf_refill_timer_gen.get(key) != gen:
+                return
+            runtime = self._pf.get("sides", {}).get(side)
+            if not isinstance(runtime, dict):
+                return
+            flag = self._PF_REFILL_KEYS[channel]
+            if not runtime.get(flag):
+                return
+            runtime[flag] = False
+            if channel == "material":
+                runtime["refillDereeler"] = False
+                runtime["refillServo"] = False
+                runtime["refillFeeder"] = False
+            else:
+                runtime["refillMaterial"] = bool(
+                    runtime.get("refillDereeler")
+                    and runtime.get("refillServo")
+                    and runtime.get("refillFeeder")
+                )
+        self._notify()
+
     def cmd_pf_refill(self, side: str, channel: str, on: bool = True) -> dict:
         """JOG Materialista: refill HTML L/R. Pulso configurable en el esclavo."""
         side_u = str(side or "").strip().upper()
         ch = str(channel or "").strip().lower()
         if side_u not in ("L", "R"):
             return {"ok": False, "error": "side L|R requerido"}
-        if ch not in ("material", "dereeler", "servo", "feeder"):
+        if ch not in self._PF_REFILL_CHANS:
             return {"ok": False, "error": "canal refill inválido"}
         side_idle = bool(
             (self._pf.get("sides") or {}).get(side_u, {}).get("idleMode")
@@ -2075,14 +2173,10 @@ class HmiState:
                     or f"Fallo refill {ch} {side_u}"
                 )
             return {"ok": False, "error": err}
+        channels = self._pf_refill_channels(ch)
         with self._lock:
             runtime = self._pf.setdefault("sides", {}).setdefault(side_u, {})
-            key = {
-                "material": "refillMaterial",
-                "dereeler": "refillDereeler",
-                "servo": "refillServo",
-                "feeder": "refillFeeder",
-            }[ch]
+            key = self._PF_REFILL_KEYS[ch]
             runtime[key] = bool(on)
             if ch == "material":
                 runtime["refillDereeler"] = bool(on)
@@ -2095,11 +2189,16 @@ class HmiState:
                     and runtime.get("refillServo")
                     and runtime.get("refillFeeder")
                 )
+            pulse_s = self._pf_refill_pulse_s(side_u)
+            if on:
+                self._pf_refill_schedule_off(side_u, channels, pulse_s)
+            else:
+                self._pf_refill_bump(side_u, channels)
             text = f"Refill {ch} {side_u} → {'ON' if on else 'OFF'}"
             _append_log(self._pf_log, text)
             self._pf["status"] = {"text": text, "kind": "ok"}
         self._notify()
-        return {"ok": True}
+        return {"ok": True, "pulseS": pulse_s}
 
     def cmd_pf(self, action: str, **kwargs) -> dict:
         if action == "materialist":
@@ -2567,12 +2666,21 @@ class HmiState:
         if not latch.active:
             return False
         if auto:
+            # Res observacional: solo sin ciclo. C2/C3 en Pause exige Reset explícito.
+            try:
+                if self._cycle.is_active():
+                    return False
+            except Exception:
+                pass
             try:
                 if self._cycle.abort_needs_ack() or (latch.code or "") == "E068":
                     return False
             except Exception:
                 if (latch.code or "") == "E068":
                     return False
+            set_at = float(getattr(latch, "set_at", 0) or 0)
+            if set_at and (time.monotonic() - set_at) < AUTO_RES_MIN_AGE_SEC:
+                return False
         mod = (latch.module or "").lower()
         src = (source or "").lower()
         if src == "motion" and "motion" not in mod:
@@ -2898,6 +3006,7 @@ class HmiState:
                             "refillDereeler": False,
                             "refillServo": False,
                             "refillFeeder": False,
+                            "refillPulseS": 1.0,
                         },
                     )
                     self._pf["sides"][sk]["autoState"] = None
@@ -2907,6 +3016,8 @@ class HmiState:
                     self._pf["sides"][sk]["refillDereeler"] = False
                     self._pf["sides"][sk]["refillServo"] = False
                     self._pf["sides"][sk]["refillFeeder"] = False
+                    self._pf["sides"][sk]["refillPulseS"] = 1.0
+                    self._pf_refill_bump_side(sk)
                 self._banner = {
                     "text": f"Reconectando PreFeeder ({PF_HOST}:{PF_PORT})…",
                     "kind": "warn",
@@ -3040,6 +3151,7 @@ class HmiState:
             # Módulo salió de ErrorState → Res del EXXX Motion en HMI (evita
             # ERROR global con Motion en espera / OK).
             if prev == TX_ERROR:
+                # Solo si no hay ciclo: con lote C2/C3 el EXXX se queda hasta Reset.
                 self._clear_latch_for_module("motion", auto=True)
             else:
                 self._try_auto_clear_error_if_healthy()
@@ -3457,6 +3569,7 @@ class HmiState:
                 "refillDereeler": False,
                 "refillServo": False,
                 "refillFeeder": False,
+                "refillPulseS": 1.0,
             },
         )
         if "idleMode" in side:
@@ -3485,6 +3598,14 @@ class HmiState:
             val = bool(side.get(src))
             if runtime.get(dst) != val:
                 runtime[dst] = val
+                changed = True
+        if "refillPulseS" in side:
+            try:
+                pulse = max(0.2, min(10.0, float(side.get("refillPulseS"))))
+            except (TypeError, ValueError):
+                pulse = 1.0
+            if runtime.get("refillPulseS") != pulse:
+                runtime["refillPulseS"] = pulse
                 changed = True
         return changed
 
@@ -3756,9 +3877,7 @@ class HmiState:
             return False
         if self._pf_master_has_fault(msg):
             return False
-        # Con lote vivo: Res de módulo (puede soft-Res C2/C3). Sin lote: Res observacional.
-        if self._cycle.is_active():
-            return self._clear_latch_for_module("prefeeder", auto=True)
+        # Res observacional solo sin ciclo (C2/C3 en Pause exige Reset explícito).
         return self._try_auto_clear_error_if_healthy()
 
     def _pf_try_latch_once(self) -> bool:

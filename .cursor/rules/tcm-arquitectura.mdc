@@ -29,6 +29,7 @@ Al cerrar el cambio: indicar qué archivos se alinearon.
 - PLC válvulas: pulso ON/OFF (KEEP); no enclavado en GPIO ESP. Excepción: Blower (nivel + durationSec del comando). C2/C3 Pause y soft-Res pueden mandar **solo Blower OFF** (cancelar timer).
 - Reset PLC `0x1E`: control PLC **o** Reset HMI hard; tras Reset estados lógicos OFF (HMI refleja). All Off solo bajo demanda (UI / ciclo / Home máquina).
 - Stop, Pause y soft-Res C2/C3 **no** mandan válvulas KEEP ni Reset PLC. Reset HMI hard sí manda Reset PLC. Home máquina: ASDA→0 + encoders Set0 + All Off.
+- Pause (`0x48`) / Error (`0x46`) máquina: PreFeeder Idle (`In process OFF`). Resume/Busy rearma In process y espera Buffer Full (igual que Start). C1 y Stop de operador sí mandan Stop `0x2B` (no In process OFF).
 - Andon: solo estado máquina `0x40–0x49` (no EXXX); TCP `:8769`; mute buzzer desde HMI Debug.
 
 ## M5 — Communication Core protegido

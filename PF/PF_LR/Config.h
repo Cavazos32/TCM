@@ -37,11 +37,11 @@ constexpr uint8_t  FAULT_CODE_BASE     = 30;  // wire: base+PfErrorId → ver St
 #endif
 
 // ====================== GPIO ======================
-// Holgura GPIO22: LED ON/detecta=LOW=OK; LED OFF/libre=HIGH=sin holgura → helper. Cilindro: opto 24V→3.3V HIGH=abierto.
+// Holgura GPIO22: HIGH=OK; LOW=sin holgura → helper. Cilindro: opto 24V→3.3V HIGH=abierto.
 constexpr uint8_t PIN_SENSOR_BUFFER_FULL = 19;  // HIGH = activo
 constexpr uint8_t PIN_SENSOR_TENSION     = 23;  // HIGH = activo
 constexpr uint8_t PIN_SENSOR_BUFFER_MAX  = 21;  // HIGH = activo
-constexpr uint8_t PIN_SENSOR_HOLGURA     = 22;  // LOW (LED ON) = OK; HIGH (LED OFF) = helper
+constexpr uint8_t PIN_SENSOR_HOLGURA     = 22;  // HIGH = OK; LOW = helper
 constexpr uint8_t PIN_SENSOR_CILINDRO    = 25;
 constexpr uint8_t PIN_SENSOR_HOSE_BELT   = 27;  // HIGH = cinta/manguera ausente
 constexpr int PIN_DEREELER_PUL           = 32;

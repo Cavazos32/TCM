@@ -103,6 +103,7 @@ static bool motionIsOccupied() {
 }
 
 static void asdaTcpPushStateIfChanged();
+static bool asdaTcpLinkOk();
 
 // ASDA TCP — protocolo maestro (bytes tabla ASDA)
 static WiFiServer asdaTcpServer(MOTION_TCP_PORT);
@@ -747,15 +748,10 @@ static uint32_t calcMoveTimeoutMs(int32_t targetPuu, float speed) {
   if (cachedPosOk) {
     distMm = fabsf(puuToMm(targetPuu, false) - puuToMm(cachedPosPuu, false));
   } else {
-    int32_t curPuu = 0;
-    if (read32(REG_P5_016, curPuu)) {
-      cachedPosPuu = curPuu;
-      cachedPosOk = true;
-      distMm = fabsf(puuToMm(targetPuu, false) - puuToMm(curPuu, false));
-    } else {
-      // Sin posición fiable: timeout conservador (no bloquea el loop).
-      distMm = FACTORY_LINEAR_ACTUATOR_MM;
-    }
+    // Sin caché: no hacer read32 aquí. Este cálculo corre en el handler
+    // TCP de CMD_MOVE *antes* del ACK; Modbus (hasta RESPONSE_TIMEOUT_MS)
+    // retrasaba serviceAsdaTcp / el ACK 300 ms–1.5 s.
+    distMm = 2000.0f;
   }
   return calcTravelTimeoutMs(distMm, speed);
 }
@@ -1081,7 +1077,9 @@ static void asdaRefreshLiveStatus(uint16_t& trigger,
   okT = cachedTriggerOk;
   okP = cachedPosOk;
 
-  const bool needLive = !motionIsOccupied();
+  // Con HMI TCP: solo caché. handleClient() corre *antes* de serviceAsdaTcp;
+  // read16+read32 aquí (hasta 2×300 ms) retrasa el ACK de CMD_MOVE.
+  const bool needLive = !motionIsOccupied() && !asdaTcpLinkOk();
   const uint32_t now = millis();
   if (needLive && (lastLiveStatusMs == 0 || (now - lastLiveStatusMs) >= STATUS_LIVE_MIN_MS)) {
     lastLiveStatusMs = now;
@@ -1644,6 +1642,13 @@ bool feedOmReadLiveMmSide(bool sideR, float* mmSignedOut)
   return true;
 }
 
+bool feedOmReadLiveOfficialMmSide(bool sideR, float* officialOut)
+{
+  if (!encSideHwOk(sideR)) return false;
+  if (officialOut) *officialOut = encSideOfficialMm(sideR, false);
+  return true;
+}
+
 bool feedOmReadOfficialMmSide(bool sideR, float* officialOut, float* mmSignedOut, float* mmAbsOut)
 {
   if (!encSideHwOk(sideR)) return false;
@@ -1943,6 +1948,7 @@ static void ovHitClear(OvHit& h, float target) {
 
 static float ovAsdaMmNow() {
   if (cachedPosOk) return puuToMm(cachedPosPuu, false);
+  if (asdaTcpLinkOk()) return 0.0f;
   int32_t pos = 0;
   if (read32(REG_P5_016, pos)) {
     cachedPosPuu = pos;
@@ -2140,11 +2146,11 @@ void handleStatus() {
 
 void handlePos() {
   // Cache si hay: read32 bloquea el loop (hasta RESPONSE_TIMEOUT_MS) y
-  // retrasa serviceAsdaTcp / ACK de CMD_MOVE.
+  // retrasa serviceAsdaTcp / ACK de CMD_MOVE. Con HMI TCP no hay live Modbus.
   int32_t pos = 0;
   if (cachedPosOk) {
     pos = cachedPosPuu;
-  } else if (!read32(REG_P5_016, pos)) {
+  } else if (asdaTcpLinkOk() || !read32(REG_P5_016, pos)) {
     sendJson(503, errJson("No se pudo leer posicion"));
     return;
   } else {
@@ -3420,6 +3426,14 @@ void loop() {
 // =============================================================================
 // Stage2 — puentes ASDA (sin tocar Communication Core)
 // =============================================================================
+bool motionHostTcpLinked() {
+  return asdaTcpLinkOk();
+}
+
+bool motionHostIsOccupied() {
+  return motionIsOccupied();
+}
+
 bool stage2HostIsOccupied() {
   return motionIsOccupied();
 }

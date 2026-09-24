@@ -93,6 +93,23 @@ export function mergeAllLogs(snap: BackendSnapshot): LogEntry[] {
   ].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
 }
 
+const MAX_UI_LOGS = 400;
+
+function logKey(e: LogEntry): string {
+  return `${e.timestamp}|${e.module}|${e.message}`;
+}
+
+/** Une cola SSE/poll (tail) con lo ya mostrado. Misma ref si no hay líneas nuevas. */
+export function mergeLogTail(prev: LogEntry[], snap: BackendSnapshot): LogEntry[] {
+  const incoming = mergeAllLogs(snap);
+  if (!prev.length) return incoming;
+  const seen = new Set(prev.map(logKey));
+  const added = incoming.filter((e) => !seen.has(logKey(e)));
+  if (!added.length) return prev;
+  const next = prev.concat(added);
+  return next.length > MAX_UI_LOGS ? next.slice(next.length - MAX_UI_LOGS) : next;
+}
+
 export function mapMachineState(
   snap: BackendSnapshot,
   targetQty: number
@@ -111,6 +128,12 @@ export function mapMachineState(
     cycle.active && cycle.totalReps > 0 ? cycle.totalReps : qty;
 
   const errorActive = !!snap.error?.active;
+  const lastErr = snap.error?.last;
+  const inRecovery =
+    !!cycle.recoveryAfterError ||
+    String(cycle.recovery || '') === 'e050_material' ||
+    !!cycle.e050FinishPiece ||
+    String(cycle.recoveryPrompt || '').startsWith('e050_');
   const plcFault =
     snap.plc.status?.kind === 'error' ||
     Object.values(snap.plc.valves || {}).some((v) => v.error === true);
@@ -196,12 +219,18 @@ export function mapMachineState(
           : undefined,
     faultClass: errorActive
       ? snap.error?.class || undefined
-      : cycle.active
-        ? cycle.faultClass || undefined
+      : cycle.active && cycle.faultClass
+        ? cycle.faultClass
         : !cycle.lastOk && cycle.faultClass
           ? cycle.faultClass
-          : undefined,
+          : inRecovery && lastErr?.class
+            ? lastErr.class
+            : undefined,
     faultCode: errorActive ? snap.error?.code : undefined,
+    lastFault:
+      !errorActive && inRecovery && lastErr?.ui
+        ? String(lastErr.ui)
+        : undefined,
     faultModule: faultModule || undefined,
     faultDescription: errorActive ? snap.error?.description : undefined,
     faultModuleStatus: faultModuleStatus || undefined,
@@ -305,12 +334,14 @@ function buildSensors(
     });
 }
 
-function mapPfRefill(side?: { refillMaterial?: boolean; refillDereeler?: boolean; refillServo?: boolean; refillFeeder?: boolean } | null): PfRefillState {
+function mapPfRefill(side?: { refillMaterial?: boolean; refillDereeler?: boolean; refillServo?: boolean; refillFeeder?: boolean; refillPulseS?: number } | null): PfRefillState {
+  const pulse = Number(side?.refillPulseS);
   return {
     material: !!side?.refillMaterial,
     dereeler: !!side?.refillDereeler,
     servo: !!side?.refillServo,
     feeder: !!side?.refillFeeder,
+    pulseS: Number.isFinite(pulse) ? Math.max(0.2, Math.min(10, pulse)) : 1,
   };
 }
 
@@ -381,7 +412,8 @@ export function mapCycleConfig(cfg: BackendSnapshot['cycle']['config']): CycleCo
   const raw = (cfg as BackendCycleConfig)?.feedSides;
   const feedSides =
     raw === 'L' || raw === 'R' || raw === 'LR' ? raw : 'LR';
-  return { ...(cfg as CycleConfig), feedSides };
+  const pfTriggerEnabled = (cfg as BackendCycleConfig)?.pfTriggerEnabled !== false;
+  return { ...(cfg as CycleConfig), feedSides, pfTriggerEnabled };
 }
 
 export function valveByteFromId(

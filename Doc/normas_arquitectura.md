@@ -103,6 +103,8 @@ La UI no muestra “E###: módulo en falla genérica” cuando existe (o debió 
 Cuando Main debe alinear al resto: publica estado de máquina (p. ej. Error `0x46`, Stop) y/o comandos Stop/Reset de módulo.  
 No reenvía el EXXX a todos los esclavos.
 
+**Pause / Error → PreFeeder Idle.** Al publicar Pause (`0x48`) o Error (`0x46`), Main desarma el PreFeeder (`In process OFF` → Idle). No usa Stop `0x2B` (enclava PF-007). Resume / Busy rearma In process y **espera Buffer Full** (igual que Start) antes de seguir. C1 y Stop de operador sí mandan Stop `0x2B`.
+
 ---
 
 ## 4. Errores
@@ -183,9 +185,10 @@ El lote **no se cierra** en el error. **Stop** solo si el operador pulsa Stop.
 2. Corregir causa si aplica.  
 3. **Reset HMI** (Res) — **soft**: limpia latch + reset Motion/PF; **no** aborta el lote ni va a Idle.  
 4. **Resume** → **terminar la pieza** con FLOW_STEPS actual (sin pasos nuevos).  
+   Si el feed de esa pieza **ya está en la referencia láser** (visible), **no alimentar de nuevo**: primero validar L/R; ON → omitir feed. OFF → feed normal.  
 5. Operario **revisa la pieza** y da OK.  
 6. **Purga** (secuencia refill existente: park → feed 55 mm → Next Cutting → corte → Next ASDA 0).  
-7. Operario pulsa **Continuar ciclo**. La siguiente pieza hace Tfeed + Feed real (sin handoff residual). Para parar: botón Stop.
+7. Operario pulsa **Continuar ciclo**. La siguiente pieza valida la referencia láser: si ya visible, omite feed; si no, Tfeed (si `pfTriggerEnabled`) + Feed. Sin handoff residual. Para parar: botón Stop.
 
 Pause C2/C3 no come timeouts de feed/lineal: un wait no debe `_finish` el lote.
 
@@ -220,11 +223,17 @@ Stop solo si el operador pulsa Stop. Soft-Res: no PLC / no All Off. No añadir p
 
 ### Feed / láser (Motion) — aceptación y post-corrección
 
-**FEED_OK** (validación **final**) si OM oficial está en ventana PHYS **50–58 mm** y el láser está ON (p. ej. encoder 50 mm + láser OK → continúa; no exige 54–56). Fuera de PHYS → LengthNG; láser OFF en ventana → seek o E004/E005.
+El láser es el **tope de feed** (L y R): no alimentar más allá de su referencia. ON → **FEED_OK**, sin otro movimiento (p. ej. OM 53 + láser ON → ya está). OM > **58 mm** → ya pasó → LengthNG. OM ≤ 0 → NG. Láser OFF tras approach → **LASER_SEEK** hasta flanco ON / E004/E005. No hay corrección ciega a 55 mm: ese movimiento pasaba la referencia si el halt llegaba tarde.
 
-Tras **approach** (p. ej. 80 % de 55 mm) L y R **corrigen hacia 55** salvo |OM−55|≤0.5 y láser ON. PHYS no se usa para saltarse esa corrección (si no, un lado con offset/overshoot solo hace approach). El offset de comando del servo (`offL`/`offR`) aplica en purga (un solo movimiento), no infla el approach de ciclo.
+**Start y tras error (HMI):** antes de mandar Feed (1ª pieza al Start, misma pieza tras error, o siguiente tras Continuar ciclo), Main **valida la referencia** (GET `/api/status` una vez; si falla, caché TCP). Si el láser de todos los `feedSides` está ON, **omite el feed**. Prefetch/handoff ya listo no revalida. No es sondeo de ciclo.
 
-Si tras approach + corrección el OM está ~target y el láser sigue OFF: **LASER_SEEK** avanza hasta flanco ON. El halt usa **GPIO crudo** (sin debounce HMI de 150 ms), re-prime QSDec y ráfaga de CW Halt. Tras halt → **FEED_OK** sin exigir ventana PHYS OM (50–58). El seek puede sacar el encoder de rango; eso no es LengthNG.
+Si el láser está **OFF al iniciar** el feed (hunt / 1ª carga): no hay approach rápido a 44–55 mm. **LASER_SEEK** avanza a trozos cortos (~1.5 mm, ~25 mm/s) hasta flanco ON. Al ON: CW Halt + **congelar destino = posición actual** (el Halt solo no cancela el perfil largo). GPIO crudo, sin debounce HMI de 150 ms. Tras halt → **FEED_OK** sin ventana PHYS OM (50–58).
+
+Láser ya ON al iniciar (prefetch / cuerpo de manguera): approach normal, sin halt por nivel (evitar parar en 0). Al terminar, si sigue ON, no hay seek. Purga (`skipValidate`) no usa el tope láser. El offset de comando (`offL`/`offR`) aplica en purga, no infla el approach de ciclo.
+
+Si el seek no ve el láser a tiempo → E004/E005. El seek puede sacar el encoder de rango; eso no es LengthNG.
+
+**E028** solo si el encoder **live** no incrementó tras el feed. Settle tardío con live ya en ~55 (p. ej. halt por láser) no es E028: se usa la lectura live oficial.
 
 ## 5. Andon / torre
 
@@ -379,6 +388,7 @@ Prohibido aprovechar correcciones de rutina, Motion, PreFeeder, PLC, encoder, fe
 | Cómo se activa/limpia | Flip-flop Set / Res (Reset HMI o Res observacional si módulo OK) |
 | PLC válvulas | Pulso ON/OFF / All Off / Reset PLC; Reset HMI hard → Reset PLC; Home máquina → All Off; no desde Stop/Pause/soft C2/C3 |
 | Cómo se sale de un fallo | Secuencia fija C1 / C2 / C3; E050+lote: Pause → preguntar → Reset → Resume |
+| Pause / Error máquina | PreFeeder Idle (`In process OFF`); Resume/Busy rearma y espera Buffer Full (como Start); C1/Stop → Stop `0x2B` |
 | De dónde salen códigos | Excel + GPIO doc |
 | Debug | Solo si se pide |
 | Norma nueva/cambiada | Reflejar en todos los archivos necesarios (M4) |

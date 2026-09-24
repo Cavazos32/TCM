@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Play,
   Square,
@@ -160,10 +160,43 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
 }) => {
   const { t } = useApp();
   const [offsetInput, setOffsetInput] = useState(String(machineState.offsetMm ?? 0));
+  const offsetDirtyRef = useRef(false);
+  const offsetSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
+    if (offsetDirtyRef.current) return;
     setOffsetInput(String(machineState.offsetMm ?? 0));
   }, [machineState.offsetMm]);
+
+  useEffect(() => {
+    return () => {
+      if (offsetSaveTimerRef.current) clearTimeout(offsetSaveTimerRef.current);
+    };
+  }, []);
+
+  const persistCutOffset = (raw: string) => {
+    const n = parseFloat(raw);
+    if (isNaN(n)) return;
+    offsetDirtyRef.current = false;
+    onCutOffsetSave(n);
+  };
+
+  const scheduleCutOffsetSave = (raw: string) => {
+    offsetDirtyRef.current = true;
+    if (offsetSaveTimerRef.current) clearTimeout(offsetSaveTimerRef.current);
+    offsetSaveTimerRef.current = setTimeout(() => persistCutOffset(raw), 400);
+  };
+
+  const flushCutOffsetSave = (raw: string) => {
+    if (offsetSaveTimerRef.current) {
+      clearTimeout(offsetSaveTimerRef.current);
+      offsetSaveTimerRef.current = null;
+    }
+    persistCutOffset(raw);
+  };
+
+  const offsetParsed = parseFloat(offsetInput);
+  const linealTotalMm = Math.abs(machineState.mm) + (isNaN(offsetParsed) ? 0 : offsetParsed);
 
   const target = machineState.targetPieces > 0 ? machineState.targetPieces : 1;
   const progressPercentage = Math.min(
@@ -595,6 +628,14 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               {faultLabel}
             </span>
           ) : null}
+          {!hasFault && machineState.lastFault ? (
+            <span
+              className="rounded border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-800 px-2 py-0.5 font-mono text-[11px] font-semibold text-slate-700 dark:text-slate-200 truncate max-w-[min(100%,36rem)]"
+              title={machineState.lastFault}
+            >
+              {t('lot_recover_last_error')}: {machineState.lastFault}
+            </span>
+          ) : null}
           {showErrorProcess && (
             <span className="rounded border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/50 px-2 py-0.5 text-[11px] font-semibold text-amber-900 dark:text-amber-100">
               {processHint}
@@ -695,16 +736,26 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     type="number"
                     step={0.1}
                     value={offsetInput}
-                    onChange={(e) => setOffsetInput(e.target.value)}
-                    onBlur={() => {
-                      const n = parseFloat(offsetInput);
-                      if (!isNaN(n)) onCutOffsetSave(n);
+                    onChange={(e) => {
+                      setOffsetInput(e.target.value);
+                      scheduleCutOffsetSave(e.target.value);
                     }}
-                    disabled={machineState.isRunning}
-                    className="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 pl-3 pr-10 py-1.5 text-xs font-mono font-medium text-slate-900 dark:text-slate-100 shadow-2xs focus:border-teal-500 focus:outline-none disabled:opacity-50"
+                    onBlur={() => flushCutOffsetSave(offsetInput)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.currentTarget.blur();
+                      }
+                    }}
+                    className="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 pl-3 pr-10 py-1.5 text-xs font-mono font-medium text-slate-900 dark:text-slate-100 shadow-2xs focus:border-teal-500 focus:outline-none"
                   />
                   <span className="absolute right-3 text-xs font-mono text-slate-400 pointer-events-none">mm</span>
                 </div>
+                <p
+                  className="text-[10px] font-mono text-slate-500 dark:text-slate-400"
+                  title={t('cfg_cut_offset_hint')}
+                >
+                  {t('cfg_cut_lineal_total')}: {linealTotalMm.toFixed(1)} mm
+                </p>
               </div>
 
               <div className="space-y-1.5">
@@ -791,6 +842,11 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                   <p className="text-[11px] text-amber-900/80 dark:text-amber-200/80 mt-0.5">
                     {processHint}
                   </p>
+                  {(machineState.fault || machineState.lastFault) && (
+                    <p className="mt-1 font-mono text-[11px] font-semibold text-red-800 dark:text-red-200">
+                      {machineState.fault || machineState.lastFault}
+                    </p>
+                  )}
                   <p className="mt-1 font-mono text-[10px] text-amber-800 dark:text-amber-200 flex flex-wrap gap-x-1">
                     {processSteps.map((s, i) => (
                       <span key={s.id}>
@@ -984,6 +1040,11 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                       : t('lot_recover_title_c2')}
                 </p>
                 <p className="mt-0.5">{processHint}</p>
+                {(machineState.fault || machineState.lastFault) && (
+                  <p className="mt-1 font-mono font-semibold text-red-800 dark:text-red-200">
+                    {machineState.fault || machineState.lastFault}
+                  </p>
+                )}
                 <p className="mt-1 font-mono text-[10px] text-amber-800 dark:text-amber-200">
                   {processSteps.map((s, i) => (
                     <span key={s.id}>

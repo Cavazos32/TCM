@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { BackendSnapshot } from '../api/backendTypes';
+import type { BackendFlowStep, BackendSnapshot } from '../api/backendTypes';
 import * as api from '../api/hmiApi';
 import {
   mapAndonConnection,
@@ -10,7 +10,7 @@ import {
   mapMotionState,
   mapPlcState,
   mapPreFeederState,
-  mergeAllLogs,
+  mergeLogTail,
   parseLogs,
   valveByteFromId,
 } from '../api/mappers';
@@ -42,7 +42,7 @@ export interface HmiViewState {
   cycleConfig: CycleConfig;
   cycleStep: number;
   cycleActive: boolean;
-  cycleFlow: BackendSnapshot['cycle']['flow'];
+  cycleFlow: BackendFlowStep[];
   resumeEnabled: boolean;
   logs: LogEntry[];
   models: { name: string; mm: number; rpm: number; qty?: number }[];
@@ -82,6 +82,7 @@ const DEFAULT_MACHINE: MachineState = {
   cycleCompleted: false,
   safetyExhaust: false,
   errorActive: false,
+  lastFault: undefined,
 };
 
 export function useHmiState() {
@@ -117,8 +118,8 @@ export function useHmiState() {
       sensorsL: [],
       sensorsR: [],
       idleMode: false,
-      refillL: { material: false, dereeler: false, servo: false, feeder: false },
-      refillR: { material: false, dereeler: false, servo: false, feeder: false },
+      refillL: { material: false, dereeler: false, servo: false, feeder: false, pulseS: 1 },
+      refillR: { material: false, dereeler: false, servo: false, feeder: false, pulseS: 1 },
     },
     andonState: {
       connection: { connected: false, ip: '10.10.32.61', port: 8769 },
@@ -145,14 +146,27 @@ export function useHmiState() {
   const targetQtyTouchedRef = useRef(false);
   const lastModelIdxRef = useRef<number | null>(null);
   const snapRef = useRef<BackendSnapshot | null>(null);
+  const logsRef = useRef<LogEntry[]>([]);
+  const lastSseAtRef = useRef(0);
   const encPollRef = useRef(false);
   /** Estado lógico local por válvula (fuente de verdad entre clicks). */
   const valveOnRef = useRef<Record<string, boolean>>({});
   const valveLockRef = useRef<Record<string, boolean>>({});
   const [valveBusy, setValveBusy] = useState<Record<string, boolean>>({});
+  const pfPulseSRef = useRef<{ L: number; R: number }>({ L: 1, R: 1 });
 
   const applySnapshot = useCallback((snap: BackendSnapshot) => {
+    const prevFlow = snapRef.current?.cycle.flow;
+    const flow =
+      snap.cycle.flow && snap.cycle.flow.length > 0
+        ? snap.cycle.flow
+        : prevFlow ?? [];
+    if ((!snap.cycle.flow || snap.cycle.flow.length === 0) && flow.length) {
+      snap = { ...snap, cycle: { ...snap.cycle, flow } };
+    }
     snapRef.current = snap;
+    const logs = mergeLogTail(logsRef.current, snap);
+    logsRef.current = logs;
     const model = snap.models[snap.selectedModel];
     // Al cambiar de modelo (o primera carga), tomar qty del modelo.
     // No pisar un 1 intencional del operador con model.qty>1 en cada SSE/poll.
@@ -165,6 +179,9 @@ export function useHmiState() {
     }
     const targetQty = targetQtyRef.current;
     const plc = mapPlcState(snap);
+    const pfState = mapPreFeederState(snap);
+    pfPulseSRef.current.L = pfState.refillL.pulseS || 1;
+    pfPulseSRef.current.R = pfState.refillR.pulseS || 1;
     // Sincronizar lectura ON/OFF desde servidor solo si la válvula no está bloqueada.
     for (const v of plc.valves) {
       if (!valveLockRef.current[v.id]) {
@@ -176,16 +193,16 @@ export function useHmiState() {
       machineState: mapMachineState(snap, targetQty),
       motionState: mapMotionState(snap),
       plcState: plc,
-      preFeederState: mapPreFeederState(snap),
+      preFeederState: pfState,
       andonState: mapAndonState(snap),
       andonConn: mapAndonConnection(snap),
       andonBuzzerMute: mapAppConfig(snap).andonBuzzerMute,
       cycleConfig: mapCycleConfig(snap.cycle.config),
       cycleStep: snap.cycle.step,
       cycleActive: snap.cycle.active,
-      cycleFlow: snap.cycle.flow,
+      cycleFlow: flow,
       resumeEnabled: snap.resumeEnabled,
-      logs: mergeAllLogs(snap),
+      logs,
       models: snap.models,
       selectedModelIndex: snap.selectedModel,
     });
@@ -205,6 +222,7 @@ export function useHmiState() {
       };
       es.onmessage = (ev) => {
         try {
+          lastSseAtRef.current = Date.now();
           applySnapshot(JSON.parse(ev.data));
         } catch {
           // ignore
@@ -226,11 +244,12 @@ export function useHmiState() {
     api.getState().then(applySnapshot).catch(() => {});
     connect();
 
-    // Respaldo: si el SSE se queda mudo, el poll recupera progreso/completado sin F5.
+    // Respaldo: solo si el SSE lleva >4 s mudo (no competir con el stream).
     pollTimer = setInterval(() => {
       if (closed) return;
+      if (Date.now() - lastSseAtRef.current < 4000) return;
       api.getState().then(applySnapshot).catch(() => {});
-    }, 2000);
+    }, 4000);
 
     return () => {
       closed = true;
@@ -516,7 +535,11 @@ export function useHmiState() {
       cfg.feedSides === 'L' || cfg.feedSides === 'R' || cfg.feedSides === 'LR'
         ? cfg.feedSides
         : mapped.feedSides;
-    const next = { ...mapped, feedSides };
+    const pfTriggerEnabled =
+      typeof cfg.pfTriggerEnabled === 'boolean'
+        ? cfg.pfTriggerEnabled
+        : mapped.pfTriggerEnabled;
+    const next = { ...mapped, feedSides, pfTriggerEnabled };
     setView((prev) => ({ ...prev, cycleConfig: next }));
     return next;
   }, []);
@@ -696,28 +719,81 @@ export function useHmiState() {
     }).catch(() => {});
   }, []);
 
-  const pfRefill = useCallback((side: 'L' | 'R', channel: PfRefillChannel, on: boolean) => {
-    const key = side === 'L' ? 'refillL' : 'refillR';
-    setView((prev) => {
-      const cur = prev.preFeederState[key];
-      const next = { ...cur, [channel]: on };
-      if (channel === 'material') {
-        next.dereeler = on;
-        next.servo = on;
-        next.feeder = on;
-        next.material = on;
-      } else {
-        next.material = next.dereeler && next.servo && next.feeder;
-      }
-      return {
-        ...prev,
-        preFeederState: { ...prev.preFeederState, [key]: next },
-      };
-    });
-    api.prefeederAction('refill', { side, channel, on }).then((res) => {
-      if (res.ok === false && res.error) window.alert(res.error);
-    }).catch(() => {});
+  const pfRefillOffRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+
+  const pfRefillClearTimers = useCallback((side: 'L' | 'R', channel: PfRefillChannel) => {
+    const chans: PfRefillChannel[] =
+      channel === 'material' ? ['material', 'dereeler', 'servo', 'feeder'] : [channel];
+    for (const ch of chans) {
+      const id = `${side}-${ch}`;
+      const t = pfRefillOffRef.current[id];
+      if (t) clearTimeout(t);
+      delete pfRefillOffRef.current[id];
+    }
   }, []);
+
+  const pfRefillPaint = useCallback(
+    (side: 'L' | 'R', channel: PfRefillChannel, on: boolean) => {
+      const key = side === 'L' ? 'refillL' : 'refillR';
+      setView((prev) => {
+        const cur = prev.preFeederState[key];
+        const next = { ...cur, [channel]: on };
+        if (channel === 'material') {
+          next.dereeler = on;
+          next.servo = on;
+          next.feeder = on;
+          next.material = on;
+        } else {
+          next.material = next.dereeler && next.servo && next.feeder;
+        }
+        return {
+          ...prev,
+          preFeederState: { ...prev.preFeederState, [key]: next },
+        };
+      });
+    },
+    []
+  );
+
+  const pfRefill = useCallback((side: 'L' | 'R', channel: PfRefillChannel, on: boolean) => {
+    pfRefillClearTimers(side, channel);
+    pfRefillPaint(side, channel, on);
+    const pulseS = pfPulseSRef.current[side] || 1;
+    if (on) {
+      const chans: PfRefillChannel[] =
+        channel === 'material' ? ['material', 'dereeler', 'servo', 'feeder'] : [channel];
+      const ms = Math.round(Math.max(0.2, Math.min(10, pulseS)) * 1000);
+      for (const ch of chans) {
+        const id = `${side}-${ch}`;
+        pfRefillOffRef.current[id] = setTimeout(() => {
+          delete pfRefillOffRef.current[id];
+          pfRefillPaint(side, ch, false);
+        }, ms);
+      }
+    }
+    api.prefeederAction('refill', { side, channel, on }).then((res) => {
+      if (res.ok === false && res.error) {
+        pfRefillClearTimers(side, channel);
+        pfRefillPaint(side, channel, false);
+        window.alert(res.error);
+        return;
+      }
+      if (on && typeof res.pulseS === 'number' && Number.isFinite(res.pulseS)) {
+        pfPulseSRef.current[side] = res.pulseS;
+        pfRefillClearTimers(side, channel);
+        const ms = Math.round(Math.max(0.2, Math.min(10, res.pulseS)) * 1000);
+        const chans: PfRefillChannel[] =
+          channel === 'material' ? ['material', 'dereeler', 'servo', 'feeder'] : [channel];
+        for (const ch of chans) {
+          const id = `${side}-${ch}`;
+          pfRefillOffRef.current[id] = setTimeout(() => {
+            delete pfRefillOffRef.current[id];
+            pfRefillPaint(side, ch, false);
+          }, ms);
+        }
+      }
+    }).catch(() => {});
+  }, [pfRefillClearTimers, pfRefillPaint]);
 
   const andonSetOut = useCallback((out: 'green' | 'yellow' | 'red' | 'buzzer', on: boolean) => {
     api.andonAction('set_out', { out, on }).catch(() => {});

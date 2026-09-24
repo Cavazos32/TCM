@@ -83,6 +83,7 @@ struct SideView {
   bool refillDereeler = false;
   bool refillServo = false;
   bool refillFeeder = false;
+  float refillPulseS = 1.0f;
   String machineState = "idle";
   uint32_t lastMsAgo = 99999;
 };
@@ -116,6 +117,15 @@ static int jInt(const char* j, const char* k, int d)
   int i = s.indexOf(n);
   if (i < 0) return d;
   return s.substring(i + n.length()).toInt();
+}
+
+static float jFloat(const char* j, const char* k, float d)
+{
+  String n = String("\"") + k + "\":";
+  String s(j);
+  int i = s.indexOf(n);
+  if (i < 0) return d;
+  return s.substring(i + n.length()).toFloat();
 }
 
 static bool jBool(const char* j, const char* k, bool d)
@@ -315,6 +325,9 @@ static void parseSideSnapshot(const char* j, SideView& s)
   s.refillDereeler = jBool(j, "refillDereeler", s.refillDereeler);
   s.refillServo = jBool(j, "refillServo", s.refillServo);
   s.refillFeeder = jBool(j, "refillFeeder", s.refillFeeder);
+  s.refillPulseS = jFloat(j, "refillPulseS", s.refillPulseS);
+  if (s.refillPulseS < 0.2f) s.refillPulseS = 0.2f;
+  if (s.refillPulseS > 10.0f) s.refillPulseS = 10.0f;
   String ms = jStr(j, "machineState");
   if (ms.length()) s.machineState = ms;
   applySideError(s, jBool(j, "error", s.error),
@@ -605,6 +618,7 @@ static void appendSideJson(String& j, const char* key, const SideView& s)
   j += ",\"refillDereeler\":"; j += s.refillDereeler ? "true" : "false";
   j += ",\"refillServo\":"; j += s.refillServo ? "true" : "false";
   j += ",\"refillFeeder\":"; j += s.refillFeeder ? "true" : "false";
+  j += ",\"refillPulseS\":"; j += String(s.refillPulseS, 1);
   j += ",\"machineState\":"; jsonAppendStr(j, s.machineState);
   j += ",\"error\":"; j += s.error ? "true" : "false";
   j += ",\"errorCode\":"; j += s.errorCode;

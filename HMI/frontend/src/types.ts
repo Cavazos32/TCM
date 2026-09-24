@@ -31,6 +31,8 @@ export interface CycleConfig {
   pieceWatchTimeoutS?: number;
   /** Feed / Stage2 OM: 'L' | 'R' | 'LR' */
   feedSides: 'L' | 'R' | 'LR';
+  /** Tfeed entre piezas (paso 3). false = omitir; solo helper holgura. */
+  pfTriggerEnabled?: boolean;
   /** Longitud de purga/refill (mm). Retry = este valor; Long feed = REFILL_LONG_FEED_MM. */
   refillMm?: number;
   /** Posición park ASDA antes del refill (convención firmada HMI). */
@@ -130,6 +132,8 @@ export interface MachineState {
   fault?: string;
   faultClass?: string;
   faultCode?: string;
+  /** EXXX del Set, visible tras Res mientras el lote sigue en recuperación. */
+  lastFault?: string;
   faultModule?: string;
   faultDescription?: string;
   errorActive?: boolean;
@@ -177,6 +181,8 @@ export interface PfRefillState {
   dereeler: boolean;
   servo: boolean;
   feeder: boolean;
+  /** Duración del pulso (s) desde el HTML local del PreFeeder. */
+  pulseS?: number;
 }
 
 export interface PreFeederState {

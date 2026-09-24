@@ -586,8 +586,8 @@ const char index_html[] PROGMEM = R"rawliteral(
 
         <p class="info-section-title">Refill material</p>
         <ol class="info-flow">
-          <li><strong>Refill material</strong> → DeReeler + servo + Feeder (un pulso; duración desde la UI)</li>
-          <li><strong>DeReeler / Servo / Feeder</strong> → clic = ON y auto-OFF; otro clic apaga ya</li>
+          <li><strong>Refill material</strong> → DeReeler + servo + Feeder (un pulso; misma duración para todos)</li>
+          <li><strong>DeReeler / Servo / Feeder</strong> → clic = pulso y auto-OFF; otro clic apaga ya</li>
           <li class="info-step-note">Refill solo en Materialista</li>
           <li class="info-step-note">GPIO 27 ausente → Error enclavado (sin Materialista auto); operador decide</li>
         </ol>

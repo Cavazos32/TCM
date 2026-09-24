@@ -389,12 +389,27 @@ static void feedCanPrimeHaltDecelSide(bool sideR)
 void canHaltSide(bool sideR) { sendCanHaltImmediate(sideR); }
 void canHalt() { canHaltSide(false); canHaltSide(true); }
 
-// Halt lo antes posible al flanco láser: re-prime QSDec + ráfaga de CW Halt.
+// Halt + congelar perfil en la posición actual (el CW Halt solo no basta:
+// el destino largo sigue activo y el servo se pasa de la referencia).
+static void feedLaserFreezeAtActual(bool sideR)
+{
+  const uint8_t node = sideR ? SERVO_NODE_R : SERVO_NODE_L;
+  int32_t pos = 0;
+  if (!canReadSdoI32(node, SERVO_OD_POSITION_ACTUAL, 0x00, pos, CAN_SDO_TIMEOUT_MS))
+    return;
+  if (sideR)
+    canWriteTargetAbs(false, true, 0, pos);
+  else
+    canWriteTargetAbs(true, false, pos, 0);
+}
+
 static void feedLaserHaltNow(bool sideR)
 {
   feedCanPrimeHaltDecelSide(sideR);
   for (uint8_t i = 0; i < FEED_LASER_HALT_BURST; i++)
     sendCanHaltImmediate(sideR);
+  feedLaserFreezeAtActual(sideR);
+  sendCanHaltImmediate(sideR);
 }
 
 static void canControlWordSides(bool doL, bool doR, uint16_t cw, const char* desc)
@@ -508,7 +523,10 @@ struct FeedSideRt {
   float errAbsBeforeCorr = 0.0f;
   bool laserState = false;
   uint8_t correctionCount = 0;
-  bool laserSeekDone = false;  // seek gated: solo una vez post-corrección
+  bool laserSeekDone = false;  // seek gated: solo una vez
+  bool huntLaser = false;      // láser OFF al start → creep, sin approach rápido
+  // Halt en approach solo en flanco OFF→ON (prefetch: láser ya ON, no parar en 0).
+  bool haltOnLaserRise = false;
   FeedValResult result = FVR_NONE;
   uint16_t errByte = 0;
   char fault[FEED_FAULT_REASON_MAX] = "";
@@ -735,9 +753,9 @@ static const char* feedSidePhaseName(FeedSidePhase p)
 }
 
 // Feed Validator: solo sobre OM oficial post-SETTLE (nunca sobre approachMm del servo).
-// 1ª medida: ~44 (80%) → CORREGIR a 55. PHYS 50–58 no salta la corrección (evita que R
-// con offset/overshoot se quede solo en approach). |err|≤0.5 + láser → OK ya en target.
-// FINAL: PHYS 50–58 + láser ON → FEED_OK.
+// Láser ON = llegada (L y R): no otro movimiento (no alimentar más allá).
+// OM > PHYS_MAX con láser ON → ya pasó la referencia → NG. OM≤0 → NG.
+// Láser OFF tras approach → SEEK (no corrección ciega a 55). FINAL OFF en PHYS → seek.
 static FeedValResult feedValidatorEvaluate(float omOfficialMm, bool laserOn, bool isFinal,
                                            float* correctionOut)
 {
@@ -745,25 +763,21 @@ static FeedValResult feedValidatorEvaluate(float omOfficialMm, bool laserOn, boo
 
   const float err = FEED_TARGET_FIXED_MM - omOfficialMm;
 
+  if (omOfficialMm <= 0.0f || omOfficialMm > FEED_OM_PHYS_MAX_MM + 1e-4f)
+    return FVR_NG;
+  if (laserOn)
+    return FVR_OK;
+
   if (!isFinal) {
-    // 1ª OM tras approach: no aplicar PHYS_MIN (evita LengthNG por OM≈approachMm).
-    // Solo absurdo: sin lectura útil o por encima del techo físico.
-    if (omOfficialMm <= 0.0f || omOfficialMm > FEED_OM_PHYS_MAX_MM + 1e-4f)
-      return FVR_NG;
-    if (fabsf(err) <= FEED_OM_QUANTUM_MM + 1e-4f) {
-      if (!laserOn) return FVR_INCONSISTENT;
-      return FVR_OK;
-    }
+    if (fabsf(err) <= FEED_OM_QUANTUM_MM + 1e-4f)
+      return FVR_INCONSISTENT;
     if (correctionOut) *correctionOut = err;
     return FVR_CORRECT;
   }
 
-  // Medición FINAL: PHYS 50–58 + láser (sin ventana control 54–56)
   if (!feedInPhysical(omOfficialMm))
     return FVR_NG;
-  if (!laserOn)
-    return FVR_INCONSISTENT;
-  return FVR_OK;
+  return FVR_INCONSISTENT;
 }
 
 static uint32_t feedSideNominalPp(bool sideR)
@@ -839,6 +853,8 @@ static void feedSideClearDiag(FeedSideRt& s)
   s.laserState = false;
   s.correctionCount = 0;
   s.laserSeekDone = false;
+  s.huntLaser = false;
+  s.haltOnLaserRise = false;
   s.lastLaserPollMs = 0;
   s.seekDeadlineMs = 0;
   s.result = FVR_NONE;
@@ -909,10 +925,15 @@ static void feedSideFinish(bool sideR, FeedValResult result, uint8_t errByte, co
 }
 
 // Emite move solo en el servo de sideR. false = SDO posición falló (sin movimiento).
-static bool feedSideIssueMove(bool sideR, int32_t steps, uint32_t now)
+static uint32_t feedSideCreepPp(bool sideR)
+{
+  return feedMmSToPp(FEED_LASER_CREEP_MM_S, sideR);
+}
+
+static bool feedSideIssueMove(bool sideR, int32_t steps, uint32_t now, uint32_t velPp = 0)
 {
   FeedSideRt& s = feedSideAt(sideR);
-  const uint32_t vel = feedSideMovePp(sideR);
+  const uint32_t vel = (velPp >= 1) ? velPp : feedSideMovePp(sideR);
   const uint16_t decMs = sideR ? feedDecRampMsR : feedDecRampMsL;
   feedCanSetVelAccSide(sideR, vel);
   const bool moved = sideR ? canMoveRelativePP(0, steps) : canMoveRelativePP(steps, 0);
@@ -945,7 +966,6 @@ static bool feedSidePollServoDone(bool sideR, uint32_t now)
 static bool feedSideStartLaserSeek(bool sideR, uint32_t now, const char* why)
 {
   FeedSideRt& s = feedSideAt(sideR);
-  const uint8_t laserErr = sideR ? MOT_ERR_LASER_R : MOT_ERR_LASER_L;
 
   // Láser ya ON (GPIO crudo): no mandar seek — halt y OK.
   if (feedLaserMaterialPresentRaw(sideR)) {
@@ -959,24 +979,20 @@ static bool feedSideStartLaserSeek(bool sideR, uint32_t now, const char* why)
     return true;
   }
 
-  const float mmS = feedPpToMmS(feedSideMovePp(sideR), sideR);
-  const float seekMm = mmS * ((float)feedLaserSeekMs / 1000.0f) * FEED_LASER_SEEK_DIST_MARGIN;
-  const int32_t steps = feedMmToCmdStepsSigned(seekMm, sideR);
-  if (steps <= 0) {
-    feedSideFinish(sideR, FVR_INCONSISTENT, laserErr, "FEED_INCONSISTENT");
-    return true;
-  }
-  Serial.printf("FEED %c LASER_SEEK (%s) %.1fmm timeout=%lums\n",
-                sideR ? 'R' : 'L', why ? why : "?", (double)seekMm,
-                (unsigned long)feedLaserSeekMs);
+  const float remainMm = s.huntLaser ? FEED_OM_PHYS_MAX_MM : 20.0f;
+  uint32_t creepMs = (uint32_t)(remainMm / FEED_LASER_CREEP_MM_S * 1000.0f) + 500u;
+  if (creepMs < feedLaserSeekMs) creepMs = feedLaserSeekMs;
+  if (creepMs > 4000u) creepMs = 4000u;
+  Serial.printf("FEED %c LASER_SEEK creep (%s) chunk=%.1fmm v=%.0fmm/s timeout=%lums\n",
+                sideR ? 'R' : 'L', why ? why : "?",
+                (double)FEED_LASER_CREEP_MM, (double)FEED_LASER_CREEP_MM_S,
+                (unsigned long)creepMs);
   feedCanPrimeHaltDecelSide(sideR);
-  if (!feedSideIssueMove(sideR, steps, now)) {
-    feedSideFinish(sideR, FVR_NG, feedSideNoFbErr(sideR), "FEED: sin feedback 6064");
-    return true;
-  }
   s.laserSeekDone = true;
-  s.seekDeadlineMs = now + feedLaserSeekMs;
+  s.seekDeadlineMs = now + creepMs;
   s.lastLaserPollMs = 0;
+  s.moveStartMs = 0;
+  s.absDueMs = 0;
   s.phase = FSP_LASER_SEEK;
   return true;
 }
@@ -1024,6 +1040,7 @@ static void feedSideStartApproach(bool sideR)
   }
   s.moveSteps = steps;  // pending approach steps tras halt settle
 
+  s.huntLaser = !s.skipValidate && !feedLaserMaterialPresentRaw(sideR);
   sendCanHaltImmediate(sideR);
   s.settleUntilMs = millis() + FEED_HALT_SETTLE_MS;
   s.phase = FSP_HALT_SETTLE;
@@ -1048,12 +1065,20 @@ static void feedSideService(bool sideR, uint32_t now)
     case FSP_HALT_SETTLE:
       if (now < s.settleUntilMs) break;
       {
-        // Misma secuencia física: halt → settle → reset OM del lado → approach move.
+        // halt → settle → reset OM. Hunt (láser OFF): creep, no approach rápido.
         feedOmResetSide(sideR, false);
+        if (s.huntLaser) {
+          Serial.printf("FEED %c gen=%lu hunt laser (creep, no approach)\n",
+                        sideR ? 'R' : 'L', (unsigned long)s.gen);
+          feedSideStartLaserSeek(sideR, now, "hunt");
+          break;
+        }
         const int32_t steps = s.moveSteps;
         Serial.printf("FEED %c gen=%lu APPROACH %.1fmm (%.0f%% of %.1f) steps=%ld\n",
                       sideR ? 'R' : 'L', (unsigned long)s.gen, (double)s.approachMm,
                       (double)feedApproachPct, (double)s.targetMm, (long)steps);
+        // Láser ya ON (prefetch): no armar halt — hay que completar el tramo.
+        s.haltOnLaserRise = !s.skipValidate && !feedLaserMaterialPresentRaw(sideR);
         feedCanPrimeHaltDecelSide(sideR);
         if (!feedSideIssueMove(sideR, steps, now)) {
           feedSideFinish(sideR, FVR_NG, feedSideNoFbErr(sideR), "FEED: sin feedback 6064");
@@ -1065,8 +1090,19 @@ static void feedSideService(bool sideR, uint32_t now)
 
     case FSP_WAIT_SERVO:
     case FSP_WAIT_SERVO_CORR:
-      // Approach/corrección: no cortar por láser aquí (OM debe llegar a target).
-      // El halt por láser es solo en LASER_SEEK (compensación de presencia).
+      // Flanco OFF→ON en approach o corrección: halt, no pasar la referencia láser.
+      if (!s.skipValidate && s.haltOnLaserRise && feedLaserMaterialPresentRaw(sideR)) {
+        s.laserState = true;
+        s.haltOnLaserRise = false;
+        feedLaserHaltNow(sideR);
+        Serial.printf("FEED %c %s laser ON → halt (referencia)\n",
+                      sideR ? 'R' : 'L',
+                      (s.phase == FSP_WAIT_SERVO_CORR) ? "CORR" : "APPROACH");
+        s.phase = FSP_SETTLE_FINAL;
+        s.settleUntilMs = now + FEED_OM_HALT_SETTLE_MS;
+        s.omReadMiss = 0;
+        break;
+      }
       if (feedSidePollServoDone(sideR, now)) {
         s.phase = (s.phase == FSP_WAIT_SERVO) ? FSP_SETTLE : FSP_SETTLE_FINAL;
         s.settleUntilMs = now + FEED_OM_SETTLE_MS;
@@ -1089,8 +1125,18 @@ static void feedSideService(bool sideR, uint32_t now)
             s.settleUntilMs = now + FEED_OM_READ_RETRY_DELAY_MS;
             break;
           }
-          feedSideFinish(sideR, FVR_NG, MOT_ERR_ENCODER_NO_PULSES, "FEED: sin lectura OM");
-          break;
+          // E028 = sin incremento real. Live ~55 + settle tardío no es E028.
+          float liveOm = 0.0f;
+          if (feedOmReadLiveOfficialMmSide(sideR, &liveOm)
+              && fabsf(liveOm) >= FEED_OM_DIR_CHECK_MM) {
+            om = liveOm;
+            Serial.printf("FEED %c OM live %.2f (settle pending)\n",
+                          sideR ? 'R' : 'L', (double)om);
+          } else {
+            feedSideFinish(sideR, FVR_NG, MOT_ERR_ENCODER_NO_PULSES,
+                           "FEED: sin incremento OM");
+            break;
+          }
         }
         s.omReadMiss = 0;
         const bool isFinal = (s.phase == FSP_SETTLE_FINAL);
@@ -1126,33 +1172,31 @@ static void feedSideService(bool sideR, uint32_t now)
         const float om = isFinal ? s.finalOmMm : s.approachOmMm;
         // GPIO crudo en validación: evita seek “ciego” por debounce 150 ms stale OFF.
         s.laserState = feedLaserMaterialPresentRaw(sideR);
-        float corr = 0.0f;
-        FeedValResult vr = feedValidatorEvaluate(om, s.laserState, isFinal, &corr);
+        FeedValResult vr = feedValidatorEvaluate(om, s.laserState, isFinal, nullptr);
         const uint8_t laserErr = sideR ? MOT_ERR_LASER_R : MOT_ERR_LASER_L;
 
         if (!isFinal) {
           if (vr == FVR_OK) {
             s.finalOmMm = om;
-            feedSideFinish(sideR, FVR_OK, 0, "FEED_OK");
+            feedSideFinish(sideR, FVR_OK, 0,
+                           s.laserState ? "FEED_OK_LASER" : "FEED_OK");
             break;
           }
-          // Approach ~55 + láser OFF → seek (no LengthNG/laser aún).
-          if (vr == FVR_INCONSISTENT && !s.laserSeekDone) {
-            feedSideStartLaserSeek(sideR, now, "post-approach");
+          // Láser OFF tras approach: SEEK hasta flanco ON (no corrección ciega
+          // a 55 mm — esa pasaba la referencia si el halt llegaba tarde).
+          if ((vr == FVR_CORRECT || vr == FVR_INCONSISTENT) && !s.laserSeekDone) {
+            feedSideStartLaserSeek(sideR, now,
+                                   (vr == FVR_CORRECT) ? "post-approach-short"
+                                                       : "post-approach");
             break;
           }
-          if (vr == FVR_NG || vr == FVR_INCONSISTENT) {
+          if (vr == FVR_NG || vr == FVR_INCONSISTENT || vr == FVR_CORRECT) {
             s.finalOmMm = om;
             feedSideFinish(sideR, vr,
-                           (vr == FVR_INCONSISTENT) ? laserErr : MOT_ERR_TOLERANCE_WINDOW,
-                           (vr == FVR_INCONSISTENT) ? "FEED_INCONSISTENT" : "FEED_NG phys/OM");
+                           (vr == FVR_NG) ? MOT_ERR_TOLERANCE_WINDOW : laserErr,
+                           (vr == FVR_NG) ? "FEED_NG phys/OM" : "FEED_INCONSISTENT");
             break;
           }
-          // FVR_CORRECT — un solo intento
-          s.correctionMm = corr;
-          s.errAbsBeforeCorr = fabsf(FEED_TARGET_FIXED_MM - om);
-          s.correctionCount = 1;
-          s.phase = FSP_CORRECTION;
           break;
         }
 
@@ -1164,11 +1208,13 @@ static void feedSideService(bool sideR, uint32_t now)
         }
         if (vr == FVR_OK) {
           const float errAbs = fabsf(FEED_TARGET_FIXED_MM - om);
-          if (errAbs > s.errAbsBeforeCorr + 1e-3f) {
+          if (!s.laserState && s.correctionCount >= 1
+              && errAbs > s.errAbsBeforeCorr + 1e-3f) {
             feedSideFinish(sideR, FVR_NG, MOT_ERR_TOLERANCE_WINDOW, "FEED: correccion empeora");
             break;
           }
-          feedSideFinish(sideR, FVR_OK, 0, "FEED_OK");
+          feedSideFinish(sideR, FVR_OK, 0,
+                         s.laserState ? "FEED_OK_LASER" : "FEED_OK");
           break;
         }
         feedSideFinish(sideR, vr,
@@ -1180,20 +1226,13 @@ static void feedSideService(bool sideR, uint32_t now)
     case FSP_LASER_SEEK:
       {
         const uint8_t laserErr = sideR ? MOT_ERR_LASER_R : MOT_ERR_LASER_L;
-        // GPIO crudo cada loop (sin debounce 150 ms ni throttle) → halt al flanco.
-        const bool pollDue = (FEED_LASER_SEEK_POLL_MS == 0)
-            || (s.lastLaserPollMs == 0)
-            || ((now - s.lastLaserPollMs) >= FEED_LASER_SEEK_POLL_MS);
-        if (pollDue) {
-          s.lastLaserPollMs = now;
-          if (feedLaserMaterialPresentRaw(sideR)) {
-            s.laserState = true;
-            feedLaserHaltNow(sideR);
-            Serial.printf("FEED %c LASER_SEEK hit → halt inmediato\n", sideR ? 'R' : 'L');
-            s.settleUntilMs = now + FEED_HALT_SETTLE_MS;
-            s.phase = FSP_LASER_SEEK_HALT;
-            break;
-          }
+        if (feedLaserMaterialPresentRaw(sideR)) {
+          s.laserState = true;
+          feedLaserHaltNow(sideR);
+          Serial.printf("FEED %c LASER_SEEK hit → freeze\n", sideR ? 'R' : 'L');
+          s.settleUntilMs = now + FEED_HALT_SETTLE_MS;
+          s.phase = FSP_LASER_SEEK_HALT;
+          break;
         }
         if (now >= s.seekDeadlineMs) {
           feedLaserHaltNow(sideR);
@@ -1201,6 +1240,26 @@ static void feedSideService(bool sideR, uint32_t now)
           Serial.printf("FEED %c LASER_SEEK timeout → %s\n",
                         sideR ? 'R' : 'L', sideR ? "E004" : "E005");
           feedSideFinish(sideR, FVR_INCONSISTENT, laserErr, "FEED_INCONSISTENT");
+          break;
+        }
+        // Trozo en curso: solo vigilar láser (arriba). No SDO TargetReached.
+        if (s.moveStartMs != 0 && now < s.absDueMs)
+          break;
+        s.moveStartMs = 0;
+        if (feedLaserMaterialPresentRaw(sideR)) {
+          s.laserState = true;
+          feedLaserHaltNow(sideR);
+          s.settleUntilMs = now + FEED_HALT_SETTLE_MS;
+          s.phase = FSP_LASER_SEEK_HALT;
+          break;
+        }
+        const int32_t steps = feedMmToCmdStepsSigned(FEED_LASER_CREEP_MM, sideR);
+        if (steps <= 0) {
+          feedSideFinish(sideR, FVR_INCONSISTENT, laserErr, "FEED_INCONSISTENT");
+          break;
+        }
+        if (!feedSideIssueMove(sideR, steps, now, feedSideCreepPp(sideR))) {
+          feedSideFinish(sideR, FVR_NG, feedSideNoFbErr(sideR), "FEED: sin feedback 6064");
           break;
         }
       }
@@ -1293,10 +1352,44 @@ void feedSaveConfig()
   feedPrefs.end();
 }
 
+// GPIO crudo al entrar a feedLoop (antes de SDO de issueMove / OM).
+static void feedPollLaserHaltSide(bool sideR, uint32_t now)
+{
+  FeedSideRt& s = feedSideAt(sideR);
+  if (!s.active || s.skipValidate) return;
+  const bool watch = (s.phase == FSP_WAIT_SERVO || s.phase == FSP_WAIT_SERVO_CORR)
+      && s.haltOnLaserRise;
+  const bool seek = (s.phase == FSP_LASER_SEEK);
+  if (!watch && !seek) return;
+  if (!feedLaserMaterialPresentRaw(sideR)) return;
+  s.laserState = true;
+  s.haltOnLaserRise = false;
+  feedLaserHaltNow(sideR);
+  if (seek) {
+    s.settleUntilMs = now + FEED_HALT_SETTLE_MS;
+    s.phase = FSP_LASER_SEEK_HALT;
+  } else {
+    s.phase = FSP_SETTLE_FINAL;
+    s.settleUntilMs = now + FEED_OM_HALT_SETTLE_MS;
+    s.omReadMiss = 0;
+  }
+}
+
 void feedLoop()
 {
   static uint32_t lastCanRetryMs = 0;
+  static uint32_t lastTcpSeenMs = 0;
+  // setupServoFeeder()/reconnectCANBus() hacen delay() de ~5 s.
+  // Si corre en lineal/HOME (feed idle) el ACK de CMD_MOVE sale a 1.5–4 s
+  // y el Reached se alarga otro tanto — CT de pieza ~14 s.
+  // Hold-off: HMI TCP actual o reciente (parpadeo de enlace) o ASDA ocupado.
+  if (motionHostTcpLinked())
+    lastTcpSeenMs = millis();
+  const bool tcpHoldoff =
+      lastTcpSeenMs != 0 && (int32_t)(millis() - lastTcpSeenMs) < 60000;
   if (!feedPhaseIsActive()
+      && !tcpHoldoff
+      && !motionHostIsOccupied()
       && (millis() - lastCanRetryMs) >= FEED_CAN_RETRY_MS)
   {
     lastCanRetryMs = millis();
@@ -1321,6 +1414,8 @@ void feedLoop()
 
   const uint32_t now = millis();
   serviceCANRx();
+  feedPollLaserHaltSide(false, now);
+  feedPollLaserHaltSide(true, now);
   feedSideService(false, now);
   feedSideService(true, now);
   feedRuntimeActive = feedPhaseIsActive();

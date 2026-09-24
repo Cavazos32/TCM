@@ -137,7 +137,7 @@ def _broadcast_sse() -> None:
         lat_mark("10", source="sse")
     except ImportError:
         pass
-    data = json.dumps(get_state().snapshot(), separators=(",", ":"))
+    data = json.dumps(get_state().snapshot(slim=True), separators=(",", ":"))
     for q in list(_sse_queues):
         try:
             q.put_nowait(data)

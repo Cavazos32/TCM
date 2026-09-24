@@ -4,15 +4,15 @@
 
 | Segmento | ¿Cuenta en CT? | Ejemplos |
 |----------|----------------|----------|
-| Preparación | **No** | `prepareBeforeCut`, ASDA→0, PreFeeder In process ON, espera Buffer Full |
+| Preparación | **No** | `prepareBeforeCut`, ASDA→0, PreFeeder In process ON, espera Buffer Full (Start y Resume) |
 | Holgura pre-pieza | **No** | El ciclo no fuerza Tfeed; holgura la recupera el helper PF |
-| Secuencia productiva | **Sí** | Holder ON (1ª) → Tfeed (piezas 2…N; 1ª y C2 omiten) → feed → pinzas → lineal → corte → depósito → WIP/HOME → asentar |
+| Secuencia productiva | **Sí** | Holder ON (1ª) → Tfeed (piezas 2…N si `pfTriggerEnabled`; 1ª, C2 y OFF omiten) → feed → pinzas → lineal → corte → depósito → WIP/HOME → asentar |
 | Holgura post-pieza | **No** | El ciclo no manda Tfeed extra; holgura la recupera el helper PF |
 | Pause | **No** | excluido del reloj |
 | Fin de lote | **No** | Finish tools, espera PF settled, In process OFF |
 
 **Reloj:**
-1. **Start** = tras Buffer Full confirmado (y holgura pre-pieza si aplica), justo antes de Holder/feed.
+1. **Start** = tras Buffer Full confirmado (y holgura pre-pieza si aplica), justo antes de Holder/feed. **Resume** = misma espera Buffer Full (fuera de CT) antes de continuar.
 2. **Freeze** = al entrar a `post_piece` (después de asentar/HOME) — **no espera Finish/settled**.
 3. **Log** `Pieza OK · Xs` = solo si la pieza cierra bien (después de holgura post).
 4. **CT lote** = wall 1ª→última freeze − Pause; N piezas en serie se suman.
@@ -42,8 +42,10 @@ BusyState
 Holder+Encoder ON (inicio pieza 1)          # solo 1ª
 Delay · Delay Holder ON: …
 trigger PreFeeder: omitido (1ª pieza)       # Tfeed desde pieza 2; última sí manda
+Feed: validar referencia láser lados=…      # live/caché
+Feed omitido (referencia láser visible) …   # si ya ON al Start; si no:
 Feed start lados=…
-Feed OK lados=…                             # ← antes faltaba
+Feed OK lados=…
 Pinzas ON (cierran)                         # ← antes faltaba
 Delay · Delay tras cerrar pinzas: …
 enc_set0: omitido …

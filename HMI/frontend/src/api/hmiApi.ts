@@ -186,7 +186,7 @@ export function prefeederAction(
   action: string,
   extra: Record<string, unknown> = {}
 ) {
-  return post<{ ok: boolean; error?: string }>('/api/prefeeder', { action, ...extra });
+  return post<{ ok: boolean; error?: string; pulseS?: number }>('/api/prefeeder', { action, ...extra });
 }
 
 export function andonAction(

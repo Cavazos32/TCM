@@ -111,6 +111,7 @@
 
 // ≥ ENC_SETTLE_MS (250): si es menor, R (y a veces L) lee OM antes de settle → solo approach.
 #define FEED_OM_SETTLE_MS           280
+#define FEED_OM_HALT_SETTLE_MS      500  // post-halt láser: ENC_SETTLE + rebote
 #define FEED_OM_TARGET_TOL_MM       0.5f   // legacy overview; Feed usa ventanas abajo
 #define FEED_OM_CORR_RETRY_MAX      1      // 1 corrección (aprox. no cuenta)
 #define FEED_OM_READ_RETRY_MAX      3
@@ -123,7 +124,7 @@
 #define FEED_TARGET_FIXED_MM        55.0f
 #define FEED_CONTROL_TOL_MM         1.0f   // 54–56 banda ideal (corrección apunta a 55)
 #define FEED_GOOD_TOL_MM            2.0f   // 53–57 (referencia; aceptación = PHYS)
-#define FEED_OM_PHYS_MIN_MM         50.0f  // aceptación producción + láser ON
+#define FEED_OM_PHYS_MIN_MM         50.0f  // techo/piso OM; láser ON no exige piso (tope de feed)
 #define FEED_OM_PHYS_MAX_MM         58.0f
 #define FEED_OM_QUANTUM_MM          0.5f   // paso oficial omRoundMm; umbral OK |err|<=0.5 (no re-cuantizar)
 #define FEED_APPROACH_PCT_DEFAULT   80.0f
@@ -133,13 +134,15 @@
 #define FEED_MOVE_SPEED_PCT_MIN     10.0f
 #define FEED_MOVE_SPEED_PCT_MAX    100.0f
 
-// Tras corrección #1, si láser OFF: avanzar hasta ON o timeout (modo gated).
+// Seek = creep a trozos (no un perfil largo a 325 mm/s: el halt no alcanza).
 #define FEED_LASER_SEEK_MS_DEFAULT  1000u
 #define FEED_LASER_SEEK_MS_MIN      200u
 #define FEED_LASER_SEEK_MS_MAX      5000u
 #define FEED_LASER_SEEK_POLL_MS     0u     // 0 = cada feedLoop (halt lo antes posible)
-#define FEED_LASER_SEEK_DIST_MARGIN 1.25f  // recorrido ≥ vel×t × margen
-#define FEED_LASER_HALT_BURST       2u     // reintentos CW Halt al flanco ON
+#define FEED_LASER_SEEK_DIST_MARGIN 1.25f  // legacy; seek ya no usa un solo tramo
+#define FEED_LASER_HALT_BURST       3u     // CW Halt al flanco ON
+#define FEED_LASER_CREEP_MM         1.5f   // trozo máximo; tope de sobrepaso
+#define FEED_LASER_CREEP_MM_S       25.0f  // vel seek / hunt
 
 #define FEED_VELOCITY_PP_DEFAULT    FEED_SERVO_BASE_PP_DEFAULT
 #define FEED_PREFS_NS               "motion_feed"
@@ -178,7 +181,7 @@ enum FeedSidePhase : uint8_t {
   FSP_WAIT_SERVO_CORR,
   FSP_SETTLE_FINAL,
   FSP_VALIDATE_FINAL,
-  FSP_LASER_SEEK,       // post-corr: avance hasta láser ON o timeout
+  FSP_LASER_SEEK,       // creep a trozos hasta láser ON o timeout
   FSP_LASER_SEEK_HALT,  // halt por flanco ON; settle corto → SETTLE_FINAL
   FSP_DONE_OK,
   FSP_DONE_NG

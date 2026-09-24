@@ -43,6 +43,7 @@ export const DEFAULT_CYCLE_CONFIG: CycleConfig = {
   pfReadyTimeoutS: 15,
   pieceWatchTimeoutS: 20,
   feedSides: 'LR',
+  pfTriggerEnabled: true,
   refillMm: 55,
   refillAsdaMm: -300,
 };
@@ -313,7 +314,11 @@ export const CycleTab: React.FC<CycleTabProps> = ({
           saved.feedSides === 'L' || saved.feedSides === 'R' || saved.feedSides === 'LR'
             ? saved.feedSides
             : next.feedSides;
-        const merged = { ...saved, feedSides };
+        const pfTriggerEnabled =
+          typeof saved.pfTriggerEnabled === 'boolean'
+            ? saved.pfTriggerEnabled
+            : next.pfTriggerEnabled;
+        const merged = { ...saved, feedSides, pfTriggerEnabled };
         confirmedFeedSidesRef.current = feedSides;
         setConfig(merged);
         setConfigDirty(false);
@@ -597,6 +602,11 @@ export const CycleTab: React.FC<CycleTabProps> = ({
             <p className="text-[11px] text-amber-900/80 dark:text-amber-200/80 mt-0.5">
               {showRecoveryTrack ? recoveryHint : recoverHintIdle}
             </p>
+            {(machineState.fault || machineState.lastFault) && (
+              <p className="mt-1 font-mono text-[11px] font-semibold text-red-800 dark:text-red-200">
+                {machineState.fault || machineState.lastFault}
+              </p>
+            )}
             <p className="mt-1 font-mono text-[10px] text-amber-800 dark:text-amber-200">
               {recoverSteps}
             </p>
@@ -1166,6 +1176,31 @@ export const CycleTab: React.FC<CycleTabProps> = ({
               </p>
             </div>
 
+            <div className="mb-4 space-y-1.5">
+              <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                {t('cfg_pf_trigger')}
+              </label>
+              <div className="flex items-center gap-1.5">
+                {([true, false] as const).map((on) => (
+                  <button
+                    key={on ? 'on' : 'off'}
+                    type="button"
+                    onClick={() => updateConfigField('pfTriggerEnabled', on)}
+                    className={`rounded-md px-3 py-1.5 text-xs font-mono font-semibold border transition ${
+                      (config.pfTriggerEnabled !== false) === on
+                        ? 'bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 border-slate-900 dark:border-white'
+                        : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700'
+                    }`}
+                  >
+                    {on ? t('cfg_pf_trigger_on') : t('cfg_pf_trigger_off')}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                {t('cfg_pf_trigger_hint')}
+              </p>
+            </div>
+
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="space-y-1.5">
                 <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
@@ -1252,6 +1287,12 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                   onChange={(e) => updateConfigField('cutOffsetMm', Number(e.target.value))}
                   className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 focus:border-teal-500 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
                 />
+                <p className="text-[10px] font-mono text-slate-500 dark:text-slate-400">
+                  {t('cfg_cut_lineal_total')}:{' '}
+                  {(Math.abs(machineState.mm) + Number(config.cutOffsetMm ?? 0)).toFixed(1)} mm
+                  {' · '}
+                  {t('cfg_cut_offset_hint')}
+                </p>
               </div>
 
               <div className="space-y-1.5">
