@@ -263,6 +263,8 @@ class HmiState:
         self._move_target_mm: float | None = None
         self._move_start_mm: float | None = None
         self._last_position_mm: float | None = None
+        self._om_official_l: float | None = None
+        self._om_official_r: float | None = None
         self._progress = 0
 
         self._banner = {"text": "Listo.", "kind": "info"}
@@ -656,6 +658,16 @@ class HmiState:
             if cached is None:
                 return None
             return float(cached)
+
+    def om_official_mm(self, side: str) -> float | None:
+        """Último mmOfficial de GetMeasured (caché TCP). None = sin evento."""
+        s = str(side).strip().upper()
+        with self._lock:
+            if s == "L":
+                return None if self._om_official_l is None else float(self._om_official_l)
+            if s == "R":
+                return None if self._om_official_r is None else float(self._om_official_r)
+        return None
 
     def motion_laser_on(self, side: str) -> bool:
         """True si el láser del lado detecta material (caché HMI desde Motion)."""
@@ -2673,6 +2685,8 @@ class HmiState:
                 self._motion["asdaPositionMm"] = None
                 self._motion["enc_r"] = "—"
                 self._motion["enc_l"] = "—"
+                self._om_official_l = None
+                self._om_official_r = None
                 self._motion["laserR"] = False
                 self._motion["laserL"] = False
                 self._motion["safetyExhaust"] = False
@@ -3103,8 +3117,10 @@ class HmiState:
                         text += "  (moviendo…)"
                     if side == "R":
                         self._motion["enc_r"] = text
+                        self._om_official_r = mm_off
                     else:
                         self._motion["enc_l"] = text
+                        self._om_official_l = mm_off
                     return True
                 if byte_code == TX_REACHED:
                     pos = msg.get("positionPuu")

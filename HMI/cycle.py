@@ -392,6 +392,7 @@ class CycleHost(Protocol):
     ) -> str: ...
     def stage2_fault(self) -> str: ...
     def asda_position_mm(self) -> float | None: ...
+    def om_official_mm(self, side: str) -> float | None: ...
     def motion_laser_on(self, side: str) -> bool: ...
     def cmd_motion_move_mm(self, mm: float, rpm: float) -> bool: ...
     def last_move_fail_kind(self) -> str: ...
@@ -492,6 +493,7 @@ class CycleRunner:
         self._piece_pause_base: float = 0.0
         # Timing cmd→fin por operación (excluye Pause; mismos criterios que CT).
         self._piece_timings: list[dict[str, Any]] = []
+        self._piece_metro: list[dict[str, Any]] = []
         self._lot_timing_pieces: list[dict[str, Any]] = []
         self._timing_md_path: Path | None = None
         self._timing_lot_meta: dict[str, Any] = {}
@@ -1790,8 +1792,47 @@ class CycleRunner:
 
     def _timing_reset_piece(self) -> None:
         self._piece_timings = []
+        self._piece_metro = []
         self._timing_last_end = None
         self._timing_last_end_pause = 0.0
+
+    @staticmethod
+    def _fmt_mm(v: float | None, *, signed: bool = False) -> str:
+        if v is None:
+            return "—"
+        return f"{float(v):+.2f}" if signed else f"{float(v):.2f}"
+
+    def _metro_snap(self, tag: str, *, target_mm: float | None = None) -> None:
+        """Caché TCP ASDA/OM. No HTTP ni comando nuevo."""
+        asda = None
+        om_l = None
+        om_r = None
+        try:
+            asda = self._host.asda_position_mm()
+        except Exception:
+            asda = None
+        om_fn = getattr(self._host, "om_official_mm", None)
+        if callable(om_fn):
+            try:
+                om_l = om_fn("L")
+                om_r = om_fn("R")
+            except Exception:
+                om_l = None
+                om_r = None
+        tgt = abs(float(target_mm)) if target_mm is not None else None
+        delta = None
+        if asda is not None and tgt is not None:
+            delta = float(asda) - tgt
+        self._piece_metro.append(
+            {
+                "tag": str(tag),
+                "asda": None if asda is None else float(asda),
+                "om_l": None if om_l is None else float(om_l),
+                "om_r": None if om_r is None else float(om_r),
+                "target": tgt,
+                "delta": delta,
+            }
+        )
 
     def _timing_open_session(
         self, *, length_mm: float, qty: int, rpm: float
@@ -1799,6 +1840,7 @@ class CycleRunner:
         """Abre .md de análisis al inicio del lote productivo."""
         self._lot_timing_pieces = []
         self._piece_timings = []
+        self._piece_metro = []
         self._timing_last_end = None
         self._timing_last_end_pause = 0.0
         self._timing_md_path = None
@@ -1827,6 +1869,9 @@ class CycleRunner:
                 f"- RPM: `{rpm:g}`",
                 f"- Lados feed: `{sides}`",
                 "",
+                "Metrología por pieza: ASDA y OM desde caché TCP "
+                "(Reached / GetMeasured). OM = feed ~55 mm, no el largo de corte.",
+                "",
             ]
             path.write_text("\n".join(lines) + "\n", encoding="utf-8")
             self._timing_md_path = path
@@ -1852,11 +1897,13 @@ class CycleRunner:
     ) -> None:
         """Log resumen + sección .md al cerrar pieza OK."""
         samples = list(self._piece_timings)
+        metro = list(self._piece_metro)
         self._lot_timing_pieces.append(
             {
                 "rep": int(rep),
                 "piece_sec": float(piece_sec),
                 "samples": samples,
+                "metro": metro,
             }
         )
         if not samples and piece_sec <= 0:
@@ -1950,8 +1997,54 @@ class CycleRunner:
                 "_Ninguno — delays de proceso en spec; sin huecos muertos._"
             )
         rows.append("")
+        if metro:
+            rows.extend(self._timing_metro_lines(metro))
+            rows.append("")
         self._timing_append_md("\n".join(rows))
         self._piece_timings = []
+        self._piece_metro = []
+
+    @staticmethod
+    def _metro_pick(metro: list[dict[str, Any]], *tags: str) -> dict[str, Any] | None:
+        by_tag = {str(s.get("tag") or ""): s for s in metro}
+        for tag in tags:
+            if tag in by_tag:
+                return by_tag[tag]
+        return None
+
+    def _timing_metro_lines(self, metro: list[dict[str, Any]]) -> list[str]:
+        notes = {
+            "post-feed": "feed síncrono de esta pieza (~55 mm)",
+            "handoff": "prefetch de esta pieza (join previo)",
+            "c2-skip-feed": "C2: láser ON, sin feed nuevo",
+            "post-lineal": "ASDA vs target de corte",
+            "post-depósito": "ASDA tras extra",
+            "post-home": "ASDA tras HOME",
+            "post-join": "feed de la *siguiente* pieza (prefetch)",
+        }
+        rows = [
+            "### Metrología",
+            "",
+            "Caché TCP. `—` = aún no hubo evento. "
+            "OM ≠ largo físico de la manguera.",
+            "",
+            "| Instante | ASDA | target | Δ ASDA | OM L | OM R | nota |",
+            "|----------|-----:|-------:|-------:|-----:|-----:|------|",
+        ]
+        for s in metro:
+            tag = str(s.get("tag") or "")
+            rows.append(
+                "| `{tag}` | {asda} | {tgt} | {dlt} | {ol} | {or_} | {note} |".format(
+                    tag=tag,
+                    asda=self._fmt_mm(s.get("asda")),
+                    tgt=self._fmt_mm(s.get("target")),
+                    dlt=self._fmt_mm(s.get("delta"), signed=True),
+                    ol=self._fmt_mm(s.get("om_l")),
+                    or_=self._fmt_mm(s.get("om_r")),
+                    note=notes.get(tag, ""),
+                )
+            )
+        return rows
 
     @staticmethod
     def _timing_anomaly_lines(samples: list[dict[str, Any]]) -> list[str]:
@@ -2063,6 +2156,33 @@ class CycleRunner:
                         f"(n={len(vals)}, min={min(vals):.3f}, max={max(vals):.3f})"
                     )
             lines.append("")
+        if pieces and any(p.get("metro") for p in pieces):
+            lines.append("### Metrología lote")
+            lines.append("")
+            lines.append(
+                "| Pieza | ASDA lineal | Δ ASDA | OM L | OM R | ASDA dep | ASDA home |"
+            )
+            lines.append(
+                "|------:|------------:|-------:|-----:|-----:|---------:|----------:|"
+            )
+            for p in pieces:
+                metro = list(p.get("metro") or [])
+                feed = self._metro_pick(metro, "post-feed", "handoff", "c2-skip-feed")
+                lin = self._metro_pick(metro, "post-lineal")
+                dep = self._metro_pick(metro, "post-depósito")
+                home = self._metro_pick(metro, "post-home")
+                lines.append(
+                    "| {rep} | {asda} | {dlt} | {ol} | {or_} | {dep} | {home} |".format(
+                        rep=p.get("rep"),
+                        asda=self._fmt_mm((lin or {}).get("asda")),
+                        dlt=self._fmt_mm((lin or {}).get("delta"), signed=True),
+                        ol=self._fmt_mm((feed or {}).get("om_l")),
+                        or_=self._fmt_mm((feed or {}).get("om_r")),
+                        dep=self._fmt_mm((dep or {}).get("asda")),
+                        home=self._fmt_mm((home or {}).get("asda")),
+                    )
+                )
+            lines.append("")
         lines.append(f"_Generado: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_")
         lines.append("")
         self._timing_append_md("\n".join(lines))
@@ -2169,6 +2289,7 @@ class CycleRunner:
                 start_mm, rpm, prefetch_running=prefetch_running
             )
         sec = self._end_op(op, ok=ok)
+        self._metro_snap("post-home", target_mm=0.0)
         if ok:
             self._host.cycle_log(f"HOME/WIP total · {self._fmt_op(sec)}")
         return ok
@@ -2672,6 +2793,7 @@ class CycleRunner:
         op = self._begin_op("lineal")
         if not self._wait_motion():
             self._end_op(op, ok=False)
+            self._metro_snap("post-lineal", target_mm=abs_mm)
             self._last_lineal_sec = 0.0
             self._last_lineal_mm = 0.0
             return False
@@ -2679,6 +2801,7 @@ class CycleRunner:
         self._last_lineal_sec = max(0.0, time.monotonic() - t0)
         self._last_lineal_mm = abs_mm
         sec = self._end_op(op, ok=True)
+        self._metro_snap("post-lineal", target_mm=abs_mm)
         self._host.cycle_log(
             f"Lineal MOVE TCP OK targetAbsMm={abs_mm:.1f} rpm={self._lot_rpm:g}"
             f" · move={self._fmt_op(sec)} cmd={self._fmt_op(cmd_sec)}"
@@ -2769,8 +2892,10 @@ class CycleRunner:
         op = self._begin_op("feed")
         if not self._wait_feed(log_ok=False):
             self._end_op(op, ok=False)
+            self._metro_snap("post-feed")
             return False
         sec = self._end_op(op, ok=True)
+        self._metro_snap("post-feed")
         self._host.cycle_log(
             f"Feed OK lados={''.join(sides)} · wait={self._fmt_op(sec)} "
             f"cmd={self._fmt_op(cmd_sec)}"
@@ -3213,10 +3338,12 @@ class CycleRunner:
                         if handoff_ready:
                             handoff_ready = False
                             self._c2_laser_skip_feed = False
+                            self._metro_snap("handoff")
                             self._host.cycle_log("Feed: handoff (prefetch ya listo)")
                         elif self._c2_laser_skip_feed and self._feed_sides_laser_present():
                             self._c2_laser_skip_feed = False
                             sides_txt = "".join(self._feed_side_list())
+                            self._metro_snap("c2-skip-feed")
                             self._host.cycle_log(
                                 f"Feed omitido (C2 Resume): láser ya ON lados={sides_txt}"
                             )
@@ -3387,10 +3514,14 @@ class CycleRunner:
                             dep_op = self._begin_op("depósito")
                             if not self._wait_motion():
                                 self._end_op(dep_op, ok=False)
+                                self._metro_snap(
+                                    "post-depósito", target_mm=deposit_target
+                                )
                                 break
                             wip_pos_signed = float(deposit_target)
                             wip_start_mm = abs(wip_pos_signed)
                             dep_sec = self._end_op(dep_op, ok=True)
+                            self._metro_snap("post-depósito", target_mm=deposit_target)
                             self._host.cycle_log(
                                 f"Depósito MOVE ok → {deposit_target:.1f} mm "
                                 f"(WIP start ref {wip_start_mm:.1f})"
@@ -3515,12 +3646,14 @@ class CycleRunner:
                             if self._wait_feed(log_ok=False, apply_piece_watch=False):
                                 join_sec = self._end_op(join_op, ok=True)
                                 handoff_ready = True
+                                self._metro_snap("post-join")
                                 self._host.cycle_log(
                                     f"∥ Join: prefetch listo (handoff)"
                                     f" · {self._fmt_op(join_sec)}"
                                 )
                             else:
                                 self._end_op(join_op, ok=False)
+                                self._metro_snap("post-join")
                                 handoff_ready = False
                                 if self._restart_piece:
                                     break

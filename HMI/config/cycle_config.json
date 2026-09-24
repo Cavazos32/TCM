@@ -13,13 +13,13 @@
   "depositStackGapMm": 60.0,
   "depositMaxTravelMm": 1500.0,
   "gripperClearanceMm": 10.0,
-  "cutOffsetMm": -8.0,
+  "cutOffsetMm": 0.0,
   "wipBlowerInicioOffsetMm": 98.0,
   "motionWaitTimeoutS": 25.0,
   "feedWaitTimeoutS": 15.0,
   "pfReadyTimeoutS": 15.0,
   "pieceWatchTimeoutS": 20.0,
-  "feedSides": "LR",
+  "feedSides": "L",
   "refillMm": 56.0,
   "refillAsdaMm": -300.0
 }
