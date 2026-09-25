@@ -1472,7 +1472,7 @@ class HmiState:
         return self.cmd_error_reset(confirm=False, do_home=False)
 
     def _plc_reset_reflect_off(self, *, log_label: str = "Reset PLC") -> bool:
-        """Reset PLC 0x1E y refleja válvulas OFF en caché HMI. Soft C2/C3 no usa esto."""
+        """Reset PLC 0x1E y refleja válvulas OFF en caché HMI."""
         if not self._plc_client.connected:
             return False
         ok = self._manual_plc(lambda: self._plc_client.cmd_reset())
@@ -3236,7 +3236,7 @@ class HmiState:
                 if "safetyExhaust" in msg:
                     # Solo indicador de nivel IO. Set E006 = event 0x4F (edge Exhaust).
                     # No re-Set desde status: si no, tras Reset/reconnect el nivel
-                    # activo (p.ej. pin flotando) vuelve a enclavar C1 sin edge.
+                    # activo (p.ej. pin flotando) vuelve a enclavar EXXX sin edge.
                     self._motion["safetyExhaust"] = bool(msg["safetyExhaust"])
                 return True
         return changed
