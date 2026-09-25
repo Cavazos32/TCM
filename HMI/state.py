@@ -1471,10 +1471,6 @@ class HmiState:
     def cmd_cycle_reset(self) -> dict:
         return self.cmd_error_reset(confirm=False, do_home=False)
 
-    def cmd_error_confirm(self) -> dict:
-        """Legacy endpoint: class-specific confirmation is no longer used."""
-        return {"ok": False, "error": "Confirmation removed; use RESET"}
-
     def _plc_reset_reflect_off(self, *, log_label: str = "Reset PLC") -> bool:
         """Reset PLC 0x1E y refleja válvulas OFF en caché HMI. Soft C2/C3 no usa esto."""
         if not self._plc_client.connected:
