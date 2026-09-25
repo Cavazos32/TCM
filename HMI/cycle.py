@@ -1395,7 +1395,7 @@ class CycleRunner:
     ) -> dict[str, Any]:
         """E050 durante lote: primero pregunta si requiere Materialist."""
         self._fault = ui
-        self._fault_class = err_class
+        self._fault_class = ""
         self._recovery = "e050_materialist"
         self._e050_normal_recovery = recovery or "retry_process"
         self._c3_stop_after_step = False
