@@ -671,6 +671,8 @@ class CycleRunner:
         self._restart_piece = False
         self._c2_laser_skip_feed = False
         self._c2_skip_pf_trigger = False
+        self._stop.clear()
+        self._pause.clear()
         self._flow_interrupt.clear()
         self._e050_finish_piece = False
         self._e050_materialist_requested = False
