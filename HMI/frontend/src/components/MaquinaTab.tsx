@@ -267,34 +267,6 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
     (!!machineState.errorActive &&
       isPrefeederFaultModule(machineState.faultModule));
 
-  const [pfRecoverStep, setPfRecoverStep] = useState<'idle' | 'reset' | 'go'>('idle');
-
-  useEffect(() => {
-    if (pfRecoverError) {
-      setPfRecoverStep('reset');
-      return;
-    }
-    // Sin EXXX de Pre-Feeder el coach no se queda: Start/Materialist no son recovery.
-    if (
-      machineState.isRunning ||
-      (machineState.cycleActive && !machineState.isPaused) ||
-      !machineState.cycleMaterialist
-    ) {
-      setPfRecoverStep('idle');
-      return;
-    }
-    setPfRecoverStep((prev) => (prev === 'reset' ? 'go' : prev));
-  }, [
-    pfRecoverError,
-    machineState.isRunning,
-    machineState.cycleActive,
-    machineState.isPaused,
-    machineState.cycleMaterialist,
-  ]);
-
-  const recoverReset = pfRecoverStep === 'reset';
-  const recoverGo = pfRecoverStep === 'go';
-  const recoverGoResume = recoverGo && !!resumeEnabled;
   const machineResetDisabled = false;
   // Reset local PF (0x02C) desde Module Controls: siempre si hay enlace.
   // Un EXXX de Motion/PLC no debe bloquear el Res del PreFeeder.
