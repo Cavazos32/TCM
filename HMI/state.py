@@ -1463,7 +1463,7 @@ class HmiState:
         return self._cycle.request_pause()
 
     def cmd_cycle_reset(self) -> dict:
-        return self.cmd_error_reset(confirm=False, do_home=True)
+        return self.cmd_error_reset(confirm=False, do_home=False)
 
     def cmd_error_confirm(self) -> dict:
         """Legacy endpoint: class-specific confirmation is no longer used."""
