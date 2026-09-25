@@ -573,16 +573,28 @@ static bool feedVelocityStop(bool sideR)
   return true;
 }
 
-static bool feedVelocityIsStopped(bool sideR, uint32_t now, uint32_t haltIssuedMs)
+static bool feedVelocityIsStopped(bool sideR, uint32_t now, uint32_t haltIssuedMs,
+                                  int32_t* velocityActualOut = nullptr)
 {
+  if (velocityActualOut) *velocityActualOut = 0;
   if (haltIssuedMs == 0) return false;
   if (now < haltIssuedMs + FEED_HALT_SETTLE_MS) return false;
-  if ((now - haltIssuedMs) >= FEED_VEL_STOP_FAILSAFE_MS) return true;
+
+  // Profile Velocity: Target Reached del status word no confirma velocidad cero.
+  // Confirmar el paro con 0x606C (Velocity Actual Value) antes de restaurar PP.
   const uint8_t node = sideR ? SERVO_NODE_R : SERVO_NODE_L;
-  uint16_t sw = 0;
-  if (!canReadStatusWord(node, sw, CAN_STATUS_POLL_MS))
+  int32_t velocityActual = 0;
+  if (!canReadSdoI32(node, SERVO_OD_VELOCITY_ACTUAL, 0x00,
+                     velocityActual, CAN_SDO_TIMEOUT_MS))
     return false;
-  return (sw & SERVO_SW_TARGET_REACHED) != 0;
+
+  if (velocityActualOut) *velocityActualOut = velocityActual;
+
+  // Pequeña banda alrededor de cero para evitar quedar esperando por ruido/quantización.
+  // 200 es <1% del target nominal típico del feeder (~42k unidades/s).
+  static const int32_t STOP_VELOCITY_TOL = 200;
+  return velocityActual >= -STOP_VELOCITY_TOL
+      && velocityActual <=  STOP_VELOCITY_TOL;
 }
 
 static bool feedVelocityRestorePp(bool sideR)
@@ -1624,15 +1636,17 @@ static void feedSideService(bool sideR, uint32_t now)
 
     case FSP_VEL_STOPPING:
       if (s.velHaltMs == 0) s.velHaltMs = now;
-      if (s.lastTrPollMs != 0 && (now - s.lastTrPollMs) < FEED_SS_TR_POLL_MS
-          && (now - s.velHaltMs) < FEED_VEL_STOP_FAILSAFE_MS)
+      if (s.lastTrPollMs != 0 && (now - s.lastTrPollMs) < FEED_SS_TR_POLL_MS)
         break;
       s.lastTrPollMs = now;
-      if (feedVelocityIsStopped(sideR, now, s.velHaltMs)) {
-        Serial.println("SERVO STOPPED");
-        s.settleUntilMs = now + FEED_OM_HALT_SETTLE_MS;
-        s.omReadMiss = 0;
-        s.phase = FSP_VEL_SETTLE;
+      {
+        int32_t velocityActual = 0;
+        if (feedVelocityIsStopped(sideR, now, s.velHaltMs, &velocityActual)) {
+          Serial.printf("SERVO STOPPED velActual=%ld\n", (long)velocityActual);
+          s.settleUntilMs = now + FEED_OM_HALT_SETTLE_MS;
+          s.omReadMiss = 0;
+          s.phase = FSP_VEL_SETTLE;
+        }
       }
       break;
 
