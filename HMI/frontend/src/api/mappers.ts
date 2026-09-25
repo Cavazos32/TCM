@@ -217,15 +217,6 @@ export function mapMachineState(
         : !cycle.lastOk && cycle.fault
           ? cycle.fault
           : undefined,
-    faultClass: errorActive
-      ? snap.error?.class || undefined
-      : cycle.active && cycle.faultClass
-        ? cycle.faultClass
-        : !cycle.lastOk && cycle.faultClass
-          ? cycle.faultClass
-          : inRecovery && lastErr?.class
-            ? lastErr.class
-            : undefined,
     faultCode: errorActive ? snap.error?.code : undefined,
     lastFault:
       !errorActive && inRecovery && lastErr?.ui
@@ -234,8 +225,6 @@ export function mapMachineState(
     faultModule: faultModule || undefined,
     faultDescription: errorActive ? snap.error?.description : undefined,
     faultModuleStatus: faultModuleStatus || undefined,
-    errorNeedsConfirm: !!snap.error?.needsConfirm && !snap.error?.confirmed,
-    errorNeedsHome: !!snap.error?.needsHome,
   };
 }
 
