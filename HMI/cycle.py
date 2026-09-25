@@ -785,7 +785,7 @@ class CycleRunner:
                 self._host.cycle_notify()
                 return {"ok": True, "materialist": False, "normalRecovery": True}
             if not self._host.clear_e050_latch_for_materialist():
-                return {"ok": False, "error": "No se pudo limpiar E050 para iniciar Materialist"}
+                return {"ok": False, "error": "No se pudo liberar E050 para iniciar Materialist"}
             self._e050_materialist_requested = True
             self._e050_finish_piece = self._piece_t0 is not None
             self._recovery_after_error = False
