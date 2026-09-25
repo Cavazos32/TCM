@@ -154,11 +154,7 @@ export interface BackendErrorLatch {
   byte: number;
   module: string;
   description: string;
-  class: string;
   ui: string;
-  recovery: string;
-  confirmed: boolean;
-  /** EXXX ya reseteado; contexto de recuperación C2/C3. */
   last?: BackendErrorLatch;
 }
 
