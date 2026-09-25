@@ -1374,76 +1374,41 @@ class CycleRunner:
             self._fault_class = err_class
         self._set_state(TX_ERROR, self._fault)
 
-    def apply_error_policy(self, action: str, ui: str, err_class: str, recovery: str) -> dict[str, Any]:
-        """
-        Aplica Set C1/C2/C3 desde HmiState.
-        action: stop_all | pause | finish_step
+    def apply_error_policy(
+        self,
+        action: str,
+        ui: str,
+        err_class: str = "",
+        recovery: str = "",
+    ) -> dict[str, Any]:
+        """Enter the unified ERROR hold.
 
-        C1/C2/C3 no mandan válvulas ni Reset PLC: el PLC solo se opera con
-        pulso/pulso, All Off o su Reset propio.
+        C1/C2/C3 are no longer used to select recovery. Every EXXX stops the
+        sequence at a safe point and waits for RESET. A live lot may later be
+        resumed through the common recovery flow.
         """
         self._fault = ui
         self._fault_class = err_class
         self._recovery = recovery
-        # EXXX tras lote OK: no dejar "Batch complete" + ERROR a la vez.
-        if not self.is_active():
-            self._last_ok = False
-        if action == "stop_all":
-            self._c3_stop_after_step = False
-            self._c3_finish_piece = False
-            self._aborted = True
-            self._stop.set()
-            self._pause.clear()
-            self._resume_need_buffer_full = False
-            try:
-                self._host.clear_motion_wait_flags()
-            except Exception:
-                pass
-            # Best-effort Motion/PF; PLC intocable desde política de error.
-            for fn in (
-                self._host.cmd_motion_stop,
-                self._host.cmd_pf_stop,
-            ):
-                try:
-                    fn()
-                except Exception:
-                    pass
-            self._set_state(TX_ERROR, ui)
-            return {"ok": True, "action": action}
-        if action == "link_down":
-            # Solo abortar ciclo local; no mandar stop por TCP al nodo caído.
-            self._c3_stop_after_step = False
-            self._c3_finish_piece = False
-            self._aborted = True
-            self._stop.set()
-            self._pause.clear()
-            self._resume_need_buffer_full = False
-            try:
-                self._host.clear_motion_wait_flags()
-            except Exception:
-                pass
-            self._set_state(TX_ERROR, ui)
-            self._host.cycle_notify()
-            return {"ok": True, "action": action}
-        if action == "pause":
-            self._c3_stop_after_step = False
-            self._c3_finish_piece = False
-            self._arm_recovery_pause()
-            self._set_state(TX_ERROR, ui)
-            self._host.cycle_notify()
-            return {"ok": True, "action": action}
-        if action == "finish_step":
-            # C3 con lote: mismo que C2 — Pause; Resume termina la pieza.
-            self._c3_stop_after_step = False
-            self._c3_finish_piece = False
-            self._arm_recovery_pause()
-            self._set_state(TX_ERROR, ui)
-            self._host.cycle_log(
-                "C3: Pause — Reset → Resume para terminar pieza"
-            )
-            self._host.cycle_notify()
-            return {"ok": True, "action": action}
+        self._c3_stop_after_step = False
+        self._c3_finish_piece = False
+        self._aborted = False
+        self._stop.set()
+        self._pause.set()
+        self._resume_need_buffer_full = False
+        self._clear_recovery_gate()
+        try:
+            self._host.clear_motion_wait_flags()
+        except Exception:
+            pass
+
+        try:
+            self._host.cmd_motion_stop()
+        except Exception:
+            pass
+
         self._set_state(TX_ERROR, ui)
+        self._host.cycle_notify()
         return {"ok": True, "action": "error_state"}
 
     def apply_e050_policy(
