@@ -14,6 +14,10 @@ from typing import Any, Optional
 
 # Legacy classification kept only as catalog metadata for compatibility.
 # It must not select machine recovery behavior.
+CLASS_C1 = "C1"
+CLASS_C2 = "C2"
+CLASS_C3 = "C3"
+
 # code, module, byte, enum, description, legacy_class
 _ROWS: tuple[tuple[str, str, int, str, str, str], ...] = (
     # --- Motion (detalle) ---
