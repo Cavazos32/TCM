@@ -1676,7 +1676,7 @@ class HmiState:
         if e050_lot:
             self._cycle.apply_e050_policy(ui)
         else:
-            self._cycle.apply_error_policy("error_state", ui)
+            self._cycle.apply_error_policy(ui)
 
         # 0x46 is the TCM/Andon machine state only. Healthy module states are not
         # converted to ERROR merely because the machine sequence stopped.
