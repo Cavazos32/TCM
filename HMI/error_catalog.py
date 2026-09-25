@@ -115,7 +115,7 @@ def format_ui(code_or_byte: str | int, *, fallback: Optional[str] = None) -> str
         if isinstance(code_or_byte, int):
             return f"E???: Unknown, byte 0x{code_or_byte:02X}"
         return f"{code_or_byte}: Unknown"
-    return f"{entry['code']}: {entry['module']}, {entry['description']}"
+    return f"{entry['code']}: {entry['description']}"
 
 
 def lookup(code_or_byte: str | int) -> Optional[dict[str, Any]]:
