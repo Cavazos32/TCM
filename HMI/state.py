@@ -3310,10 +3310,6 @@ class HmiState:
                     kind = "warn"
                 elif byte_code in (TX_PLC_IDLE, TX_PLC_RETURN):
                     # Res solo si sensores ya OK. Si sigue valve.error, el latch queda.
-                    if prev == TX_PLC_ERROR and self._plc_is_healthy():
-
-                    else:
-                        self._try_auto_clear_error_if_healthy()
                     kind = "ok"
                 self._set_plc_status(text, kind)
                 return True
@@ -3350,8 +3346,6 @@ class HmiState:
                             f"{sensor_log[field]} — sensor de seguridad activo",
                         )
                         self._plc_try_latch_once()
-                    else:
-                        self._try_auto_clear_error_if_healthy()
                     return True
                 valve_field_map = {
                     "cutterR": CMD_CUTTER_R,
@@ -3378,8 +3372,6 @@ class HmiState:
                     if sf and sf in msg:
                         self._plc["valves"][str(cmd)]["error"] = bool(msg[sf])
                 self._plc_try_latch_once()
-                if not self._plc_has_fault():
-                    self._try_auto_clear_error_if_healthy()
                 return True
             if mtype == "ack":
                 ok = msg.get("ok", True)
