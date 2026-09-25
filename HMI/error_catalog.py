@@ -142,11 +142,6 @@ def lookup(code_or_byte: str | int) -> Optional[dict[str, Any]]:
     return None
 
 
-def error_class(code_or_byte: str | int) -> Optional[str]:
-    entry = lookup(code_or_byte)
-    return entry["class"] if entry else None
-
-
 def is_detail_error_byte(byte: int) -> bool:
     """True si el byte es un EXXX de detalle (no ErrorState de módulo)."""
     return byte in BY_BYTE
