@@ -1521,9 +1521,7 @@ class HmiState:
             "text": "Home máquina OK" if ok else "Home máquina con fallos",
             "kind": "ok" if ok else "error",
         }
-        if ok:
-            with self._lock:
-                self._try_auto_clear_error_if_healthy()
+        # HOME is an independent operator action and never clears EXXX.
         self._notify()
         return {
             "ok": ok,
@@ -1553,10 +1551,8 @@ class HmiState:
         module = (latch.module or "").lower()
         active_lot = self._cycle.is_active()
 
-        # Stop the current sequence without changing the independent HOME control.
-        if active_lot and not self._cycle.snapshot().get("paused"):
-            self._cycle.request_stop()
-
+        # The error handler already put the active lot into the common hold.
+        # Do not abort the CycleRunner here; RESET only validates the source.
         # Send reset to modules that have a concrete reset command.
         module_reset_ok = True
         if "motion" in module:
