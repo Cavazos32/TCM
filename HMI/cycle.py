@@ -1369,7 +1369,7 @@ class CycleRunner:
     ) -> dict[str, Any]:
         """Enter the unified ERROR hold; C1/C2/C3 do not select recovery."""
         self._fault = ui
-        self._fault_class = err_class
+        self._fault_class = ""
         self._recovery = recovery
         self._c3_stop_after_step = False
         self._c3_finish_piece = False
