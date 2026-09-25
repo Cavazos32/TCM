@@ -3499,7 +3499,7 @@ class HmiState:
         return changed
 
     def _pf_primary_active_error_byte(self) -> int | None:
-        """Return one active PF EXXX without using C1/C2/C3 classification."""
+        """Return one active PF EXXX without legacy classification."""
         if self._pf_materialist_now():
             return None
         active: list[int] = []
