@@ -2529,33 +2529,30 @@ class HmiState:
         return not self._pf_cached_has_fault()
 
     def _latch_source_is_healthy(self) -> bool:
-        """¿El módulo (o máquina) del EXXX latcheado ya está OK en caché?"""
+        """Validate the actual source condition represented by the EXXX latch."""
         latch = self._error_policy.latch
         if not latch.active:
             return True
-        code = latch.code or ""
-        # E06x: solo al recuperar socket (_clear_link_error_if).
-        if code in ("E065", "E066", "E067"):
-            return False
+
         mod = (latch.module or "").lower()
+        code = latch.code or ""
+
         if "motion" in mod:
             return self._motion_is_healthy()
         if "plc" in mod:
             return self._plc_is_healthy()
         if "pre" in mod or "feeder" in mod:
             return self._pf_is_healthy()
-        # Andon / máquina / desconocido: todos los nodos conectados sanos.
-        if self._motion.get("connected") and not self._motion_is_healthy():
-            return False
-        if self._plc.get("connected") and not self._plc_is_healthy():
-            return False
-        if self._pf.get("connected") and not self._pf_is_healthy():
-            return False
-        return True
 
-    def _try_auto_clear_error_if_healthy(self) -> bool:
-        """Automatic error clearing is intentionally disabled."""
-        return False
+        # Cycle/Main/Andon errors have no independent module fault signal.
+        # Their reset is valid once the relevant sequence is no longer active.
+        if code.startswith("E06") or code == "E068":
+            return (
+                self._motion.get("connected")
+                and self._plc.get("connected")
+                and self._pf.get("connected")
+            )
+        return not self._cycle.is_active()
 
     def _clear_latch_for_module(self, source: str, *, auto: bool = False) -> bool:
         """Explicit module reset helper.
