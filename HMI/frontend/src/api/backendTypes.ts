@@ -76,14 +76,12 @@ export interface BackendCycleSnapshot {
   completed?: boolean;
   lastOk: boolean;
   fault: string;
-  faultClass?: string;
   recovery?: string;
   recoveryAfterError?: boolean;
   recoveryPrompt?: string;
   recoveryAwaitingConfirm?: boolean;
   e050FinishPiece?: boolean;
   refillSkipCut?: boolean;
-  c3Pending?: boolean;
   config: BackendCycleConfig;
   /** Ausente en SSE slim (la UI conserva el último flow). */
   flow?: BackendFlowStep[];
@@ -156,13 +154,7 @@ export interface BackendErrorLatch {
   byte: number;
   module: string;
   description: string;
-  class: string;
   ui: string;
-  needsConfirm: boolean;
-  needsHome: boolean;
-  recovery: string;
-  confirmed: boolean;
-  /** EXXX ya reseteado; contexto de recuperación C2/C3. */
   last?: BackendErrorLatch;
 }
 

@@ -301,7 +301,7 @@ def api_cycle_reset():
         get_state().cmd_error_reset(
             confirm=bool(body.get("confirm", False)),
             # Hard Reset máquina → ASDA move to 0 (CMD_MOVE_ZERO) + Reset PLC.
-            do_home=bool(body.get("doHome", True)),
+            do_home=bool(body.get("doHome", False)),
         )
     )
 
@@ -310,11 +310,6 @@ def api_cycle_reset():
 def api_machine_home():
     """Home máquina: ASDA→0 + encoders Set0 + All Off (no Buscar HOME 0x01)."""
     return jsonify(get_state().cmd_machine_home())
-
-
-@app.post("/api/error/confirm")
-def api_error_confirm():
-    return jsonify(get_state().cmd_error_confirm())
 
 
 @app.post("/api/error/reset")

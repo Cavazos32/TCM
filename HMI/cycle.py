@@ -189,7 +189,7 @@ class CycleConfig:
     # Feed / Stage2 OM: "L" | "R" | "LR" (producción = ambos)
     feed_sides: str = "LR"
     # Tfeed entre piezas (paso 3). False = omitir siempre; solo helper holgura.
-    # 1ª pieza y C2 ya omiten aunque esté True. Default ON (producción).
+    # 1ª pieza y recovery ya omiten aunque esté True. Default ON (producción).
     pf_trigger_enabled: bool = True
     # Refill / purga: Retry = refill_mm (55). Long feed = 100 mm (skipValidate).
     refill_mm: float = 55.0
@@ -478,12 +478,9 @@ class CycleRunner:
         self._last_ok = False
         self._abort_needs_ack = False
         self._fault = ""
-        self._fault_class = ""
-        self._c3_stop_after_step = False  # legado: pausar en próximo _enter
-        # C3 en lote: completar pieza en curso (hasta post_piece / corte) y pausar.
-        self._c3_finish_piece = False
-        self._recovery = ""  # home | restart_from_0 | retry_process | e050_materialist
-        # Tras error C2/C3: lote vivo → Reset → Resume → pieza → review → purga → Continuar.
+        # recovery en lote: completar pieza en curso (hasta post_piece / corte) y pausar.
+        self._recovery = ""  # common lot recovery context | e050_materialist
+        # Tras error recovery: lote vivo → Reset → Resume → pieza → review → purga → Continuar.
         self._recovery_after_error = False
         self._recovery_prompt = ""  # "" | review_piece | continue_cycle | e050_materialist
         self._recovery_awaiting = False
@@ -495,10 +492,10 @@ class CycleRunner:
         self._e050_materialist_wait = False
         self._e050_normal_recovery = ""
         self._refill_skip_cut = False
-        # Start / C2 / recovery: validar láser antes de alimentar (ON → omitir).
+        # Start / recovery / recovery: validar láser antes de alimentar (ON → omitir).
         self._restart_piece = False
-        self._c2_laser_skip_feed = False
-        self._c2_skip_pf_trigger = False
+        self._recovery_skip_feed = False
+        self._recovery_skip_pf_trigger = False
         self._flow_interrupt = threading.Event()
         # In process OFF por Pause/Error; Resume/Busy rearma. Evita doble OFF/ON.
         self._pf_held_idle = False
@@ -574,7 +571,6 @@ class CycleRunner:
                 "completed": self._last_ok and not self._active,
                 "lastOk": self._last_ok,
                 "fault": self._fault,
-                "faultClass": self._fault_class,
                 "recovery": self._recovery,
                 "recoveryAfterError": self._recovery_after_error,
                 "recoveryPrompt": (
@@ -586,7 +582,6 @@ class CycleRunner:
                 "e050FinishPiece": self._e050_finish_piece,
                 "e050MaterialistWait": self._e050_materialist_wait,
                 "refillSkipCut": bool(self._refill_skip_cut and self._refill_mode),
-                "c3Pending": self._c3_stop_after_step or self._c3_finish_piece,
                 "config": self._cfg.to_dict(),
                 "flow": FLOW_STEPS,
             }
@@ -663,14 +658,13 @@ class CycleRunner:
         self._pause.clear()
         self._aborted = False
         self._fault = ""
-        self._fault_class = ""
-        self._c3_stop_after_step = False
-        self._c3_finish_piece = False
         self._recovery = ""
         self._clear_recovery_gate()
         self._restart_piece = False
-        self._c2_laser_skip_feed = False
-        self._c2_skip_pf_trigger = False
+        self._recovery_skip_feed = False
+        self._recovery_skip_pf_trigger = False
+        self._stop.clear()
+        self._pause.clear()
         self._flow_interrupt.clear()
         self._e050_finish_piece = False
         self._e050_materialist_requested = False
@@ -701,8 +695,8 @@ class CycleRunner:
         self._stop.set()
         self._flow_interrupt.set()
         self._restart_piece = False
-        self._c2_laser_skip_feed = False
-        self._c2_skip_pf_trigger = False
+        self._recovery_skip_feed = False
+        self._recovery_skip_pf_trigger = False
         self._pause.clear()
         self._refill_reject.set()
         self._recovery_reject.set()
@@ -747,33 +741,21 @@ class CycleRunner:
                 "ok": False,
                 "error": "Espera confirmación del operador (pieza / lote)",
             }
-        if self._pause.is_set():
-            # Tras error: Resume termina la pieza (secuencia actual), no reinicia step 0.
-            if self._recovery_after_error:
-                self._host.cycle_log("Cycle Resume → terminar pieza")
-            elif self._recovery == "restart_from_0":
-                self._restart_piece = True
-                self._flow_interrupt.set()
-                try:
-                    self._host.clear_motion_wait_flags()
-                    self._host.cmd_motion_stop()
-                except Exception:
-                    pass
-                self._host.cycle_log(
-                    "Cycle Resume (C2) → reinicio pieza desde step 0"
-                )
-            else:
-                self._host.cycle_log("Cycle Resume")
-            # Flag antes de quitar Pause: el hilo de ciclo espera Buffer Full
-            # (como Start) antes de seguir. No bloquear este request.
-            self._resume_need_buffer_full = True
-            self._pause.clear()
-            with self._lock:
-                self._sync_pause_exclusion_locked(time.monotonic())
-            self._leave_pause_andon()
-            self._host.cycle_notify()
-            return {"ok": True}
-        return {"ok": False, "error": "Ciclo no está en Pause"}
+        if not self._pause.is_set():
+            return {"ok": False, "error": "Ciclo no está en Pause"}
+        # Unified recovery: Resume never selects a class-specific branch.
+        # The running lot will continue through the common recovery gate.
+        if self._recovery_after_error:
+            self._host.cycle_log("Cycle Resume → recuperación común")
+        else:
+            self._host.cycle_log("Cycle Resume")
+        self._resume_need_buffer_full = True
+        self._pause.clear()
+        with self._lock:
+            self._sync_pause_exclusion_locked(time.monotonic())
+        self._leave_pause_andon()
+        self._host.cycle_notify()
+        return {"ok": True}
 
     def confirm_recovery_review(self, ok: bool = True) -> dict[str, Any]:
         """Resuelve la decisión E050 o las confirmaciones genéricas de recovery."""
@@ -793,11 +775,11 @@ class CycleRunner:
                 self._recovery_after_error = False
                 self._recovery = self._e050_normal_recovery
                 self._host.cycle_log("E050: NO Materialist → recuperación normal del error")
-                self.apply_error_policy("finish_step", self._fault, self._fault_class, self._e050_normal_recovery)
+                self.apply_error_policy(self._fault, self._e050_normal_recovery)
                 self._host.cycle_notify()
                 return {"ok": True, "materialist": False, "normalRecovery": True}
             if not self._host.clear_e050_latch_for_materialist():
-                return {"ok": False, "error": "No se pudo limpiar E050 para iniciar Materialist"}
+                return {"ok": False, "error": "No se pudo liberar E050 para iniciar Materialist"}
             self._e050_materialist_requested = True
             self._e050_finish_piece = self._piece_t0 is not None
             self._recovery_after_error = False
@@ -805,8 +787,7 @@ class CycleRunner:
             self._recovery_awaiting = False
             self._recovery_prompt = ""
             self._fault = ""
-            self._fault_class = ""
-            self._pause.clear()
+                self._pause.clear()
             with self._lock:
                 self._sync_pause_exclusion_locked(time.monotonic())
             self._leave_pause_andon()
@@ -854,9 +835,6 @@ class CycleRunner:
         self._pause.clear()
         self._aborted = False
         self._fault = ""
-        self._fault_class = ""
-        self._c3_stop_after_step = False
-        self._c3_finish_piece = False
         self._recovery = ""
         self._last_ok = False
         self._refill_confirm.clear()
@@ -938,14 +916,11 @@ class CycleRunner:
         self._aborted = False
         self._stop.clear()
         self._fault = ""
-        self._fault_class = ""
-        self._c3_stop_after_step = False
-        self._c3_finish_piece = False
         self._recovery = ""
         self._clear_recovery_gate()
         self._restart_piece = False
-        self._c2_laser_skip_feed = False
-        self._c2_skip_pf_trigger = False
+        self._recovery_skip_feed = False
+        self._recovery_skip_pf_trigger = False
         self._flow_interrupt.clear()
         self._e050_finish_piece = False
         self._refill_skip_cut = False
@@ -985,7 +960,7 @@ class CycleRunner:
             pass
 
     def _arm_recovery_pause(self) -> None:
-        """C2/C3: lote vivo en Pause. Resume terminará la pieza."""
+        """recovery: lote vivo en Pause. Resume terminará la pieza."""
         if not self.is_active():
             return
         self._recovery_after_error = True
@@ -1003,50 +978,9 @@ class CycleRunner:
         lote completado o Reset local de Motion).
         """
         self._fault = ""
-        self._fault_class = ""
         self._recovery = ""
         # No borrar _recovery_after_error: el lote sigue en recuperación.
         self._abort_needs_ack = False
-
-    def clear_error_for_resume(self, recovery: str = "") -> dict[str, Any]:
-        """Res suave C2/C3: limpia fault; mantiene lote vivo.
-
-        - C2 (ya en Pause): sigue en Pause → operador Resume.
-        - C3 finish-piece: no pausar aún; el hilo corta y pausa en post_piece.
-        """
-        if not self.is_active():
-            return {"ok": False, "error": "Sin ciclo activo para Resume"}
-        self._cancel_wip_blower()
-        self.clear_fault_mirror()
-        if recovery:
-            self._recovery = recovery
-        if self._c3_finish_piece:
-            # Seguir hasta corte; Pause real en _enter(post_piece).
-            self._set_state(TX_BUSY)
-            self._host.cycle_log(
-                "Cycle soft-Res: C3 continúa hasta cortar pieza (luego Pause)"
-            )
-            self._host.cycle_notify()
-            return {
-                "ok": True,
-                "paused": False,
-                "recovery": self._recovery,
-                "soft": True,
-                "finishingPiece": True,
-            }
-        if not self._pause.is_set():
-            self._pause.set()
-        self._set_state(TX_PAUSE)
-        self._host.cycle_log(
-            f"Cycle soft-Res → Pause (recovery={self._recovery or '—'}; Resume)"
-        )
-        self._host.cycle_notify()
-        return {
-            "ok": True,
-            "paused": True,
-            "recovery": self._recovery,
-            "soft": True,
-        }
 
     def set_materialist(self, on: bool) -> dict[str, Any]:
         if on and self.is_active() and not self._e050_materialist_wait:
@@ -1180,7 +1114,6 @@ class CycleRunner:
         with self._lock:
             self._sync_pause_exclusion_locked(time.monotonic())
         if self._fault:
-            # Soft-Res debió limpiar fault; si sigue, no continuar ciego.
             return True
         self._leave_pause_andon()
         if not self._ensure_pf_buffer_full_after_resume():
@@ -1336,7 +1269,7 @@ class CycleRunner:
         return bool(self._abort_needs_ack)
 
     def _raise_current_pf_fault(self, log_prefix: str, *, fallback: str = "E068") -> None:
-        """Set del EXXX PF actual (o fallback). Aplica C1/C2/C3."""
+        """Set del EXXX PF actual (o fallback). Aplica error/recovery."""
         detail = ""
         if hasattr(self._host, "pf_fault_detail"):
             detail = str(self._host.pf_fault_detail() or "").strip()
@@ -1361,7 +1294,7 @@ class CycleRunner:
             return
         self._raise_fault("E068")
 
-    def _raise_fault(self, slug_or_code: str, err_class: str = "") -> None:
+    def _raise_fault(self, slug_or_code: str) -> None:
         """Latchea fallo EXXX vía política HMI (Set flip-flop)."""
         # Si Motion ya latcheó un EXXX (p.ej. E023 CAN), no pisar con genérico de ciclo.
         if self._fault:
@@ -1370,95 +1303,39 @@ class CycleRunner:
             if self._host.apply_detail_error(slug_or_code):
                 return
         self._fault = format_ui(slug_or_code, fallback=slug_or_code)
-        if err_class:
-            self._fault_class = err_class
-        self._set_state(TX_ERROR, self._fault)
 
-    def apply_error_policy(self, action: str, ui: str, err_class: str, recovery: str) -> dict[str, Any]:
-        """
-        Aplica Set C1/C2/C3 desde HmiState.
-        action: stop_all | pause | finish_step
-
-        C1/C2/C3 no mandan válvulas ni Reset PLC: el PLC solo se opera con
-        pulso/pulso, All Off o su Reset propio.
-        """
+    def apply_error_policy(
+        self,
+        ui: str,
+        recovery: str = "",
+    ) -> dict[str, Any]:
+        """Enter the unified ERROR hold; error/recovery do not select recovery."""
         self._fault = ui
-        self._fault_class = err_class
         self._recovery = recovery
-        # EXXX tras lote OK: no dejar "Batch complete" + ERROR a la vez.
-        if not self.is_active():
-            self._last_ok = False
-        if action == "stop_all":
-            self._c3_stop_after_step = False
-            self._c3_finish_piece = False
-            self._aborted = True
-            self._stop.set()
-            self._pause.clear()
-            self._resume_need_buffer_full = False
-            try:
-                self._host.clear_motion_wait_flags()
-            except Exception:
-                pass
-            # Best-effort Motion/PF; PLC intocable desde política de error.
-            for fn in (
-                self._host.cmd_motion_stop,
-                self._host.cmd_pf_stop,
-            ):
-                try:
-                    fn()
-                except Exception:
-                    pass
-            self._set_state(TX_ERROR, ui)
-            return {"ok": True, "action": action}
-        if action == "link_down":
-            # Solo abortar ciclo local; no mandar stop por TCP al nodo caído.
-            self._c3_stop_after_step = False
-            self._c3_finish_piece = False
-            self._aborted = True
-            self._stop.set()
-            self._pause.clear()
-            self._resume_need_buffer_full = False
-            try:
-                self._host.clear_motion_wait_flags()
-            except Exception:
-                pass
-            self._set_state(TX_ERROR, ui)
-            self._host.cycle_notify()
-            return {"ok": True, "action": action}
-        if action == "pause":
-            self._c3_stop_after_step = False
-            self._c3_finish_piece = False
-            self._arm_recovery_pause()
-            self._set_state(TX_ERROR, ui)
-            self._host.cycle_notify()
-            return {"ok": True, "action": action}
-        if action == "finish_step":
-            # C3 con lote: mismo que C2 — Pause; Resume termina la pieza.
-            self._c3_stop_after_step = False
-            self._c3_finish_piece = False
-            self._arm_recovery_pause()
-            self._set_state(TX_ERROR, ui)
-            self._host.cycle_log(
-                "C3: Pause — Reset → Resume para terminar pieza"
-            )
-            self._host.cycle_notify()
-            return {"ok": True, "action": action}
+        self._recovery_after_error = self.is_active()
+        self._resume_need_buffer_full = False
+        self._pause.set()
+        self._cancel_wip_blower()
+
+        # Stop current Motion activity, but do not kill the CycleRunner thread.
+        try:
+            self._host.cmd_motion_stop()
+        except Exception:
+            pass
+
         self._set_state(TX_ERROR, ui)
+        self._host.cycle_notify()
         return {"ok": True, "action": "error_state"}
 
     def apply_e050_policy(
         self,
         ui: str,
-        err_class: str,
-        recovery: str = "retry_process",
+        recovery: str = "recovery",
     ) -> dict[str, Any]:
         """E050 durante lote: primero pregunta si requiere Materialist."""
         self._fault = ui
-        self._fault_class = err_class
         self._recovery = "e050_materialist"
-        self._e050_normal_recovery = recovery or "retry_process"
-        self._c3_stop_after_step = False
-        self._c3_finish_piece = False
+        self._e050_normal_recovery = recovery or "recovery"
         self._e050_finish_piece = False
         self._e050_materialist_requested = False
         self._e050_materialist_wait = False
@@ -1500,22 +1377,8 @@ class CycleRunner:
         self._host.cycle_notify()
     def _enter(self, rep: int, qty: int, key: str) -> bool:
         """Marca paso atómico. True = abortar."""
-        # C3: completar pieza (corte) → Pause en post_piece; esperar Reset+Resume.
+        # recovery: completar pieza (corte) → Pause en post_piece; esperar Reset+Resume.
         # Antes: return True abortaba el lote y Resume quedaba muerto.
-        if self._c3_finish_piece:
-            if key == "post_piece":
-                self._c3_finish_piece = False
-                self._c3_stop_after_step = False
-                if self._wait_paused_for_resume(
-                    "C3: pieza cortada — Pause; Reset → Resume para continuar"
-                ):
-                    return True
-        elif self._c3_stop_after_step:
-            self._c3_stop_after_step = False
-            if self._wait_paused_for_resume(
-                "C3: paso terminado — Pause; Reset → Resume"
-            ):
-                return True
         meta = STEP_BY_KEY[key]
         self._set_progress(rep, int(meta["id"]), qty)
         # Paso a paso pausa en _after_step (tras ejecutar), no aquí:
@@ -1682,11 +1545,11 @@ class CycleRunner:
         return False
 
     def _consume_restart_piece(self) -> bool:
-        """True si C2 Resume pidió reinicio de pieza; limpia el flag."""
+        """True si recovery Resume pidió reinicio de pieza; limpia el flag."""
         if not self._restart_piece:
             return False
         self._restart_piece = False
-        self._c2_skip_pf_trigger = True
+        self._recovery_skip_pf_trigger = True
         self._flow_interrupt.clear()
         return True
 
@@ -1708,7 +1571,7 @@ class CycleRunner:
         return present
 
     def _feed_abort_event(self) -> threading.Event:
-        """Stop o interrupt C2 (reinicio pieza) abortan waits de feed."""
+        """Stop o interrupt recovery (reinicio pieza) abortan waits de feed."""
         return _OrEvent(self._stop, self._flow_interrupt)  # type: ignore[return-value]
 
     def _wait_duration_s(self, sec: float) -> bool:
@@ -2135,7 +1998,7 @@ class CycleRunner:
         notes = {
             "post-feed": "feed síncrono de esta pieza (~55 mm)",
             "handoff": "prefetch de esta pieza (join previo)",
-            "c2-skip-feed": "C2/recovery: láser ON, sin feed nuevo",
+            "c2-skip-feed": "recovery/recovery: láser ON, sin feed nuevo",
             "start-skip-feed": "Start: láser ON, sin feed",
             "post-lineal": "ASDA vs target de corte",
             "post-depósito": "ASDA tras extra",
@@ -2648,7 +2511,7 @@ class CycleRunner:
                 return False
             ng_sides = [s for s in bad if outcomes.get(s) == "ng"]
             if ng_sides:
-                # LengthNG ≠ E009. E009 es C1; NG es E002/E003 (C3) u otro EXXX de Feed.
+                # LengthNG ≠ E009. E009 es error; NG es E002/E003 (recovery) u otro EXXX de Feed.
                 return self._fail_feed_ng(ng_sides, outcomes)
             only_timeout = bool(bad) and all(
                 outcomes.get(s) == "timeout" for s in bad
@@ -2681,7 +2544,7 @@ class CycleRunner:
         return False
 
     def _fail_feed_ng(self, ng_sides: list[str], outcomes: dict[str, str]) -> bool:
-        """Cierra el wait por LengthNG sin pisar el EXXX real con E009 C1."""
+        """Cierra el wait por LengthNG sin pisar el EXXX real con E009 error."""
         for s in ng_sides:
             detail = self._host.feed_fault_for(s) or outcomes.get(s, "ng")
             self._host.cycle_log(f"Feed {s}: {detail}")
@@ -2711,10 +2574,10 @@ class CycleRunner:
         """Tfeed a lados de feedSides. True = OK / omitido; False = fault.
 
         Contrato Doc/pf_trigger.md: omite si pfTriggerEnabled=False, 1ª pieza
-        o C2; holgura ausente/activa gana.
+        o recovery; holgura ausente/activa gana.
         """
-        c2_skip = self._c2_skip_pf_trigger
-        self._c2_skip_pf_trigger = False
+        c2_skip = self._recovery_skip_pf_trigger
+        self._recovery_skip_pf_trigger = False
         if not self.get_config().pf_trigger_enabled:
             self._host.cycle_log(
                 "trigger PreFeeder: omitido (deshabilitado — solo holgura)"
@@ -2730,7 +2593,7 @@ class CycleRunner:
             return True
         if c2_skip:
             self._host.cycle_log(
-                "trigger PreFeeder: omitido (C2 — Tfeed ya mandado)"
+                "trigger PreFeeder: omitido (recovery — Tfeed ya mandado)"
             )
             return True
         sides = CycleConfig.normalize_feed_sides(self.get_config().feed_sides)
@@ -3176,10 +3039,20 @@ class CycleRunner:
         if self._should_abort():
             return "fail"
         self._host.clear_motion_wait_flags()
-        if not self._host.cmd_motion_move_mm(asda_mm, rpm):
+        current_asda = self._host.asda_position_mm()
+        if current_asda is None:
+            self._host.cycle_log("Refill: posición ASDA no disponible → ejecutar MOVE de park")
+        elif abs(float(current_asda) - float(asda_mm)) <= 0.5:
+            self._host.cycle_log(
+                f"Refill: ASDA ya en {current_asda:g} mm ≈ {asda_mm:g} mm → skip MOVE"
+            )
+        elif not self._host.cmd_motion_move_mm(asda_mm, rpm):
             self._raise_fault("move_cmd")
             return "fail"
-        if not self._wait_motion() or self._should_abort():
+        if current_asda is None or abs(float(current_asda) - float(asda_mm)) > 0.5:
+            if not self._wait_motion() or self._should_abort():
+                return "fail"
+        elif self._should_abort():
             return "fail"
         with self._lock:
             self._progress = 20
@@ -3518,26 +3391,26 @@ class CycleRunner:
                             break
                         if handoff_ready:
                             handoff_ready = False
-                            self._c2_laser_skip_feed = False
+                            self._recovery_skip_feed = False
                             self._metro_snap("handoff")
                             self._host.cycle_log("Feed: handoff (prefetch ya listo)")
                         elif (
                             (
                                 rep == 1
-                                or self._c2_laser_skip_feed
+                                or self._recovery_skip_feed
                                 or self._recovery_after_error
                             )
                             and self._feed_reference_visible()
                         ):
                             c2_or_rec = (
-                                self._c2_laser_skip_feed or self._recovery_after_error
+                                self._recovery_skip_feed or self._recovery_after_error
                             )
-                            self._c2_laser_skip_feed = False
+                            self._recovery_skip_feed = False
                             sides_txt = "".join(self._feed_side_list())
                             if c2_or_rec:
                                 self._metro_snap("c2-skip-feed")
                                 self._host.cycle_log(
-                                    f"Feed omitido (C2/recovery): láser ya ON "
+                                    f"Feed omitido (recovery/recovery): láser ya ON "
                                     f"lados={sides_txt}"
                                 )
                             else:
@@ -3547,7 +3420,7 @@ class CycleRunner:
                                     f"lados={sides_txt}"
                                 )
                         else:
-                            self._c2_laser_skip_feed = False
+                            self._recovery_skip_feed = False
                             if not self._run_feed():
                                 break
                         if self._after_step("feed"):
@@ -3624,25 +3497,23 @@ class CycleRunner:
                         cut_sides = CycleConfig.normalize_feed_sides(self.get_config().feed_sides)
                         if self._enter(rep, qty, "cutter_on"):
                             break
-                        # C3 finish-piece: cortar aunque PF siga en ErrorState (p.ej. Buffer Max).
+                        # recovery finish-piece: cortar aunque PF siga en ErrorState (p.ej. Buffer Max).
                         # Solo actuar con EXXX/errorAny real — no por 0x3C huérfano.
                         # Set del EXXX aquí: un break mudo dejaba Andon en Error y HMI verde.
                         if (
                             self._use_prefeeder()
-                            and not self._c3_finish_piece
                             and self._host.pf_has_fault()
                         ):
                             self._raise_current_pf_fault("Corte: PreFeeder en error")
-                            if self._c3_finish_piece:
                                 self._host.cycle_log(
-                                    "C3: completar corte pese a EXXX PF"
+                                    "recovery: completar corte pese a EXXX PF"
                                 )
                             elif self._should_abort():
                                 self._host.cycle_log("Corte abortado: PreFeeder Error")
                                 break
                             elif self._pause.is_set():
                                 if self._wait_paused_for_resume(
-                                    "C2: Pause por EXXX PF antes del corte"
+                                    "recovery: Pause por EXXX PF antes del corte"
                                 ):
                                     break
                                 break
@@ -3859,12 +3730,11 @@ class CycleRunner:
                                 handoff_ready = False
                                 if self._restart_piece:
                                     break
-                                # C3: pieza ya cortada — no abortar; ir a post_piece → Pause.
+                                # recovery: pieza ya cortada — no abortar; ir a post_piece → Pause.
                                 # Abortar aquí hacía break del while y el for seguía
                                 # disparando Tfeed/Feed en las piezas restantes.
-                                if self._c3_finish_piece:
                                     self._host.cycle_log(
-                                        "∥ Join: prefetch falló — C3 sigue a "
+                                        "∥ Join: prefetch falló — recovery sigue a "
                                         "post_piece (Pause; Reset→Resume)"
                                     )
                                 else:
@@ -3906,8 +3776,8 @@ class CycleRunner:
                                 break
                             handoff_ready = False
                             prefetch_running = False
-                            self._c2_laser_skip_feed = True
-                            self._c2_skip_pf_trigger = False
+                            self._recovery_skip_feed = True
+                            self._recovery_skip_pf_trigger = False
                         elif self._recovery_after_error:
                             if not self._recovery_review_purge_decide():
                                 early_exit = True
@@ -3915,8 +3785,8 @@ class CycleRunner:
                             self._recovery_after_error = False
                             handoff_ready = False
                             prefetch_running = False
-                            self._c2_laser_skip_feed = True
-                            self._c2_skip_pf_trigger = False
+                            self._recovery_skip_feed = True
+                            self._recovery_skip_pf_trigger = False
                         early_exit = False
                     if materialist_only:
                         continue
@@ -3925,9 +3795,9 @@ class CycleRunner:
                     if self._consume_restart_piece():
                         handoff_ready = False
                         prefetch_running = False
-                        self._c2_laser_skip_feed = True
+                        self._recovery_skip_feed = True
                         self._host.cycle_log(
-                            f"C2: reinicio pieza {rep}/{qty} desde step 0"
+                            f"recovery: reinicio pieza {rep}/{qty} desde step 0"
                         )
                         continue
                     if (
@@ -3937,8 +3807,8 @@ class CycleRunner:
                     ):
                         handoff_ready = False
                         prefetch_running = False
-                        self._c2_laser_skip_feed = True
-                        self._c2_skip_pf_trigger = True
+                        self._recovery_skip_feed = True
+                        self._recovery_skip_pf_trigger = True
                         continue
                     break  # fallo / abort → salir del while
                 # Critico: el break anterior solo sale del while; sin esto el for
@@ -3969,8 +3839,8 @@ class CycleRunner:
         self._clear_recovery_gate()
         self._resume_need_buffer_full = False
         self._restart_piece = False
-        self._c2_laser_skip_feed = False
-        self._c2_skip_pf_trigger = False
+        self._recovery_skip_feed = False
+        self._recovery_skip_pf_trigger = False
         self._flow_interrupt.clear()
         refill = False
         with self._lock:
@@ -3982,7 +3852,7 @@ class CycleRunner:
         self._refill_retry.clear()
         self._refill_next_feed_mm = None
         self._refill_skip_cut = False
-        # Stop/C1/C2/C3 no tocan PLC. Fin de lote OK: tools safe + holder/enc.
+        # Stop/error/recovery no tocan PLC. Fin de lote OK: tools safe + holder/enc.
         # Abort/Stop: dejar válvulas como estén (All Off / Reset PLC manual).
         if not (self._aborted or self._stop.is_set() or self._fault):
             self._host.cmd_plc_tools_safe()
@@ -3999,7 +3869,7 @@ class CycleRunner:
             )
         # Fin de lote / error: desarmar PreFeeder (In process OFF → Idle).
         # Una sola armada al Start basta para 1…N piezas. No usar Stop 0x2B
-        # aquí: enclava PF-007; Stop de operador / C1 ya mandaron 0x2B.
+        # aquí: enclava PF-007; Stop de operador / error ya mandaron 0x2B.
         # No cortar en seco: esperar Buffer Full + holgura (+ M2 idle).
         if self._use_prefeeder() and not (self._aborted or self._stop.is_set()):
             if ok:

@@ -130,7 +130,6 @@ export interface MachineState {
   safetyExhaust: boolean;
   /** EXXX UI completo; detalle del panel de recovery, no del estado general. */
   fault?: string;
-  faultClass?: string;
   faultCode?: string;
   /** EXXX del Set, visible tras Res mientras el lote sigue en recuperación. */
   lastFault?: string;
@@ -141,8 +140,6 @@ export interface MachineState {
   workBlocked?: boolean;
   /** Status del módulo del EXXX (Motion/PLC/PreFeeder). */
   faultModuleStatus?: string;
-  errorNeedsConfirm?: boolean;
-  errorNeedsHome?: boolean;
 }
 
 export interface MotionState {

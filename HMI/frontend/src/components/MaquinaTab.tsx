@@ -261,43 +261,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
   const plcConnected = plcState.connection.connected;
   const plcHasError = !!plcState.hasError && plcConnected;
   const pfConnected = preFeederState.connection.connected;
-  const pfHasError = !!preFeederState.hasError && pfConnected;
-  const pfRecoverError =
-    pfHasError ||
-    (!!machineState.errorActive &&
-      isPrefeederFaultModule(machineState.faultModule));
-
-  const [pfRecoverStep, setPfRecoverStep] = useState<'idle' | 'reset' | 'go'>('idle');
-
-  useEffect(() => {
-    if (pfRecoverError) {
-      setPfRecoverStep('reset');
-      return;
-    }
-    // Sin EXXX de Pre-Feeder el coach no se queda: Start/Materialist no son recovery.
-    if (
-      machineState.isRunning ||
-      (machineState.cycleActive && !machineState.isPaused) ||
-      !machineState.cycleMaterialist
-    ) {
-      setPfRecoverStep('idle');
-      return;
-    }
-    setPfRecoverStep((prev) => (prev === 'reset' ? 'go' : prev));
-  }, [
-    pfRecoverError,
-    machineState.isRunning,
-    machineState.cycleActive,
-    machineState.isPaused,
-    machineState.cycleMaterialist,
-  ]);
-
-  const recoverReset = pfRecoverStep === 'reset';
-  const recoverGo = pfRecoverStep === 'go';
-  const recoverGoResume = recoverGo && !!resumeEnabled;
-  const machineResetDisabled = recoverReset;
-  // Reset local PF (0x02C) desde Module Controls: siempre si hay enlace.
-  // Un EXXX de Motion/PLC no debe bloquear el Res del PreFeeder.
+  // Module Controls keeps independent PF diagnostics; machine RESET owns the global EXXX latch.
   const pfResetDisabled = !onPfReset || !pfConnected;
   const recoveryStage =
     machineState.recoveryPrompt ||
@@ -308,18 +272,11 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
   const showRecoveryTrack = !!recoveryStage;
   const e050Lot = !!machineState.e050Lot;
   const skipCut = !!machineState.refillSkipCut;
-  const faultCls = (machineState.faultClass || '').toUpperCase();
-  const machineC1 =
-    !e050Lot && (faultCls === 'C1' || !!machineState.errorNeedsHome);
   const lotHeld =
     machineState.cycleActive ||
     machineState.recoveryAfterError ||
     machineState.isPaused;
-  const processKind: 'c1' | 'c2' | 'e050' = e050Lot
-    ? 'e050'
-    : machineC1
-      ? 'c1'
-      : 'c2';
+
   const processStep: string = e050Lot
     ? recoveryStage === 'e050_insufficient' ||
       recoveryStage === 'e050_finish_process'
@@ -337,12 +294,6 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               : resumeEnabled || machineState.isPaused
                 ? 'resume'
                 : ''
-    : machineC1
-    ? machineState.errorNeedsConfirm || hasFault
-      ? 'reset'
-      : machineState.errorNeedsHome
-        ? 'home'
-        : 'start'
     : recoveryStage === 'continue_cycle'
       ? 'continue'
       : recoveryStage === 'review_piece'
@@ -358,26 +309,22 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               : resumeEnabled || machineState.isPaused
                 ? 'resume'
                 : '';
+
   const showErrorProcess =
     hasFault ||
     machineState.recoveryAfterError ||
     e050Lot ||
-    showRecoveryTrack ||
-    !!(machineC1 && (machineState.errorNeedsHome || machineState.errorNeedsConfirm));
+    showRecoveryTrack;
   const showMachineResetCoach = showErrorProcess && processStep === 'reset';
   const showMachineResumeCoach = showErrorProcess && processStep === 'resume';
-  const c2Steps: { id: string; label: string }[] = [
+
+  const recoverySteps: { id: string; label: string }[] = [
     { id: 'reset', label: t('lot_recover_step_reset') },
     { id: 'resume', label: t('lot_recover_step_resume') },
     { id: 'piece', label: t('lot_recover_step_piece') },
     { id: 'review', label: t('lot_recover_step_review') },
     { id: 'purge', label: t('lot_recover_step_purge') },
     { id: 'continue', label: t('lot_recover_step_continue') },
-  ];
-  const c1Steps: { id: string; label: string }[] = [
-    { id: 'reset', label: t('lot_recover_step_reset') },
-    { id: 'home', label: t('lot_recover_step_home') },
-    { id: 'start', label: t('lot_recover_step_start') },
   ];
   const e050Steps: { id: string; label: string }[] = [
     { id: 'ask', label: t('lot_recover_step_ask') },
@@ -387,7 +334,8 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
     { id: 'review', label: t('lot_recover_step_review') },
     { id: 'empty', label: t('lot_recover_step_empty') },
   ];
-  const processSteps = e050Lot ? e050Steps : machineC1 ? c1Steps : c2Steps;
+  const processSteps = e050Lot ? e050Steps : recoverySteps;
+
   const showManualRefill =
     !machineState.recoveryAfterError &&
     !machineState.e050Lot &&
@@ -428,12 +376,6 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               : processStep === 'empty'
                 ? recoveryHint
                 : t('lot_recover_hint_e050_reset')
-    : machineC1
-    ? processStep === 'home'
-      ? t('lot_recover_hint_c1_home')
-      : processStep === 'start'
-        ? t('lot_recover_hint_c1_start')
-        : t('lot_recover_hint_c1')
     : processStep === 'reset'
       ? recoverReset
         ? t('lot_recover_hint_reset_pf')
@@ -451,7 +393,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               : processStep === 'purge'
                 ? recoveryHint
                 : t('lot_recover_hint_reset');
-  /** Indicaciones PF solo si no hay lote (el lote usa el proceso C2/C3). */
+  /** Indicaciones PF solo si no hay lote. */
   const showPfCoach =
     !machineState.isRunning &&
     ((recoverReset && !lotHeld) || machineState.cycleMaterialist);
@@ -835,9 +777,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                   <p className="text-xs font-bold text-amber-950 dark:text-amber-100">
                     {e050Lot
                       ? t('lot_recover_title_e050')
-                      : machineC1
-                        ? t('lot_recover_title_c1')
-                        : t('lot_recover_title_c2')}
+                      : t('lot_recover_title_recovery')}
                   </p>
                   <p className="text-[11px] text-amber-900/80 dark:text-amber-200/80 mt-0.5">
                     {processHint}
@@ -1035,9 +975,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                 <p className="font-bold uppercase tracking-wide">
                   {e050Lot
                     ? t('lot_recover_title_e050')
-                    : machineC1
-                      ? t('lot_recover_title_c1')
-                      : t('lot_recover_title_c2')}
+                    : t('lot_recover_title_c2')}
                 </p>
                 <p className="mt-0.5">{processHint}</p>
                 {(machineState.fault || machineState.lastFault) && (
@@ -1093,7 +1031,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               title={
                 recoverReset
                   ? t('pf_recover_hint_reset')
-                  : showErrorProcess && processKind === 'c2'
+                  : showErrorProcess
                     ? processHint
                     : machineState.cycleMaterialist
                       ? t('err_materialist_start')
@@ -1203,17 +1141,11 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               type="button"
               onClick={onMachineHome}
               disabled={!onMachineHome || machineState.isRunning}
-              title={
-                processStep === 'home'
-                  ? t('lot_recover_hint_c1_home')
-                  : t('btn_machine_home_hint')
-              }
+              title={t('btn_machine_home_hint')}
               className={`flex w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-2.5 text-xs font-bold transition shadow-2xs ${
                 !onMachineHome || machineState.isRunning
                   ? 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed'
-                  : processStep === 'home'
-                    ? 'border-emerald-400 bg-emerald-100 dark:bg-emerald-950/50 text-emerald-900 dark:text-emerald-100 ring-2 ring-emerald-300 ring-offset-1 animate-pulse'
-                    : 'border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 active:scale-[0.98]'
+                  : 'border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 active:scale-[0.98]'
               }`}
             >
               <Home className="h-3.5 w-3.5" />
