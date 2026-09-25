@@ -393,7 +393,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               : processStep === 'purge'
                 ? recoveryHint
                 : t('lot_recover_hint_reset');
-  /** Indicaciones PF solo si no hay lote (el lote usa el proceso C2/C3). */
+  /** Indicaciones PF solo si no hay lote. */
   const showPfCoach =
     !machineState.isRunning &&
     ((recoverReset && !lotHeld) || machineState.cycleMaterialist);
@@ -777,7 +777,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                   <p className="text-xs font-bold text-amber-950 dark:text-amber-100">
                     {e050Lot
                       ? t('lot_recover_title_e050')
-                      : t('lot_recover_title_c2')}
+                      : t('lot_recover_title_recovery')}
                   </p>
                   <p className="text-[11px] text-amber-900/80 dark:text-amber-200/80 mt-0.5">
                     {processHint}
@@ -1143,7 +1143,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               disabled={!onMachineHome || machineState.isRunning}
               title={
                 processStep === 'home'
-                  ? t('lot_recover_hint_c1_home')
+                  ? t('btn_machine_home_hint')
                   : t('btn_machine_home_hint')
               }
               className={`flex w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-2.5 text-xs font-bold transition shadow-2xs ${
