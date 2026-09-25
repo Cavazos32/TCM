@@ -71,10 +71,6 @@ export function machineHome() {
   }>('/api/machine/home');
 }
 
-export function confirmError() {
-  return post('/api/error/confirm');
-}
-
 export function resetError(opts?: { confirm?: boolean; doHome?: boolean }) {
   return post('/api/error/reset', {
     confirm: opts?.confirm ?? true,
