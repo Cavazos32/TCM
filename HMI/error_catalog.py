@@ -11,10 +11,8 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-# Legacy classification kept only as catalog metadata for compatibility.
-# It must not select machine recovery behavior.
-
-# code, module, byte, enum, description, 
+# The catalog contains only EXXX identity and display data.
+# code, module, byte, enum, description
 _ROWS: tuple[tuple[str, str, int, str, str], ...] = (
     ("E001", "Motion", 0x11, "MOT_ERR_ENCODER_R", "Encoder R; no cambio de valor"),
     ("E002", "Motion", 0x15, "MOT_ERR_LENGTH_NG_L", "Encoder L; longitud fuera de tolerancia"),
