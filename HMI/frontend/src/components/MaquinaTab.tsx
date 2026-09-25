@@ -261,9 +261,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
   const plcConnected = plcState.connection.connected;
   const plcHasError = !!plcState.hasError && plcConnected;
   const pfConnected = preFeederState.connection.connected;
-  const pfHasError = !!preFeederState.hasError && pfConnected;
   // Module Controls keeps independent PF diagnostics; machine RESET owns the global EXXX latch.
-  // Un EXXX de Motion/PLC no debe bloquear el Res del PreFeeder.
   const pfResetDisabled = !onPfReset || !pfConnected;
   const recoveryStage =
     machineState.recoveryPrompt ||
