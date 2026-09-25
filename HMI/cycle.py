@@ -1302,7 +1302,7 @@ class CycleRunner:
             return
         self._raise_fault("E068")
 
-    def _raise_fault(self, slug_or_code: str, err_class: str = "") -> None:
+    def _raise_fault(self, slug_or_code: str) -> None:
         """Latchea fallo EXXX vía política HMI (Set flip-flop)."""
         # Si Motion ya latcheó un EXXX (p.ej. E023 CAN), no pisar con genérico de ciclo.
         if self._fault:
@@ -1311,8 +1311,6 @@ class CycleRunner:
             if self._host.apply_detail_error(slug_or_code):
                 return
         self._fault = format_ui(slug_or_code, fallback=slug_or_code)
-        if err_class:
-            self._set_state(TX_ERROR, self._fault)
 
     def apply_error_policy(
         self,
