@@ -1651,16 +1651,13 @@ class HmiState:
             pass
 
     def _apply_detail_error(self, code_or_byte: str | int, *, source: str = "") -> bool:
-        """
-        Set flip-flop + política C1/C2/C3.
-        True si se aplicó un EXXX conocido.
-        """
+        """Latch one EXXX and enter the common ERROR hold."""
         result = self._error_policy.set_error(code_or_byte)
         if result is None:
             return False
+
         ui = result["ui"]
-        cls = result["class"]
-        action = result["action"]
+        code = result["code"]
         if result.get("duplicate"):
             return True
 
@@ -1678,27 +1675,19 @@ class HmiState:
             _append_log(self._main_log, ui)
 
         self._set_banner(ui, "error")
-        # Caída de enlace: no bombardear TCP (el socket ya está muerto → spam E06x).
-        link_codes = {"E065", "E066", "E067"}
+
         e050_lot = (
-            result.get("code") == "E050"
+            code == "E050"
             and self._cycle.is_active()
             and not self._cycle.is_refill_active()
         )
-        if result.get("code") in link_codes:
-            self._cycle.apply_error_policy(
-                "link_down", ui, cls, result.get("recovery", "")
-            )
-        elif e050_lot:
-            self._cycle.apply_e050_policy(
-                ui,
-                cls,
-                result.get("recovery", ""),
-            )
+        if e050_lot:
+            self._cycle.apply_e050_policy(ui)
         else:
-            self._cycle.apply_error_policy(
-                action, ui, cls, result.get("recovery", "")
-            )
+            self._cycle.apply_error_policy("error_state", ui)
+
+        # 0x46 is the TCM/Andon machine state only. Healthy module states are not
+        # converted to ERROR merely because the machine sequence stopped.
         self._broadcast_machine_state(MACH_ERROR)
         self._notify()
         return True
