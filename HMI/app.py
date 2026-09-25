@@ -301,7 +301,7 @@ def api_cycle_reset():
         get_state().cmd_error_reset(
             confirm=bool(body.get("confirm", False)),
             # Hard Reset máquina → ASDA move to 0 (CMD_MOVE_ZERO) + Reset PLC.
-            do_home=bool(body.get("doHome", True)),
+            do_home=bool(body.get("doHome", False)),
         )
     )
 
