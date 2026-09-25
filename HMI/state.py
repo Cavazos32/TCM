@@ -2437,8 +2437,14 @@ class HmiState:
             self._notify()
 
     def _motion_is_healthy(self) -> bool:
-        """Motion OK en caché HMI: enlace up y no ErrorState."""
+        """Motion source condition: link up, a known state, and not ErrorState."""
         if not self._motion.get("connected"):
+            return False
+        b = self._last_state_byte
+        if b is None:
+            return False
+        return b != TX_ERROR
+
             return False
         b = self._last_state_byte
         if b is None:
