@@ -781,7 +781,7 @@ class CycleRunner:
                 self._recovery_after_error = False
                 self._recovery = self._e050_normal_recovery
                 self._host.cycle_log("E050: NO Materialist → recuperación normal del error")
-                self.apply_error_policy("finish_step", self._fault, self._fault_class, self._e050_normal_recovery)
+                self.apply_error_policy("error_state", self._fault, "", self._e050_normal_recovery)
                 self._host.cycle_notify()
                 return {"ok": True, "materialist": False, "normalRecovery": True}
             if not self._host.clear_e050_latch_for_materialist():
