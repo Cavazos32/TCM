@@ -295,7 +295,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
   const recoverReset = pfRecoverStep === 'reset';
   const recoverGo = pfRecoverStep === 'go';
   const recoverGoResume = recoverGo && !!resumeEnabled;
-  const machineResetDisabled = recoverReset;
+  const machineResetDisabled = false;
   // Reset local PF (0x02C) desde Module Controls: siempre si hay enlace.
   // Un EXXX de Motion/PLC no debe bloquear el Res del PreFeeder.
   const pfResetDisabled = !onPfReset || !pfConnected;
@@ -1185,9 +1185,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               className={`flex w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-2.5 text-xs font-bold transition shadow-2xs ${
                 !onMachineHome || machineState.isRunning
                   ? 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed'
-                  : processStep === 'home'
-                    ? 'border-emerald-400 bg-emerald-100 dark:bg-emerald-950/50 text-emerald-900 dark:text-emerald-100 ring-2 ring-emerald-300 ring-offset-1 animate-pulse'
-                    : 'border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 active:scale-[0.98]'
+                  : 'border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 active:scale-[0.98]'
               }`}
             >
               <Home className="h-3.5 w-3.5" />
