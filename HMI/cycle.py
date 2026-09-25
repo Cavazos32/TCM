@@ -574,7 +574,6 @@ class CycleRunner:
                 "completed": self._last_ok and not self._active,
                 "lastOk": self._last_ok,
                 "fault": self._fault,
-                "faultClass": self._fault_class,
                 "recovery": self._recovery,
                 "recoveryAfterError": self._recovery_after_error,
                 "recoveryPrompt": (
@@ -586,7 +585,6 @@ class CycleRunner:
                 "e050FinishPiece": self._e050_finish_piece,
                 "e050MaterialistWait": self._e050_materialist_wait,
                 "refillSkipCut": bool(self._refill_skip_cut and self._refill_mode),
-                "c3Pending": self._c3_stop_after_step or self._c3_finish_piece,
                 "config": self._cfg.to_dict(),
                 "flow": FLOW_STEPS,
             }
