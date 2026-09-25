@@ -1467,13 +1467,8 @@ class HmiState:
         return self.cmd_error_reset(confirm=False, do_home=True)
 
     def cmd_error_confirm(self) -> dict:
-        """Confirma diálogo C1 (antes de Reset/home)."""
-        ok = self._error_policy.confirm()
-        if not ok:
-            return {"ok": False, "error": "Sin error C1 pendiente de confirmar"}
-        _append_log(self._main_log, f"Confirmado · {self._error_policy.latch.ui_text}")
-        self._notify()
-        return {"ok": True, "error": self._error_policy.snapshot()}
+        """Legacy endpoint: class-specific confirmation is no longer used."""
+        return {"ok": False, "error": "Confirmation removed; use RESET"}
 
     def _plc_reset_reflect_off(self, *, log_label: str = "Reset PLC") -> bool:
         """Reset PLC 0x1E y refleja válvulas OFF en caché HMI. Soft C2/C3 no usa esto."""
@@ -2441,15 +2436,13 @@ class HmiState:
             return {"ok": False, "error": str(exc)}
 
     def _clear_link_error_if(self, code: str) -> None:
-        """Si el latch activo es solo de enlace TCP, límpialo al recuperar el socket."""
-        latch = self._error_policy.latch
-        if latch.active and latch.code == code:
-            self._error_policy.clear()
-            try:
-                self._cycle.clear_fault_mirror()
-            except Exception:
-                pass
-            _append_log(self._main_log, f"Enlace recuperado · {code}")
+        """Link recovery never clears the EXXX latch automatically."""
+        if self._error_policy.latch.active and self._error_policy.latch.code == code:
+            _append_log(
+                self._main_log,
+                f"Enlace recuperado · {code} — RESET requerido para liberar ERROR",
+            )
+            self._notify()
 
     def _motion_is_healthy(self) -> bool:
         """Motion OK en caché HMI: enlace up y no ErrorState."""
@@ -2568,53 +2561,8 @@ class HmiState:
         return True
 
     def _try_auto_clear_error_if_healthy(self) -> bool:
-        """Res observacional: limpia latch HMI si la causa ya no existe en módulo.
-
-        No manda Reset/All Off a esclavos (preserva setup). Con ciclo activo
-        (C2/C3 Pause u otro) el Res sigue siendo explícito.
-        No aplica a E068 ni si el último lote abortó (PF Idle no borra el EXXX).
-        Espera AUTO_RES_MIN_AGE_SEC tras el Set para no ganar la carrera
-        Idle→ErrorState del esclavo.
-        """
-        latch = self._error_policy.latch
-        if not latch.active:
-            return False
-        try:
-            if self._cycle.is_active():
-                return False
-        except Exception:
-            return False
-        # Lote abortado: In process OFF deja PF Idle; no borrar el EXXX.
-        try:
-            if self._cycle.abort_needs_ack():
-                return False
-        except Exception:
-            pass
-        if (latch.code or "") == "E068":
-            return False
-        set_at = float(getattr(latch, "set_at", 0) or 0)
-        if set_at and (time.monotonic() - set_at) < AUTO_RES_MIN_AGE_SEC:
-            return False
-        if not self._latch_source_is_healthy():
-            return False
-        mod = (latch.module or "").lower()
-        if "motion" in mod:
-            return self._clear_latch_for_module("motion", auto=True)
-        if "plc" in mod:
-            return self._clear_latch_for_module("plc", auto=True)
-        if "pre" in mod or "feeder" in mod:
-            return self._clear_latch_for_module("prefeeder", auto=True)
-        old = self._error_policy.clear()
-        try:
-            self._cycle.clear_fault_mirror()
-        except Exception:
-            pass
-        ui = old.ui_text or old.code or "error"
-        _append_log(self._main_log, f"Res auto · {ui} (máquina/módulos OK)")
-        self._banner = {"text": "Listo.", "kind": "ok"}
-        self._broadcast_machine_state(MACH_RESET)
-        self._broadcast_machine_state(MACH_IDLE)
-        return True
+        """Automatic error clearing is intentionally disabled."""
+        return False
 
     def _clear_latch_for_module(self, source: str, *, auto: bool = False) -> bool:
         """Res del flip-flop HMI si el EXXX activo pertenece a ese módulo.
