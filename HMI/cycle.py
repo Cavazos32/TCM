@@ -1330,12 +1330,12 @@ class CycleRunner:
     def apply_e050_policy(
         self,
         ui: str,
-        recovery: str = "retry_process",
+        recovery: str = "recovery",
     ) -> dict[str, Any]:
         """E050 durante lote: primero pregunta si requiere Materialist."""
         self._fault = ui
         self._recovery = "e050_materialist"
-        self._e050_normal_recovery = recovery or "retry_process"
+        self._e050_normal_recovery = recovery or "recovery"
         self._e050_finish_piece = False
         self._e050_materialist_requested = False
         self._e050_materialist_wait = False
