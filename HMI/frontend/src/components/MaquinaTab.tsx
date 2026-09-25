@@ -272,10 +272,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
   const showRecoveryTrack = !!recoveryStage;
   const e050Lot = !!machineState.e050Lot;
   const skipCut = !!machineState.refillSkipCut;
-  const lotHeld =
-    machineState.cycleActive ||
-    machineState.recoveryAfterError ||
-    machineState.isPaused;
+  const lotHeld = machineState.cycleActive || machineState.recoveryAfterError || machineState.isPaused;
 
   const processStep: string = e050Lot
     ? recoveryStage === 'e050_insufficient' ||
@@ -377,11 +374,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                 ? recoveryHint
                 : t('lot_recover_hint_e050_reset')
     : processStep === 'reset'
-      ? recoverReset
-        ? t('lot_recover_hint_reset_pf')
-        : lotHeld
-          ? t('lot_recover_hint_reset')
-          : t('lot_recover_hint_reset_idle')
+      ? t('lot_recover_hint_reset')
       : processStep === 'resume'
         ? t('lot_recover_hint_resume')
         : processStep === 'piece'
@@ -395,22 +388,19 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                 : t('lot_recover_hint_reset');
   /** Indicaciones PF solo si no hay lote. */
   const showPfCoach =
-    !machineState.isRunning &&
-    ((recoverReset && !lotHeld) || machineState.cycleMaterialist);
+    !machineState.isRunning && machineState.cycleMaterialist;
   const startDisabled =
     hasFault ||
     machineState.isRunning ||
-    machineState.refillActive ||
-    recoverReset;
+    machineState.refillActive;
   const resumeDisabled =
     hasFault ||
     !resumeEnabled ||
     machineState.refillAwaitingConfirm ||
     machineState.recoveryAwaitingConfirm ||
-    machineState.refillActive ||
-    recoverReset;
-  // Error activo: no producir. Tras Reset, Materialist + JOG deben poder alimentar.
-  const pfProdLocked = recoverReset;
+    machineState.refillActive;
+  // Error activo: no producir. Materialist + JOG permanecen disponibles como antes.
+  const pfProdLocked = hasFault;
   const pfInMaterialist = machineState.cycleMaterialist;
   const pfMode = pfInMaterialist
     ? 'materialist'
@@ -777,7 +767,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                   <p className="text-xs font-bold text-amber-950 dark:text-amber-100">
                     {e050Lot
                       ? t('lot_recover_title_e050')
-                      : t('lot_recover_title_recovery')}
+                      : t('lot_recover_title_c2')}
                   </p>
                   <p className="text-[11px] text-amber-900/80 dark:text-amber-200/80 mt-0.5">
                     {processHint}
@@ -1002,16 +992,14 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
             {showPfCoach && (
               <div className="rounded-md border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-2 py-1.5 text-[10px] leading-snug text-amber-900 dark:text-amber-100">
                 <p className="font-bold uppercase tracking-wide">
-                  {recoverReset ? t('pf_recover_title') : t('status_materialist')}
+                  {t('status_materialist')}
                 </p>
                 <p className="mt-0.5">
-                  {recoverReset
-                    ? t('pf_recover_hint_reset')
-                    : resumeEnabled
+                  {resumeEnabled
                       ? t('pf_recover_hint_jog_resume')
                       : t('pf_recover_hint_jog')}
                 </p>
-                {recoverReset && (
+                {false && (
                   <p className="mt-1 font-mono text-[10px] text-amber-800 dark:text-amber-200">
                     <span className="font-bold underline">{t('pf_recover_step_reset')}</span>
                     {' → '}
@@ -1029,9 +1017,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               onClick={onStart}
               disabled={startDisabled}
               title={
-                recoverReset
-                  ? t('pf_recover_hint_reset')
-                  : showErrorProcess
+                showErrorProcess
                     ? processHint
                     : machineState.cycleMaterialist
                       ? t('err_materialist_start')
@@ -1071,16 +1057,13 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
             <button
               id="btn-reset-maquina"
               onClick={onReset}
-              disabled={machineResetDisabled}
               title={
-                recoverReset
                   ? t('pf_recover_hint_reset')
                   : showMachineResetCoach
                     ? t('lot_recover_hint_reset')
                     : undefined
               }
               className={`flex w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-2.5 text-xs font-semibold transition shadow-2xs disabled:opacity-40 disabled:cursor-not-allowed ${
-                showMachineResetCoach && !machineResetDisabled
                   ? 'border-amber-400 bg-amber-100 dark:bg-amber-950/60 text-amber-950 dark:text-amber-100 ring-2 ring-amber-300 ring-offset-1 animate-pulse'
                   : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 text-slate-700 dark:text-slate-200'
               }`}
@@ -1094,16 +1077,14 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               onClick={onResume}
               disabled={resumeDisabled}
               title={
-                recoverReset
-                  ? t('pf_recover_hint_reset')
-                  : showMachineResumeCoach
+                showMachineResumeCoach
                     ? t('lot_recover_hint_resume')
                     : showMachineResetCoach
                       ? t('lot_recover_hint_reset')
                       : undefined
               }
               className={`group flex w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-2.5 text-xs font-semibold transition shadow-2xs disabled:opacity-40 disabled:cursor-not-allowed ${
-                recoverGoResume || showMachineResumeCoach
+                showMachineResumeCoach
                   ? 'border-emerald-400 bg-emerald-100 dark:bg-emerald-950/50 text-emerald-900 dark:text-emerald-100 ring-2 ring-emerald-300 ring-offset-1 animate-pulse'
                   : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 text-slate-700 dark:text-slate-200'
               }`}
@@ -1356,7 +1337,6 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
         ) : null}
         {showPfCoach ? (
           <p className="mt-3 text-xs text-amber-800 dark:text-amber-200">
-            {recoverReset
               ? t('pf_recover_hint_reset')
               : resumeEnabled
                 ? t('pf_recover_hint_jog_resume')
@@ -1377,7 +1357,8 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                 onClick={onPfStart}
                 disabled={!onPfStart || !pfConnected}
                 className={`${btnBase} ${
-                  recoverGo && !resumeEnabled
+                  false &&
+                  !resumeEnabled
                     ? 'border-emerald-400 bg-emerald-100 dark:bg-emerald-950/50 text-emerald-900 dark:text-emerald-100 ring-2 ring-emerald-300 ring-offset-1'
                     : 'border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100'
                 } disabled:opacity-40`}
@@ -1401,12 +1382,12 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                 onClick={onPfReset}
                 disabled={pfResetDisabled}
                 title={
-                  recoverReset || pfHasError
+                  pfHasError
                     ? t('pf_recover_hint_reset')
                     : undefined
                 }
                 className={`${btnBase} ${
-                  recoverReset || pfHasError
+                  pfHasError
                     ? 'border-amber-400 bg-amber-100 dark:bg-amber-950/60 text-amber-950 dark:text-amber-100 ring-2 ring-amber-300 ring-offset-1 animate-pulse'
                     : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50'
                 } disabled:opacity-40`}

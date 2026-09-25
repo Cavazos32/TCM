@@ -1533,12 +1533,7 @@ class HmiState:
         }
 
     def cmd_error_reset(self, confirm: bool = False, do_home: bool = False) -> dict:
-        """Machine RESET: reset affected modules, validate the real fault, never HOME.
-
-        RESET only releases the HMI latch when the source condition is confirmed
-        clear. An active lot remains in recovery/paused state; the operator must
-        press Resume after a successful reset.
-        """
+        """Machine RESET: reset source, validate source, never HOME."""
         latch = self._error_policy.latch
         if not latch.active:
             self._cycle.request_reset()
@@ -1552,9 +1547,8 @@ class HmiState:
         module = (latch.module or "").lower()
         active_lot = self._cycle.is_active()
 
-        # RESET de máquina rearma los módulos necesarios. Si el error pertenece
-        # a un módulo, su reset debe aceptar el comando; los módulos sanos no se
-        # convierten en ERROR.
+        # Software Cycle-level errors have no independent hardware reset.
+        source_is_software = "cycle" in module
         module_reset_ok = True
         if "motion" in module:
             module_reset_ok = bool(self._client.cmd_reset_errors())
@@ -1583,16 +1577,27 @@ class HmiState:
                 "homeOk": None,
             }
 
-        # Refresh the relevant module state before deciding whether the fault is gone.
-        if "pre" in module or "feeder" in module:
+        # Refresh source state before validating.
+        if "motion" in module:
+            try:
+                self._client.cmd_status()
+            except Exception:
+                pass
+        elif "plc" in module:
+            try:
+                self._plc_client.cmd_status()
+            except Exception:
+                pass
+        elif "pre" in module or "feeder" in module:
             try:
                 self._pf_client.cmd_status()
             except Exception:
                 pass
 
-        healthy = self._latch_source_is_healthy()
+        # Cycle errors are explicitly acknowledged by RESET; module errors
+        # require the source cache to show the condition is gone.
+        healthy = True if source_is_software else self._latch_source_is_healthy()
         if not healthy:
-            # Keep the latch and ERROR. No Idle/Resume window.
             self._set_banner(ui, "error")
             self._broadcast_machine_state(MACH_ERROR)
             self._notify()
@@ -1607,7 +1612,6 @@ class HmiState:
         old = self._error_policy.clear()
         self._cycle.clear_fault_mirror()
 
-        # Reset does not HOME. The normal state depends on whether a lot is alive.
         if active_lot:
             self._cycle.request_pause()
             self._broadcast_machine_state(MACH_RESET)
@@ -2533,7 +2537,7 @@ class HmiState:
         return not self._pf_cached_has_fault()
 
     def _latch_source_is_healthy(self) -> bool:
-        """Validate the actual source condition represented by the EXXX latch."""
+        """Validate cached source state after an explicit module RESET."""
         latch = self._error_policy.latch
         if not latch.active:
             return True
@@ -2548,15 +2552,21 @@ class HmiState:
         if "pre" in mod or "feeder" in mod:
             return self._pf_is_healthy()
 
-        # Cycle/Main/Andon errors have no independent module fault signal.
-        # Their reset is valid once the relevant sequence is no longer active.
-        if code.startswith("E06") or code == "E068":
-            return (
-                self._motion.get("connected")
-                and self._plc.get("connected")
-                and self._pf.get("connected")
-            )
-        return not self._cycle.is_active()
+        # Cycle-level errors are acknowledged by the explicit machine RESET.
+        if "cycle" in mod:
+            return True
+
+        # Main/link errors are cleared only after the affected links recover.
+        if code == "E065":
+            return bool(self._motion.get("connected"))
+        if code == "E066":
+            return bool(self._plc.get("connected"))
+        if code == "E067":
+            return bool(self._pf.get("connected"))
+
+        # No module-specific health API is currently available for other
+        # machine-level sources; a subsequent source event will re-latch EXXX.
+        return True
 
     def _cancel_link_down(self, key: str) -> None:
         self._link_down_gen[key] = self._link_down_gen.get(key, 0) + 1
