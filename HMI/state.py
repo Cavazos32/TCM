@@ -2558,31 +2558,17 @@ class HmiState:
         return False
 
     def _clear_latch_for_module(self, source: str, *, auto: bool = False) -> bool:
-        """Res del flip-flop HMI si el EXXX activo pertenece a ese módulo.
+        """Explicit module reset helper.
 
-        Reset local del módulo (Module Controls / pestaña) deja el esclavo en OK
-        pero sin esto el HMI seguía en ERROR aunque Motion/PLC/PF digan bien.
-        auto=True: Res observacional (módulo ya OK; no implica Reset TCP).
+        The global machine EXXX latch is not cleared automatically. This helper
+        is retained only for explicit module-reset paths and performs no
+        observable recovery branching.
         """
+        if auto:
+            return False
         latch = self._error_policy.latch
         if not latch.active:
             return False
-        if auto:
-            # Res observacional: solo sin ciclo. C2/C3 en Pause exige Reset explícito.
-            try:
-                if self._cycle.is_active():
-                    return False
-            except Exception:
-                pass
-            try:
-                if self._cycle.abort_needs_ack() or (latch.code or "") == "E068":
-                    return False
-            except Exception:
-                if (latch.code or "") == "E068":
-                    return False
-            set_at = float(getattr(latch, "set_at", 0) or 0)
-            if set_at and (time.monotonic() - set_at) < AUTO_RES_MIN_AGE_SEC:
-                return False
         mod = (latch.module or "").lower()
         src = (source or "").lower()
         if src == "motion" and "motion" not in mod:
@@ -2596,55 +2582,17 @@ class HmiState:
         if src not in ("motion", "plc", "prefeeder", "pre-feeder", "pf"):
             return False
         old = self._error_policy.clear()
-        # Siempre limpiar espejo del ciclo (también con lote ya terminado).
-        try:
-            self._cycle.clear_fault_mirror()
-        except Exception:
-            pass
+        self._cycle.clear_fault_mirror()
         ui = old.ui_text or old.code or source
-        if auto:
-            _append_log(self._main_log, f"Res auto · {ui} ({source} OK)")
-            self._banner = {"text": "Listo.", "kind": "ok"}
-        else:
-            _append_log(self._main_log, f"Res · {ui} (reset módulo {source})")
-            self._banner = {"text": "Errores reseteados", "kind": "ok"}
+        _append_log(self._main_log, f"Res módulo · {ui} ({source})")
+        self._banner = {"text": "Errores reseteados", "kind": "ok"}
         if src == "motion":
-            if auto and self._last_state_byte in (TX_IDLE, TX_RETURN):
-                text = STATE_TEXT.get(
-                    self._last_state_byte, "Motion en espera (0x010)"
-                )
-                self._set_motion_status(text, "ok")
-            else:
-                self._set_motion_status("Errores limpiados (0x016)", "ok")
+            self._set_motion_status("Errores limpiados (0x016)", "ok")
         elif src == "plc":
-            if auto:
-                b = self._plc.get("last_state_byte")
-                text = PLC_STATE_TEXT.get(b, "PLC en espera (0x025)") if b else "Listo."
-                self._set_plc_status(text, "ok")
-            else:
-                self._set_plc_status("Errores reseteados", "ok")
-        elif src in ("prefeeder", "pre-feeder", "pf"):
-            self._refresh_pf_status_from_state()
-        # Si el lote sigue vivo (C2/C3 Pause): soft clear, no mandar Idle a Andon.
-        soft = False
-        try:
-            if self._cycle.is_active() and (
-                self._cycle.snapshot().get("paused")
-                or old.recovery in ("restart_from_0", "retry_process")
-            ):
-                soft_res = self._cycle.clear_error_for_resume(old.recovery or "")
-                soft = bool(soft_res.get("ok"))
-        except Exception:
-            soft = False
-        self._broadcast_machine_state(MACH_RESET)
-        if soft:
-            self._broadcast_machine_state(MACH_PAUSE)
-            self._banner = {
-                "text": "Errores reseteados — Resume para terminar la pieza",
-                "kind": "ok",
-            }
+            self._set_plc_status("Errores reseteados", "ok")
         else:
-            self._broadcast_machine_state(MACH_IDLE)
+            self._refresh_pf_status_from_state()
+        self._notify()
         return True
 
     def _cancel_link_down(self, key: str) -> None:
