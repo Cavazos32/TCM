@@ -2563,10 +2563,6 @@ class HmiState:
             )
         return not self._cycle.is_active()
 
-    def _try_auto_clear_error_if_healthy(self) -> bool:
-        """Legacy hook kept inert: EXXX is released only by explicit machine RESET."""
-        return False
-
     def _cancel_link_down(self, key: str) -> None:
         self._link_down_gen[key] = self._link_down_gen.get(key, 0) + 1
 
