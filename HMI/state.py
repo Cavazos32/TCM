@@ -2996,9 +2996,6 @@ class HmiState:
 
     def _apply_state_byte(self, byte_code: int) -> None:
         if byte_code == self._last_state_byte:
-            # Mismo Idle/OK repetido: aún así Res observacional si EXXX quedó colgado.
-            if byte_code != TX_ERROR:
-                self._try_auto_clear_error_if_healthy()
             return
         prev = self._last_state_byte
         self._last_state_byte = byte_code
@@ -3007,10 +3004,8 @@ class HmiState:
             # Módulo salió de ErrorState → Res del EXXX Motion en HMI (evita
             # ERROR global con Motion en espera / OK).
             if prev == TX_ERROR:
-                # Solo si no hay ciclo: con lote C2/C3 el EXXX se queda hasta Reset.
-
-            else:
-                self._try_auto_clear_error_if_healthy()
+                # EXXX remains latched until explicit machine RESET.
+                pass
         text = STATE_TEXT.get(byte_code, f"Estado 0x{byte_code:02X}")
         kind = "info"
         if byte_code == TX_ERROR:
@@ -3021,7 +3016,6 @@ class HmiState:
             kind = "warn"
             self._stopped_pending_resume = True
             text = f"{text} — reanudar disponible"
-            self._try_auto_clear_error_if_healthy()
         elif byte_code == TX_RETURN:
             kind = "ok"
             self._stopped_pending_resume = False
@@ -3034,7 +3028,6 @@ class HmiState:
             lat_mark("9", source="motion", state="BUSY")
             if self._move_target_mm is not None and self._progress < 5:
                 self._progress = 5
-            self._try_auto_clear_error_if_healthy()
         self._set_banner(text, kind)
         self._set_motion_status(text, kind)
         # Arranque ASDA solo cuando Motion ya reportó Init/Idle (no al abrir socket).
