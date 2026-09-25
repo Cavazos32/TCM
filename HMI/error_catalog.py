@@ -5,7 +5,6 @@ Los ErrorState de módulo (0x0C / 0x27 / 0x3C / 0x46) NO son EXXX: informan
 estado a otros módulos sin detalle.
 
 UI: \"EXXX: Module, Descripción\"
-Clases: C1 stop inmediato · C2 pausar · C3 terminar paso seguro
 """
 
 from __future__ import annotations
@@ -15,7 +14,7 @@ from typing import Any, Optional
 # Legacy classification kept only as catalog metadata for compatibility.
 # It must not select machine recovery behavior.
 
-# code, module, byte, enum, description, legacy_class
+# code, module, byte, enum, description, 
 _ROWS: tuple[tuple[str, str, int, str, str], ...] = (
     ("E001", "Motion", 0x11, "MOT_ERR_ENCODER_R", "Encoder R; no cambio de valor"),
     ("E002", "Motion", 0x15, "MOT_ERR_LENGTH_NG_L", "Encoder L; longitud fuera de tolerancia"),
