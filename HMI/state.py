@@ -1434,6 +1434,9 @@ class HmiState:
             off = self.cmd_cycle_materialist(False)
             if not off.get("ok"):
                 return off
+        if self._pf_client.connected:
+            if not self._manual_pf(lambda: self._pf_client.cmd_start()):
+                return {"ok": False, "error": "PreFeeder no aceptó Start"}
         res = self._cycle.request_start(mm, use_qty, rpm)
         if not res.get("ok"):
             err = str(res.get("error") or "Start rechazado")
@@ -1456,6 +1459,9 @@ class HmiState:
     def cmd_resume(self) -> dict:
         snap = self._cycle.snapshot()
         if snap.get("paused"):
+            if self._pf_client.connected:
+                if not self._manual_pf(lambda: self._pf_client.cmd_start()):
+                    return {"ok": False, "error": "PreFeeder no aceptó Start/Init"}
             return self._cycle.request_resume()
         return {"ok": self._manual_motion(lambda: self._client.cmd_resume())}
 
