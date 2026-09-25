@@ -16,7 +16,6 @@ from typing import Any, Optional
 # It must not select machine recovery behavior.
 
 # code, module, byte, enum, description, legacy_class
-_LEGACY = "legacy"
 _ROWS: tuple[tuple[str, str, int, str, str], ...] = (
     ("E001", "Motion", 0x11, "MOT_ERR_ENCODER_R", "Encoder R; no cambio de valor"),
     ("E002", "Motion", 0x15, "MOT_ERR_LENGTH_NG_L", "Encoder L; longitud fuera de tolerancia"),
