@@ -14,9 +14,9 @@ from typing import Any, Optional
 
 # Legacy classification kept only as catalog metadata for compatibility.
 # It must not select machine recovery behavior.
-CLASS_C1 = "C1"
-CLASS_C2 = "C2"
-CLASS_C3 = "C3"
+LEGACY_CLASS_C1 = "C1"
+LEGACY_CLASS_C2 = "C2"
+LEGACY_CLASS_C3 = "C3"
 
 # code, module, byte, enum, description, legacy_class
 _ROWS: tuple[tuple[str, str, int, str, str, str], ...] = (
@@ -94,7 +94,7 @@ for _code, _mod, _byte, _enum, _desc, _cls in _ROWS:
         "byte": _byte,
         "enum": _enum,
         "description": _desc,
-        "class": _cls,
+        "legacy_class": _cls,
     }
     BY_CODE[_code] = _entry
     BY_BYTE[_byte] = _entry
