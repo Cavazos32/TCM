@@ -56,7 +56,7 @@ export function pauseCycle() {
 export function resetCycle(opts?: { confirm?: boolean; doHome?: boolean }) {
   return post('/api/cycle/reset', {
     confirm: !!opts?.confirm,
-    doHome: opts?.doHome ?? true,
+    doHome: opts?.doHome ?? false,
   });
 }
 
@@ -78,7 +78,7 @@ export function confirmError() {
 export function resetError(opts?: { confirm?: boolean; doHome?: boolean }) {
   return post('/api/error/reset', {
     confirm: opts?.confirm ?? true,
-    doHome: opts?.doHome ?? true,
+    doHome: opts?.doHome ?? false,
   });
 }
 
