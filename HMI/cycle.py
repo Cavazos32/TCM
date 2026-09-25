@@ -478,9 +478,7 @@ class CycleRunner:
         self._last_ok = False
         self._abort_needs_ack = False
         self._fault = ""
-        self._pause_after_error_step = False  # legado: pausar en próximo _enter
         # recovery en lote: completar pieza en curso (hasta post_piece / corte) y pausar.
-        self._finish_piece_after_error = False
         self._recovery = ""  # common lot recovery context | e050_materialist
         # Tras error recovery: lote vivo → Reset → Resume → pieza → review → purga → Continuar.
         self._recovery_after_error = False
@@ -660,8 +658,6 @@ class CycleRunner:
         self._pause.clear()
         self._aborted = False
         self._fault = ""
-        self._pause_after_error_step = False
-        self._finish_piece_after_error = False
         self._recovery = ""
         self._clear_recovery_gate()
         self._restart_piece = False
@@ -839,8 +835,6 @@ class CycleRunner:
         self._pause.clear()
         self._aborted = False
         self._fault = ""
-        self._pause_after_error_step = False
-        self._finish_piece_after_error = False
         self._recovery = ""
         self._last_ok = False
         self._refill_confirm.clear()
@@ -922,8 +916,6 @@ class CycleRunner:
         self._aborted = False
         self._stop.clear()
         self._fault = ""
-        self._pause_after_error_step = False
-        self._finish_piece_after_error = False
         self._recovery = ""
         self._clear_recovery_gate()
         self._restart_piece = False
@@ -1320,8 +1312,6 @@ class CycleRunner:
         """Enter the unified ERROR hold; error/recovery do not select recovery."""
         self._fault = ui
         self._recovery = recovery
-        self._pause_after_error_step = False
-        self._finish_piece_after_error = False
         self._recovery_after_error = self.is_active()
         self._resume_need_buffer_full = False
         self._pause.set()
@@ -1346,8 +1336,6 @@ class CycleRunner:
         self._fault = ui
         self._recovery = "e050_materialist"
         self._e050_normal_recovery = recovery or "retry_process"
-        self._pause_after_error_step = False
-        self._finish_piece_after_error = False
         self._e050_finish_piece = False
         self._e050_materialist_requested = False
         self._e050_materialist_wait = False
@@ -3514,11 +3502,9 @@ class CycleRunner:
                         # Set del EXXX aquí: un break mudo dejaba Andon en Error y HMI verde.
                         if (
                             self._use_prefeeder()
-                            and not self._finish_piece_after_error
                             and self._host.pf_has_fault()
                         ):
                             self._raise_current_pf_fault("Corte: PreFeeder en error")
-                            if self._finish_piece_after_error:
                                 self._host.cycle_log(
                                     "recovery: completar corte pese a EXXX PF"
                                 )
@@ -3747,7 +3733,6 @@ class CycleRunner:
                                 # recovery: pieza ya cortada — no abortar; ir a post_piece → Pause.
                                 # Abortar aquí hacía break del while y el for seguía
                                 # disparando Tfeed/Feed en las piezas restantes.
-                                if self._finish_piece_after_error:
                                     self._host.cycle_log(
                                         "∥ Join: prefetch falló — recovery sigue a "
                                         "post_piece (Pause; Reset→Resume)"
