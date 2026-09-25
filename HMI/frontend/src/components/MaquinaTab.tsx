@@ -308,18 +308,11 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
   const showRecoveryTrack = !!recoveryStage;
   const e050Lot = !!machineState.e050Lot;
   const skipCut = !!machineState.refillSkipCut;
-  const faultCls = (machineState.faultClass || '').toUpperCase();
-  const machineC1 =
-    !e050Lot && (faultCls === 'C1' || !!machineState.errorNeedsHome);
   const lotHeld =
     machineState.cycleActive ||
     machineState.recoveryAfterError ||
     machineState.isPaused;
-  const processKind: 'c1' | 'c2' | 'e050' = e050Lot
-    ? 'e050'
-    : machineC1
-      ? 'c1'
-      : 'c2';
+
   const processStep: string = e050Lot
     ? recoveryStage === 'e050_insufficient' ||
       recoveryStage === 'e050_finish_process'
@@ -337,12 +330,6 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               : resumeEnabled || machineState.isPaused
                 ? 'resume'
                 : ''
-    : machineC1
-    ? machineState.errorNeedsConfirm || hasFault
-      ? 'reset'
-      : machineState.errorNeedsHome
-        ? 'home'
-        : 'start'
     : recoveryStage === 'continue_cycle'
       ? 'continue'
       : recoveryStage === 'review_piece'
@@ -358,26 +345,22 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               : resumeEnabled || machineState.isPaused
                 ? 'resume'
                 : '';
+
   const showErrorProcess =
     hasFault ||
     machineState.recoveryAfterError ||
     e050Lot ||
-    showRecoveryTrack ||
-    !!(machineC1 && (machineState.errorNeedsHome || machineState.errorNeedsConfirm));
+    showRecoveryTrack;
   const showMachineResetCoach = showErrorProcess && processStep === 'reset';
   const showMachineResumeCoach = showErrorProcess && processStep === 'resume';
-  const c2Steps: { id: string; label: string }[] = [
+
+  const recoverySteps: { id: string; label: string }[] = [
     { id: 'reset', label: t('lot_recover_step_reset') },
     { id: 'resume', label: t('lot_recover_step_resume') },
     { id: 'piece', label: t('lot_recover_step_piece') },
     { id: 'review', label: t('lot_recover_step_review') },
     { id: 'purge', label: t('lot_recover_step_purge') },
     { id: 'continue', label: t('lot_recover_step_continue') },
-  ];
-  const c1Steps: { id: string; label: string }[] = [
-    { id: 'reset', label: t('lot_recover_step_reset') },
-    { id: 'home', label: t('lot_recover_step_home') },
-    { id: 'start', label: t('lot_recover_step_start') },
   ];
   const e050Steps: { id: string; label: string }[] = [
     { id: 'ask', label: t('lot_recover_step_ask') },
@@ -387,7 +370,8 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
     { id: 'review', label: t('lot_recover_step_review') },
     { id: 'empty', label: t('lot_recover_step_empty') },
   ];
-  const processSteps = e050Lot ? e050Steps : machineC1 ? c1Steps : c2Steps;
+  const processSteps = e050Lot ? e050Steps : recoverySteps;
+
   const showManualRefill =
     !machineState.recoveryAfterError &&
     !machineState.e050Lot &&
