@@ -1763,7 +1763,7 @@ class HmiState:
             return False
         old = self._error_policy.clear()
         self._cycle.clear_fault_mirror()
-        _append_log(self._main_log, f"E050: latch limpiado para Materialist · {old.ui_text}")
+        _append_log(self._main_log, f"E050: latch liberado para Materialist · {old.ui_text}")
         self._notify()
         return True
 
