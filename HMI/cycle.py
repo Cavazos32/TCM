@@ -990,46 +990,6 @@ class CycleRunner:
         # No borrar _recovery_after_error: el lote sigue en recuperación.
         self._abort_needs_ack = False
 
-    def clear_error_for_resume(self, recovery: str = "") -> dict[str, Any]:
-        """Res suave recovery: limpia fault; mantiene lote vivo.
-
-        - recovery (ya en Pause): sigue en Pause → operador Resume.
-        - recovery finish-piece: no pausar aún; el hilo corta y pausa en post_piece.
-        """
-        if not self.is_active():
-            return {"ok": False, "error": "Sin ciclo activo para Resume"}
-        self._cancel_wip_blower()
-        self.clear_fault_mirror()
-        if recovery:
-            self._recovery = recovery
-        if self._finish_piece_after_error:
-            # Seguir hasta corte; Pause real en _enter(post_piece).
-            self._set_state(TX_BUSY)
-            self._host.cycle_log(
-                "Cycle soft-Res: recovery continúa hasta cortar pieza (luego Pause)"
-            )
-            self._host.cycle_notify()
-            return {
-                "ok": True,
-                "paused": False,
-                "recovery": self._recovery,
-                "soft": True,
-                "finishingPiece": True,
-            }
-        if not self._pause.is_set():
-            self._pause.set()
-        self._set_state(TX_PAUSE)
-        self._host.cycle_log(
-            f"Cycle soft-Res → Pause (recovery={self._recovery or '—'}; Resume)"
-        )
-        self._host.cycle_notify()
-        return {
-            "ok": True,
-            "paused": True,
-            "recovery": self._recovery,
-            "soft": True,
-        }
-
     def set_materialist(self, on: bool) -> dict[str, Any]:
         if on and self.is_active() and not self._e050_materialist_wait:
             return {"ok": False, "error": "No Materialist con ciclo activo"}
