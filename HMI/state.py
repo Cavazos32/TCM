@@ -3546,26 +3546,10 @@ class HmiState:
         return changed
 
     def _pf_primary_active_error_byte(self) -> int | None:
-        """EXXX PF activo de peor clase. Solo para latch único.
-
-        Fuera de lote: C1 > C2 > C3.
-        Con ciclo activo: C1 > C3 > C2 — así Buffer Max (C3) gana a Holgura (C2)
-        y el lote puede terminar/cortar la pieza antes de Pause/Resume.
-        """
+        """Return one active PF EXXX without using C1/C2/C3 classification."""
         if self._pf_materialist_now():
             return None
-        prefer_c3 = False
-        try:
-            prefer_c3 = bool(self._cycle.is_active())
-        except Exception:
-            prefer_c3 = False
-        # rank más bajo gana
-        if prefer_c3:
-            rank_map = {CLASS_C1: 0, CLASS_C3: 1, CLASS_C2: 2}
-        else:
-            rank_map = _PF_CLASS_RANK
-        best_byte: int | None = None
-        best_rank = 99
+        active: list[int] = []
         for key, info in self._pf["errors"].items():
             try:
                 byte = int(key)
@@ -3574,19 +3558,13 @@ class HmiState:
             if not self._pf_error_byte_in_lot(byte):
                 continue
             if byte in _PF_OK_WHEN_ACTIVE:
-                # Sensor ON ≠ EXXX; solo fallo enclavado (timeout) del lado del lote.
                 if not self._pf["fault_active"].get(key):
                     continue
             elif not info.get("active"):
                 continue
-            entry = lookup(byte)
-            if entry is None:
-                continue
-            rank = rank_map.get(str(entry.get("class") or ""), 50)
-            if rank < best_rank or (rank == best_rank and (best_byte is None or byte < best_byte)):
-                best_rank = rank
-                best_byte = byte
-        return best_byte
+            if lookup(byte) is not None:
+                active.append(byte)
+        return min(active) if active else None
 
     def _pf_status_kind_for_byte(self, byte_code: int) -> str:
         if byte_code == TX_PF_ERROR:
