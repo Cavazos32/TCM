@@ -1168,7 +1168,6 @@ class CycleRunner:
         with self._lock:
             self._sync_pause_exclusion_locked(time.monotonic())
         if self._fault:
-            # Soft-Res debió limpiar fault; si sigue, no continuar ciego.
             return True
         self._leave_pause_andon()
         if not self._ensure_pf_buffer_full_after_resume():
