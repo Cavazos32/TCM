@@ -3694,18 +3694,14 @@ class HmiState:
         return False
 
     def _pf_try_clear_if_healthy(self, msg: dict) -> bool:
-        """Res HMI si Master ya OK (evita E063 enclavado con HTML en verde)."""
-        if not self._error_policy.latch.active:
-            # Banner módulo pudo quedar en EXXX aunque el latch ya no esté.
-            st = self._pf.get("status") or {}
-            if st.get("kind") == "error" and not self._pf_master_has_fault(msg):
-                self._refresh_pf_status_from_state()
-                return True
-            return False
+        """PF health updates never clear the global EXXX latch automatically."""
         if self._pf_master_has_fault(msg):
             return False
-        # Res observacional solo sin ciclo (C2/C3 en Pause exige Reset explícito).
-        return self._try_auto_clear_error_if_healthy()
+        st = self._pf.get("status") or {}
+        if st.get("kind") == "error":
+            self._refresh_pf_status_from_state()
+            return True
+        return False
 
     def _pf_try_latch_once(self) -> bool:
         """Un solo Set/log/Andon por fallo PF. Sensores viven en el panel HMI."""
