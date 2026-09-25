@@ -312,11 +312,6 @@ def api_machine_home():
     return jsonify(get_state().cmd_machine_home())
 
 
-@app.post("/api/error/confirm")
-def api_error_confirm():
-    return jsonify(get_state().cmd_error_confirm())
-
-
 @app.post("/api/error/reset")
 def api_error_reset():
     body = request.get_json(silent=True) or {}
