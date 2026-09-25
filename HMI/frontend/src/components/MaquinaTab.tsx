@@ -1141,11 +1141,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               type="button"
               onClick={onMachineHome}
               disabled={!onMachineHome || machineState.isRunning}
-              title={
-                processStep === 'home'
-                  ? t('btn_machine_home_hint')
-                  : t('btn_machine_home_hint')
-              }
+              title={t('btn_machine_home_hint')}
               className={`flex w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-2.5 text-xs font-bold transition shadow-2xs ${
                 !onMachineHome || machineState.isRunning
                   ? 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed'
