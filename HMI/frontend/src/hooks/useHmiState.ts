@@ -305,47 +305,12 @@ export function useHmiState() {
   }, []);
 
   const resetCycleCmd = useCallback(async () => {
-    const snap = snapRef.current;
-    const err = snap?.error;
-    const showResetFail = (res: { ok?: boolean; error?: string } | null) => {
-      if (res && res.ok === false && res.error) {
-        window.alert(res.error);
-      }
-    };
-    if (err?.active && err.needsConfirm && !err.confirmed) {
-      const ok = window.confirm(
-        `${err.ui}\n\n¿Confirmar reset y homing general?`
-      );
-      if (!ok) return;
-      try {
-        await api.confirmError();
-      } catch {
-        /* ignore */
-      }
-      try {
-        const res = await api.resetError({ confirm: true, doHome: true });
-        showResetFail(res as { ok?: boolean; error?: string });
-      } catch {
-        /* ignore */
-      }
-      return;
-    }
-    if (err?.active && err.needsHome) {
-      const ok = window.confirm(
-        `${err.ui}\n\nReset errores y ejecutar homing general?`
-      );
-      if (!ok) return;
-      try {
-        const res = await api.resetError({ confirm: true, doHome: true });
-        showResetFail(res as { ok?: boolean; error?: string });
-      } catch {
-        /* ignore */
-      }
-      return;
-    }
     try {
-      const res = await api.resetCycle({ confirm: true, doHome: true });
-      showResetFail(res as { ok?: boolean; error?: string });
+      const res = await api.resetError({ confirm: true, doHome: false });
+      if (res && (res as { ok?: boolean }).ok === false) {
+        const err = (res as { error?: string }).error;
+        if (err) window.alert(err);
+      }
     } catch {
       /* ignore */
     }
