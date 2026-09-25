@@ -2553,6 +2553,10 @@ class HmiState:
             )
         return not self._cycle.is_active()
 
+    def _try_auto_clear_error_if_healthy(self) -> bool:
+        """Legacy hook kept inert: EXXX is released only by explicit machine RESET."""
+        return False
+
     def _clear_latch_for_module(self, source: str, *, auto: bool = False) -> bool:
         """Explicit module reset helper.
 
