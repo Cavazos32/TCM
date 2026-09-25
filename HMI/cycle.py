@@ -3143,10 +3143,20 @@ class CycleRunner:
         if self._should_abort():
             return "fail"
         self._host.clear_motion_wait_flags()
-        if not self._host.cmd_motion_move_mm(asda_mm, rpm):
+        current_asda = self._host.asda_position_mm()
+        if current_asda is None:
+            self._host.cycle_log("Refill: posición ASDA no disponible → ejecutar MOVE de park")
+        elif abs(float(current_asda) - float(asda_mm)) <= 0.5:
+            self._host.cycle_log(
+                f"Refill: ASDA ya en {current_asda:g} mm ≈ {asda_mm:g} mm → skip MOVE"
+            )
+        elif not self._host.cmd_motion_move_mm(asda_mm, rpm):
             self._raise_fault("move_cmd")
             return "fail"
-        if not self._wait_motion() or self._should_abort():
+        if current_asda is None or abs(float(current_asda) - float(asda_mm)) > 0.5:
+            if not self._wait_motion() or self._should_abort():
+                return "fail"
+        elif self._should_abort():
             return "fail"
         with self._lock:
             self._progress = 20
