@@ -491,8 +491,7 @@ class HmiState:
             cycle_snap = dict(cycle_snap)
             cycle_snap.pop("flow", None)
         with self._lock:
-            # Res observacional sobre caché (sin preguntar al esclavo).
-            self._try_auto_clear_error_if_healthy()
+            # EXXX remains latched until explicit RESET validation.
             progress = self._cycle_live_progress(cycle_snap)
             resume = (
                 self._stopped_pending_resume
