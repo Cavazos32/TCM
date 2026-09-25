@@ -2182,7 +2182,7 @@ class HmiState:
             # No request_reset de ciclo ni Home/PLC — eso es Reset de máquina y pierde setup.
             with self._lock:
                 self._pf["status"] = {"text": "Reset enviado L+R (0x02C)", "kind": "ok"}
-                self._clear_latch_for_module("prefeeder")
+
             self._notify()
         if action == "start":
             with self._lock:
@@ -3008,7 +3008,7 @@ class HmiState:
             # ERROR global con Motion en espera / OK).
             if prev == TX_ERROR:
                 # Solo si no hay ciclo: con lote C2/C3 el EXXX se queda hasta Reset.
-                self._clear_latch_for_module("motion", auto=True)
+
             else:
                 self._try_auto_clear_error_if_healthy()
         text = STATE_TEXT.get(byte_code, f"Estado 0x{byte_code:02X}")
@@ -3318,7 +3318,7 @@ class HmiState:
                 elif byte_code in (TX_PLC_IDLE, TX_PLC_RETURN):
                     # Res solo si sensores ya OK. Si sigue valve.error, el latch queda.
                     if prev == TX_PLC_ERROR and self._plc_is_healthy():
-                        self._clear_latch_for_module("plc", auto=True)
+
                     else:
                         self._try_auto_clear_error_if_healthy()
                     kind = "ok"
@@ -3665,7 +3665,7 @@ class HmiState:
             and byte_code in _PF_CLEAR_LATCH_STATES
         ):
             # Auto ON → Busy (no Idle): antes solo Idle/Return hacían Res.
-            self._clear_latch_for_module("prefeeder", auto=True)
+
         if self._pf_cached_has_fault():
             # Idle/Busy no deben tapar un EXXX del lote (UI verde + ciclo bloqueado).
             self._pf_paint_detail_status()
