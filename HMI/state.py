@@ -2571,48 +2571,6 @@ class HmiState:
         """Legacy hook kept inert: EXXX is released only by explicit machine RESET."""
         return False
 
-    def _clear_latch_for_module(self, source: str, *, auto: bool = False) -> bool:
-        """Explicit module reset helper.
-
-        The global machine EXXX latch is not cleared automatically. This helper
-        is retained only for explicit module-reset paths and performs no
-        observable recovery branching.
-        """
-        if auto:
-            return False
-        latch = self._error_policy.latch
-        if not latch.active:
-            return False
-        mod = (latch.module or "").lower()
-        src = (source or "").lower()
-        if src == "motion" and "motion" not in mod:
-            return False
-        if src == "plc" and "plc" not in mod:
-            return False
-        if src in ("prefeeder", "pre-feeder", "pf") and not (
-            "pre" in mod or "feeder" in mod
-        ):
-            return False
-        if src not in ("motion", "plc", "prefeeder", "pre-feeder", "pf"):
-            return False
-        # Nunca liberar EXXX solo porque llegó un Reset/estado OK transitorio.
-        # La condición fuente debe estar sana en el estado actual del módulo.
-        if not self._latch_source_is_healthy():
-            return False
-        old = self._error_policy.clear()
-        self._cycle.clear_fault_mirror()
-        ui = old.ui_text or old.code or source
-        _append_log(self._main_log, f"Res módulo · {ui} ({source})")
-        self._banner = {"text": "Errores reseteados", "kind": "ok"}
-        if src == "motion":
-            self._set_motion_status("Errores limpiados (0x016)", "ok")
-        elif src == "plc":
-            self._set_plc_status("Errores reseteados", "ok")
-        else:
-            self._refresh_pf_status_from_state()
-        self._notify()
-        return True
-
     def _cancel_link_down(self, key: str) -> None:
         self._link_down_gen[key] = self._link_down_gen.get(key, 0) + 1
 
