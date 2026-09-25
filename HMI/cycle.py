@@ -441,6 +441,8 @@ class CycleHost(Protocol):
     def cmd_pf_in_process(self, on: bool = True) -> bool: ...
     def cmd_pf_trigger_r(self) -> bool: ...
     def cmd_pf_trigger_l(self) -> bool: ...
+    def cmd_cycle_materialist(self, on: bool = True) -> dict[str, Any]: ...
+    def clear_e050_latch_for_materialist(self) -> bool: ...
     def apply_detail_error(self, code_or_byte: str | int) -> bool: ...
     def error_is_latched(self) -> bool: ...
 
@@ -480,15 +482,18 @@ class CycleRunner:
         self._c3_stop_after_step = False  # legado: pausar en próximo _enter
         # C3 en lote: completar pieza en curso (hasta post_piece / corte) y pausar.
         self._c3_finish_piece = False
-        self._recovery = ""  # home | restart_from_0 | retry_process
+        self._recovery = ""  # home | restart_from_0 | retry_process | e050_materialist
         # Tras error C2/C3: lote vivo → Reset → Resume → pieza → review → purga → Continuar.
         self._recovery_after_error = False
-        self._recovery_prompt = ""  # "" | review_piece | continue_cycle | e050_*
+        self._recovery_prompt = ""  # "" | review_piece | continue_cycle | e050_materialist
         self._recovery_awaiting = False
         self._recovery_confirm = threading.Event()
         self._recovery_reject = threading.Event()
-        # E050 + pieza: terminar y vaciar sin corte (no C1 abort).
+        # E050 + Materialist: terminar pieza en curso si existe, HOME y Materialist.
         self._e050_finish_piece = False
+        self._e050_materialist_requested = False
+        self._e050_materialist_wait = False
+        self._e050_normal_recovery = ""
         self._refill_skip_cut = False
         # Start / C2 / recovery: validar láser antes de alimentar (ON → omitir).
         self._restart_piece = False
@@ -579,6 +584,7 @@ class CycleRunner:
                 ),
                 "recoveryAwaitingConfirm": self._recovery_awaiting,
                 "e050FinishPiece": self._e050_finish_piece,
+                "e050MaterialistWait": self._e050_materialist_wait,
                 "refillSkipCut": bool(self._refill_skip_cut and self._refill_mode),
                 "c3Pending": self._c3_stop_after_step or self._c3_finish_piece,
                 "config": self._cfg.to_dict(),
@@ -619,6 +625,11 @@ class CycleRunner:
     def is_refill_active(self) -> bool:
         with self._lock:
             return bool(self._refill_mode and self._active)
+
+    def is_e050_materialist_wait(self) -> bool:
+        with self._lock:
+            return bool(self._e050_materialist_wait)
+
     # --- comandos máquina ---
     def request_start(self, length_mm: float, qty: int, rpm: float) -> dict[str, Any]:
         with self._lock:
@@ -662,6 +673,9 @@ class CycleRunner:
         self._c2_skip_pf_trigger = False
         self._flow_interrupt.clear()
         self._e050_finish_piece = False
+        self._e050_materialist_requested = False
+        self._e050_materialist_wait = False
+        self._e050_normal_recovery = ""
         self._refill_skip_cut = False
         self._last_ok = False
         self._abort_needs_ack = False
@@ -693,6 +707,9 @@ class CycleRunner:
         self._refill_reject.set()
         self._recovery_reject.set()
         self._e050_finish_piece = False
+        self._e050_materialist_requested = False
+        self._e050_materialist_wait = False
+        self._e050_normal_recovery = ""
         with self._lock:
             self._refill_awaiting_confirm = False
             self._refill_prompt = ""
@@ -732,12 +749,7 @@ class CycleRunner:
             }
         if self._pause.is_set():
             # Tras error: Resume termina la pieza (secuencia actual), no reinicia step 0.
-            if self._e050_finish_piece:
-                self._host.cycle_log("Cycle Resume → E050 terminar pieza")
-            elif self._recovery == "e050_material":
-                self._recovery = ""
-                self._host.cycle_log("Cycle Resume → E050 sigue la pieza")
-            elif self._recovery_after_error:
+            if self._recovery_after_error:
                 self._host.cycle_log("Cycle Resume → terminar pieza")
             elif self._recovery == "restart_from_0":
                 self._restart_piece = True
@@ -764,55 +776,49 @@ class CycleRunner:
         return {"ok": False, "error": "Ciclo no está en Pause"}
 
     def confirm_recovery_review(self, ok: bool = True) -> dict[str, Any]:
+        """Resuelve la decisión E050 o las confirmaciones genéricas de recovery."""
         prompt = self._recovery_prompt
         if not self._recovery_awaiting or prompt not in (
             "review_piece",
             "continue_cycle",
-            "e050_insufficient",
-            "e050_finish_process",
-            "e050_empty_material",
+            "e050_materialist",
         ):
             return {"ok": False, "error": "Sin confirmación de recuperación pendiente"}
-        if prompt == "e050_insufficient":
-            if ok:
-                self._recovery_prompt = "e050_finish_process"
-                self._host.cycle_log("E050: material insuficiente — ¿terminar proceso?")
-            else:
-                self._e050_finish_piece = False
-                self._recovery_after_error = False
+        if prompt == "e050_materialist":
+            if not ok:
                 self._recovery_awaiting = False
                 self._recovery_prompt = ""
-                self._host.cycle_log("E050: omitir — Reset y Resume")
-            self._host.cycle_notify()
-            return {"ok": True}
-        if prompt == "e050_finish_process":
-            if ok:
-                self._e050_finish_piece = True
-                self._recovery_after_error = True
-                self._host.cycle_log("E050: terminar proceso — Reset y Resume")
-            else:
+                self._e050_materialist_requested = False
                 self._e050_finish_piece = False
                 self._recovery_after_error = False
-                self._host.cycle_log("E050: no terminar — Reset y Resume")
+                self._recovery = self._e050_normal_recovery
+                self._host.cycle_log("E050: NO Materialist → recuperación normal del error")
+                self.apply_error_policy("finish_step", self._fault, self._fault_class, self._e050_normal_recovery)
+                self._host.cycle_notify()
+                return {"ok": True, "materialist": False, "normalRecovery": True}
+            if not self._host.clear_e050_latch_for_materialist():
+                return {"ok": False, "error": "No se pudo limpiar E050 para iniciar Materialist"}
+            self._e050_materialist_requested = True
+            self._e050_finish_piece = self._piece_t0 is not None
+            self._recovery_after_error = False
+            self._recovery = "e050_materialist"
             self._recovery_awaiting = False
             self._recovery_prompt = ""
+            self._fault = ""
+            self._fault_class = ""
+            self._pause.clear()
+            with self._lock:
+                self._sync_pause_exclusion_locked(time.monotonic())
+            self._leave_pause_andon()
+            self._host.cycle_log("E050: SÍ Materialist → " + ("terminar pieza actual y después HOME" if self._e050_finish_piece else "ir a HOME"))
             self._host.cycle_notify()
-            return {"ok": True}
+            return {"ok": True, "materialist": True, "finishingPiece": bool(self._e050_finish_piece)}
         if ok:
             self._recovery_confirm.set()
-            if prompt == "e050_empty_material":
-                self._host.cycle_log("E050: vaciar material")
-            else:
-                self._host.cycle_log(
-                    "Recovery: operador OK — "
-                    + ("continuar ciclo" if prompt == "continue_cycle" else "pieza revisada")
-                )
+            self._host.cycle_log("Recovery: operador OK — " + ("continuar ciclo" if prompt == "continue_cycle" else "pieza revisada"))
         else:
             self._recovery_reject.set()
-            if prompt == "e050_empty_material":
-                self._host.cycle_log("E050: omitir vaciar")
-            else:
-                self._host.cycle_log("Recovery: operador rechazó la etapa")
+            self._host.cycle_log("Recovery: operador rechazó la etapa")
         self._host.cycle_notify()
         return {"ok": True}
 
@@ -1012,18 +1018,7 @@ class CycleRunner:
             return {"ok": False, "error": "Sin ciclo activo para Resume"}
         self._cancel_wip_blower()
         self.clear_fault_mirror()
-        if self._recovery_prompt in ("e050_insufficient", "e050_finish_process"):
-            if not self._e050_finish_piece:
-                self._recovery_after_error = False
-            self._recovery_awaiting = False
-            self._recovery_prompt = ""
-        if self._e050_finish_piece:
-            self._recovery = "e050_material"
-            self._recovery_after_error = True
-        elif recovery == "e050_material" or self._recovery == "e050_material":
-            self._recovery = ""
-            self._recovery_after_error = False
-        elif recovery:
+        if recovery:
             self._recovery = recovery
         if self._c3_finish_piece:
             # Seguir hasta corte; Pause real en _enter(post_piece).
@@ -1054,7 +1049,7 @@ class CycleRunner:
         }
 
     def set_materialist(self, on: bool) -> dict[str, Any]:
-        if on and self.is_active():
+        if on and self.is_active() and not self._e050_materialist_wait:
             return {"ok": False, "error": "No Materialist con ciclo activo"}
         self._materialist = bool(on)
         self._busy_mode = False
@@ -1062,8 +1057,8 @@ class CycleRunner:
             self._set_state(TX_MATERIALIST)
             self._host.cycle_log("Cycle Materialist ON (0x049)")
         else:
-            self._set_state(TX_IDLE)
-            self._host.cycle_log("Cycle Materialist OFF → Idle")
+            self._set_state(TX_BUSY if self.is_active() else TX_IDLE)
+            self._host.cycle_log("Cycle Materialist OFF → " + ("Busy" if self.is_active() else "Idle"))
         return {"ok": True, "materialist": self._materialist, "busy": False}
 
     def set_busy(self, on: bool) -> dict[str, Any]:
@@ -1290,45 +1285,49 @@ class CycleRunner:
         self._host.cycle_notify()
         return True
 
-    def _e050_review_empty_decide(self) -> bool:
-        """Revisar → vaciar sin corte (opcional). Luego el caller espera Resume."""
-        self._host.cycle_log("E050: revisa la pieza y confirma OK")
-        if self._wait_recovery_prompt("review_piece") != "ok":
-            return False
-        self._host.cycle_log("E050: ¿Vaciar material?")
-        empty = self._wait_recovery_prompt("e050_empty_material")
+    def _run_e050_materialist_recovery(self) -> bool:
+        """E050 especial: HOME → Materialist ON → esperar Materialist OFF."""
         if self._should_abort():
             return False
-        if empty == "ok":
-            cfg = self.get_config()
-            rpm = float(self._lot_rpm or 1200.0)
+        if self._e050_finish_piece:
+            self._host.cycle_log("E050: pieza terminada y depositada → HOME")
+        else:
+            self._host.cycle_log("E050: sin pieza en curso → HOME")
+            self._host.clear_motion_wait_flags()
+            if not self._host.cmd_motion_move_zero(self._lot_rpm):
+                if not self._fault:
+                    self._raise_fault("home_cmd")
+                return False
+            if not self._wait_motion() or self._should_abort():
+                return False
+        with self._lock:
+            self._e050_materialist_wait = True
+            self._recovery_prompt = "e050_materialist_wait"
+        self._host.cycle_log("E050: HOME OK → activar Materialist")
+        self._host.cycle_notify()
+        res = self._host.cmd_cycle_materialist(True)
+        if not res.get("ok"):
             with self._lock:
+                self._e050_materialist_wait = False
                 self._recovery_prompt = ""
-                self._refill_mode = True
-                self._refill_skip_cut = True
-                self._refill_prompt = "working"
+            self._raise_fault(str(res.get("error") or "Materialist rechazado"))
             self._host.cycle_notify()
-            try:
-                status = self._execute_refill_body(
-                    rpm, None, float(cfg.refill_asda_mm), skip_cut=True
-                )
-            finally:
-                with self._lock:
-                    self._refill_mode = False
-                    self._refill_skip_cut = False
-                    self._refill_awaiting_confirm = False
-                    self._refill_prompt = ""
-            if status == "cancel":
-                self._host.cycle_log("E050: vaciado cancelado — tools safe")
-                self._host.cmd_plc_tools_safe()
-                self._host.cycle_notify()
+            return False
+        self._host.cycle_log("E050: Materialist activo — esperar que el operador lo apague")
+        self._host.cycle_notify()
+        while self._host.pf_is_materialist():
+            if self._should_abort():
                 return False
-            if status != "ok":
-                self._host.cycle_log("E050: vaciado incompleto")
-                self._host.cycle_notify()
-                return False
-        self._recovery = ""
-        self._host.cycle_log("E050: listo — Resume si quedan piezas")
+            time.sleep(0.05)
+        with self._lock:
+            self._e050_materialist_wait = False
+            self._recovery_prompt = ""
+            self._recovery_awaiting = False
+            self._e050_materialist_requested = False
+            self._e050_finish_piece = False
+            self._recovery_after_error = False
+            self._recovery = ""
+        self._host.cycle_log("E050: Materialist OFF → continuar lote")
         self._host.cycle_notify()
         return True
 
@@ -1447,19 +1446,27 @@ class CycleRunner:
         self._set_state(TX_ERROR, ui)
         return {"ok": True, "action": "error_state"}
 
-    def apply_e050_policy(self, ui: str, err_class: str) -> dict[str, Any]:
-        """E050 con pieza/lote: Pause y preguntar. No aborta el lote."""
+    def apply_e050_policy(
+        self,
+        ui: str,
+        err_class: str,
+        recovery: str = "retry_process",
+    ) -> dict[str, Any]:
+        """E050 durante lote: primero pregunta si requiere Materialist."""
         self._fault = ui
         self._fault_class = err_class
-        self._recovery = "e050_material"
+        self._recovery = "e050_materialist"
+        self._e050_normal_recovery = recovery or "retry_process"
         self._c3_stop_after_step = False
         self._c3_finish_piece = False
         self._e050_finish_piece = False
+        self._e050_materialist_requested = False
+        self._e050_materialist_wait = False
         self._recovery_after_error = False
         self._recovery_confirm.clear()
         self._recovery_reject.clear()
         with self._lock:
-            self._recovery_prompt = "e050_insufficient"
+            self._recovery_prompt = "e050_materialist"
             self._recovery_awaiting = True
         if self.is_active():
             self._pause.set()
@@ -1470,7 +1477,7 @@ class CycleRunner:
         if not self.is_active():
             self._last_ok = False
         self._set_state(TX_ERROR, ui)
-        self._host.cycle_log("E050: Pause — ¿material insuficiente?")
+        self._host.cycle_log("E050: Pause — ¿Requiere Materialist?")
         self._host.cycle_notify()
         return {"ok": True, "action": "pause", "e050": True}
 
@@ -3468,8 +3475,16 @@ class CycleRunner:
             for rep in range(1, qty + 1):
                 while True:
                     early_exit = True
+                    materialist_only = False
                     for _piece_attempt in (0,):
                         if self._gate("listo" if rep == 1 else "rep-start"):
+                            break
+                        if self._e050_materialist_requested and not self._e050_finish_piece:
+                            if not self._run_e050_materialist_recovery():
+                                early_exit = True
+                                break
+                            materialist_only = True
+                            early_exit = True
                             break
                         self._set_progress(rep, 0, qty)
                         self._last_lineal_sec = 0.0
@@ -3885,22 +3900,14 @@ class CycleRunner:
                                 )
                         self._log_piece_ok(rep, qty, piece_sec)
                         self._host.cycle_notify()
-                        if self._e050_finish_piece:
-                            if not self._e050_review_empty_decide():
+                        if self._e050_finish_piece and self._e050_materialist_requested:
+                            if not self._run_e050_materialist_recovery():
                                 early_exit = True
                                 break
-                            self._e050_finish_piece = False
-                            self._recovery_after_error = False
                             handoff_ready = False
                             prefetch_running = False
                             self._c2_laser_skip_feed = True
                             self._c2_skip_pf_trigger = False
-                            if completed < qty:
-                                if self._wait_paused_for_resume(
-                                    "E050: listo — Resume para seguir el lote"
-                                ):
-                                    early_exit = True
-                                    break
                         elif self._recovery_after_error:
                             if not self._recovery_review_purge_decide():
                                 early_exit = True
@@ -3911,6 +3918,8 @@ class CycleRunner:
                             self._c2_laser_skip_feed = True
                             self._c2_skip_pf_trigger = False
                         early_exit = False
+                    if materialist_only:
+                        continue
                     if not early_exit:
                         break  # pieza OK → siguiente rep
                     if self._consume_restart_piece():

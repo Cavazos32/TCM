@@ -143,16 +143,6 @@ class ErrorPolicy:
             **self.latch.snapshot(),
         }
 
-    def apply_e050_lot_branch(self) -> None:
-        """E050 + pieza/lote: no C1 confirm/home. Soft-Res + Resume."""
-        if self.latch.code != "E050":
-            return
-        self.latch.needs_confirm = False
-        self.latch.needs_home = False
-        self.latch.recovery = "e050_material"
-        self.latch.confirmed = True
-        self._last = self.latch.snapshot()
-
     def confirm(self) -> bool:
         """Operador confirma ventana C1."""
         if not self.latch.active or not self.latch.needs_confirm:

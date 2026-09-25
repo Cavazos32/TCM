@@ -1573,12 +1573,12 @@ class HmiState:
         soft_c2_c3 = self._cycle.is_active() and (
             (
                 latch.active
-                and recovery in ("restart_from_0", "retry_process", "e050_material")
+                and recovery in ("restart_from_0", "retry_process")
             )
             or bool(cycle_snap.get("paused"))
             or bool(cycle_snap.get("c3Pending"))
             or cycle_snap.get("recovery")
-            in ("restart_from_0", "retry_process", "e050_material")
+            in ("restart_from_0", "retry_process")
         )
 
         if soft_c2_c3:
@@ -1732,8 +1732,11 @@ class HmiState:
                 "link_down", ui, cls, result.get("recovery", "")
             )
         elif e050_lot:
-            self._error_policy.apply_e050_lot_branch()
-            self._cycle.apply_e050_policy(ui, cls)
+            self._cycle.apply_e050_policy(
+                ui,
+                cls,
+                result.get("recovery", ""),
+            )
         else:
             self._cycle.apply_error_policy(
                 action, ui, cls, result.get("recovery", "")
@@ -1814,13 +1817,24 @@ class HmiState:
             self._broadcast_machine_state(self._cycle.state_byte())
         self._notify()
 
+    def clear_e050_latch_for_materialist(self) -> bool:
+        """Limpia solo el latch HMI de E050 para la ruta especial Materialist."""
+        latch = self._error_policy.latch
+        if not latch.active or latch.code != "E050":
+            return False
+        old = self._error_policy.clear()
+        self._cycle.clear_fault_mirror()
+        _append_log(self._main_log, f"E050: latch limpiado para Materialist · {old.ui_text}")
+        self._notify()
+        return True
+
     def cmd_cycle_materialist(self, on: bool = True) -> dict:
         """Materialist (0x049) → Andon + PF Materialista; apaga In process.
 
         El flag HMI solo queda ON si el PreFeeder aceptó 0x3F (HTML local idleMode).
         OFF: si no hay enlace PF, igual se sale del interlock HMI.
         """
-        if on and self._cycle.is_active():
+        if on and self._cycle.is_active() and not self._cycle.is_e050_materialist_wait():
             return {"ok": False, "error": "No Materialist con ciclo activo"}
         pf_ok = self._manual_pf(lambda: self._pf_client.cmd_materialist(bool(on)))
         if on and pf_ok:

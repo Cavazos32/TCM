@@ -196,13 +196,11 @@ export const CycleTab: React.FC<CycleTabProps> = ({
   const e050Lot = !!machineState.e050Lot;
   const skipCut = !!machineState.refillSkipCut;
   const recoveryTitle =
-    recoveryStage === 'e050_insufficient'
-      ? t('e050_insufficient_title')
-      : recoveryStage === 'e050_finish_process'
-        ? t('e050_finish_title')
-        : recoveryStage === 'e050_empty_material'
-          ? t('e050_empty_title')
-          : recoveryStage === 'review_piece'
+    recoveryStage === 'e050_materialist_wait'
+      ? t('e050_materialist_wait_title')
+      : recoveryStage === 'e050_materialist'
+        ? t('e050_materialist_title')
+      : recoveryStage === 'review_piece'
             ? t('recovery_review_title')
             : recoveryStage === 'continue_cycle'
               ? t('recovery_continue_title')
@@ -212,13 +210,11 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                   ? t('refill_confirm_title_working')
                   : t('refill_confirm_title_feed');
   const recoveryHint =
-    recoveryStage === 'e050_insufficient'
-      ? t('e050_insufficient_hint')
-      : recoveryStage === 'e050_finish_process'
-        ? t('e050_finish_hint')
-        : recoveryStage === 'e050_empty_material'
-          ? t('e050_empty_hint')
-          : recoveryStage === 'review_piece'
+    recoveryStage === 'e050_materialist_wait'
+      ? t('e050_materialist_wait_hint')
+      : recoveryStage === 'e050_materialist'
+        ? t('e050_materialist_hint')
+      : recoveryStage === 'review_piece'
             ? t('recovery_review_hint')
             : recoveryStage === 'continue_cycle'
               ? t('recovery_continue_hint')
@@ -249,10 +245,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
     : (machineState.faultClass || '').toUpperCase() === 'C1'
       ? `${t('lot_recover_step_reset')} → ${t('lot_recover_step_home')} → ${t('lot_recover_step_start')}`
       : `${t('lot_recover_step_reset')} → ${t('lot_recover_step_resume')} → ${t('lot_recover_step_piece')} → ${t('lot_recover_step_review')} → ${t('lot_recover_step_purge')} → ${t('lot_recover_step_continue')}`;
-  const e050Ask =
-    recoveryStage === 'e050_insufficient' ||
-    recoveryStage === 'e050_finish_process' ||
-    recoveryStage === 'e050_empty_material';
+  const e050Ask = recoveryStage === 'e050_materialist';
   const nextFeedLabel = skipCut
     ? t('btn_refill_confirm_continue')
     : t('btn_refill_confirm_next_cut');
@@ -659,27 +652,27 @@ export const CycleTab: React.FC<CycleTabProps> = ({
               {t('btn_refill_confirm_yes')}
             </button>
           )}
-          {e050Ask && onRecoveryReview && (
+          {e050Ask && machineState.recoveryAwaitingConfirm && onRecoveryReview && (
             <>
               <button
-                id="btn-cycle-e050-yes"
-                type="button"
-                onClick={() => onRecoveryReview(true)}
-                disabled={!machineState.recoveryAwaitingConfirm}
-                className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40"
-              >
-                <Check className="h-3.5 w-3.5" />
-                {t('btn_e050_yes')}
-              </button>
-              <button
-                id="btn-cycle-e050-omit"
+                id="btn-cycle-e050-materialist-no"
                 type="button"
                 onClick={() => onRecoveryReview(false)}
                 disabled={!machineState.recoveryAwaitingConfirm}
                 className="flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-200 disabled:opacity-40"
               >
                 <X className="h-3.5 w-3.5" />
-                {t('btn_e050_omit')}
+                {t('btn_e050_no_materialist')}
+              </button>
+              <button
+                id="btn-cycle-e050-materialist-yes"
+                type="button"
+                onClick={() => onRecoveryReview(true)}
+                disabled={!machineState.recoveryAwaitingConfirm}
+                className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40"
+              >
+                <Check className="h-3.5 w-3.5" />
+                {t('btn_e050_yes_materialist')}
               </button>
             </>
           )}
