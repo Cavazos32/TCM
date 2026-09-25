@@ -1371,27 +1371,18 @@ class CycleRunner:
         err_class: str = "",
         recovery: str = "",
     ) -> dict[str, Any]:
-        """Enter the unified ERROR hold.
-
-        C1/C2/C3 are no longer used to select recovery. Every EXXX stops the
-        sequence at a safe point and waits for RESET. A live lot may later be
-        resumed through the common recovery flow.
-        """
+        """Enter the unified ERROR hold; C1/C2/C3 do not select recovery."""
         self._fault = ui
         self._fault_class = err_class
         self._recovery = recovery
         self._c3_stop_after_step = False
         self._c3_finish_piece = False
-        self._aborted = False
-        self._stop.set()
-        self._pause.set()
+        self._recovery_after_error = self.is_active()
         self._resume_need_buffer_full = False
-        self._clear_recovery_gate()
-        try:
-            self._host.clear_motion_wait_flags()
-        except Exception:
-            pass
+        self._pause.set()
+        self._cancel_wip_blower()
 
+        # Stop current Motion activity, but do not kill the CycleRunner thread.
         try:
             self._host.cmd_motion_stop()
         except Exception:
