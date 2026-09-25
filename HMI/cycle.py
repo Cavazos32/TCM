@@ -749,33 +749,21 @@ class CycleRunner:
                 "ok": False,
                 "error": "Espera confirmación del operador (pieza / lote)",
             }
-        if self._pause.is_set():
-            # Tras error: Resume termina la pieza (secuencia actual), no reinicia step 0.
-            if self._recovery_after_error:
-                self._host.cycle_log("Cycle Resume → terminar pieza")
-            elif self._recovery == "restart_from_0":
-                self._restart_piece = True
-                self._flow_interrupt.set()
-                try:
-                    self._host.clear_motion_wait_flags()
-                    self._host.cmd_motion_stop()
-                except Exception:
-                    pass
-                self._host.cycle_log(
-                    "Cycle Resume (C2) → reinicio pieza desde step 0"
-                )
-            else:
-                self._host.cycle_log("Cycle Resume")
-            # Flag antes de quitar Pause: el hilo de ciclo espera Buffer Full
-            # (como Start) antes de seguir. No bloquear este request.
-            self._resume_need_buffer_full = True
-            self._pause.clear()
-            with self._lock:
-                self._sync_pause_exclusion_locked(time.monotonic())
-            self._leave_pause_andon()
-            self._host.cycle_notify()
-            return {"ok": True}
-        return {"ok": False, "error": "Ciclo no está en Pause"}
+        if not self._pause.is_set():
+            return {"ok": False, "error": "Ciclo no está en Pause"}
+        # Unified recovery: Resume never selects a class-specific branch.
+        # The running lot will continue through the common recovery gate.
+        if self._recovery_after_error:
+            self._host.cycle_log("Cycle Resume → recuperación común")
+        else:
+            self._host.cycle_log("Cycle Resume")
+        self._resume_need_buffer_full = True
+        self._pause.clear()
+        with self._lock:
+            self._sync_pause_exclusion_locked(time.monotonic())
+        self._leave_pause_andon()
+        self._host.cycle_notify()
+        return {"ok": True}
 
     def confirm_recovery_review(self, ok: bool = True) -> dict[str, Any]:
         """Resuelve la decisión E050 o las confirmaciones genéricas de recovery."""
