@@ -156,8 +156,6 @@ export interface BackendErrorLatch {
   description: string;
   class: string;
   ui: string;
-  needsConfirm: boolean;
-  needsHome: boolean;
   recovery: string;
   confirmed: boolean;
   /** EXXX ya reseteado; contexto de recuperación C2/C3. */
