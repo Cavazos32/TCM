@@ -481,7 +481,7 @@ class CycleRunner:
         self._pause_after_error_step = False  # legado: pausar en próximo _enter
         # recovery en lote: completar pieza en curso (hasta post_piece / corte) y pausar.
         self._finish_piece_after_error = False
-        self._recovery = ""  # home | restart_from_0 | retry_process | e050_materialist
+        self._recovery = ""  # common lot recovery context | e050_materialist
         # Tras error recovery: lote vivo → Reset → Resume → pieza → review → purga → Continuar.
         self._recovery_after_error = False
         self._recovery_prompt = ""  # "" | review_piece | continue_cycle | e050_materialist
