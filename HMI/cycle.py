@@ -1433,11 +1433,6 @@ class CycleRunner:
         """Marca paso atómico. True = abortar."""
         # recovery: completar pieza (corte) → Pause en post_piece; esperar Reset+Resume.
         # Antes: return True abortaba el lote y Resume quedaba muerto.
-        # Unified error recovery: once an error has been reset, the common
-        # recovery gate owns the next pause/resume decision.
-        if self._recovery_after_error and self._recovery_prompt == "":
-            if self._pause.is_set():
-                return False
         meta = STEP_BY_KEY[key]
         self._set_progress(rep, int(meta["id"]), qty)
         # Paso a paso pausa en _after_step (tras ejecutar), no aquí:
