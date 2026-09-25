@@ -412,12 +412,6 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               : processStep === 'empty'
                 ? recoveryHint
                 : t('lot_recover_hint_e050_reset')
-    : machineC1
-    ? processStep === 'home'
-      ? t('lot_recover_hint_c1_home')
-      : processStep === 'start'
-        ? t('lot_recover_hint_c1_start')
-        : t('lot_recover_hint_c1')
     : processStep === 'reset'
       ? recoverReset
         ? t('lot_recover_hint_reset_pf')
@@ -819,9 +813,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                   <p className="text-xs font-bold text-amber-950 dark:text-amber-100">
                     {e050Lot
                       ? t('lot_recover_title_e050')
-                      : machineC1
-                        ? t('lot_recover_title_c1')
-                        : t('lot_recover_title_c2')}
+                      : t('lot_recover_title_c2')}
                   </p>
                   <p className="text-[11px] text-amber-900/80 dark:text-amber-200/80 mt-0.5">
                     {processHint}
@@ -1019,9 +1011,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                 <p className="font-bold uppercase tracking-wide">
                   {e050Lot
                     ? t('lot_recover_title_e050')
-                    : machineC1
-                      ? t('lot_recover_title_c1')
-                      : t('lot_recover_title_c2')}
+                    : t('lot_recover_title_c2')}
                 </p>
                 <p className="mt-0.5">{processHint}</p>
                 {(machineState.fault || machineState.lastFault) && (
@@ -1077,7 +1067,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               title={
                 recoverReset
                   ? t('pf_recover_hint_reset')
-                  : showErrorProcess && processKind === 'c2'
+                  : showErrorProcess
                     ? processHint
                     : machineState.cycleMaterialist
                       ? t('err_materialist_start')
