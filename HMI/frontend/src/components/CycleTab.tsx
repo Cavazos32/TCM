@@ -53,7 +53,7 @@ export const CYCLE_STEPS_DEFINITION: CycleStep[] = [
   { id: 1, title: 'Holder+Encoder ON (solo 1ª pieza)', type: 'action', sbsPause: false },
   { id: 2, title: 'Delay Holder ON', type: 'delay', delayKey: 'holderOnMs', defaultDurationMs: 200, sbsPause: true },
   { id: 3, title: 'Trigger PreFeeder (Tfeed)', type: 'action', sbsPause: false },
-  { id: 4, title: 'Alimentación (feed / handoff)', type: 'action', sbsPause: true },
+  { id: 4, title: 'Alimentación (feed / ya listo post-HOME)', type: 'action', sbsPause: true },
   { id: 5, title: 'Offset alimentación (Motion, paso lógico)', type: 'action', sbsPause: false },
   { id: 6, title: 'Pinzas cierran', type: 'action', sbsPause: false },
   { id: 7, title: 'Delay tras cerrar pinzas', type: 'delay', delayKey: 'grippersOnMs', defaultDurationMs: 100, sbsPause: false },
@@ -79,22 +79,20 @@ export const CYCLE_STEPS_DEFINITION: CycleStep[] = [
   { id: 18, title: 'Delay post-corte', type: 'delay', delayKey: 'cutterPostMs', defaultDurationMs: 100, sbsPause: true },
   { id: 19, title: 'Extra / depósito lineal', type: 'action', sbsPause: false },
   { id: 20, title: 'Delay tras depósito', type: 'delay', delayKey: 'dwellAtDestMs', defaultDurationMs: 150, sbsPause: true },
+  { id: 21, title: 'Pinzas abren', type: 'action', sbsPause: false },
+  { id: 22, title: 'Delay tras abrir pinzas', type: 'delay', delayKey: 'gripperReleaseMs', defaultDurationMs: 350, sbsPause: true },
+  { id: 23, title: 'Despeje ASDA post-pinzas (+clearance)', type: 'action', sbsPause: true },
+  { id: 24, title: 'HOME: WIP blower continuo (match lineal) → 0', type: 'action', sbsPause: true },
   {
-    id: 21,
-    title: 'Prefetch feed — arranca en background',
-    type: 'background',
-    badge: 'background',
-    note: 'Depósito ya hecho (manguera fuera). Prefetch en background; la secuencia continúa (pinzas → HOME).',
-    sbsPause: false,
+    id: 25,
+    title: 'Feed post-HOME (ASDA=0)',
+    type: 'action',
+    sbsPause: true,
+    note: 'Solo si ASDA está en 0. Pieza siguiente: Tfeed + feed. Última: omitido.',
   },
-  { id: 22, title: 'Pinzas abren', type: 'action', sbsPause: false },
-  { id: 23, title: 'Delay tras abrir pinzas', type: 'delay', delayKey: 'gripperReleaseMs', defaultDurationMs: 350, sbsPause: true },
-  { id: 24, title: 'Despeje ASDA post-pinzas (+clearance)', type: 'action', sbsPause: true },
-  { id: 25, title: 'HOME: WIP blower continuo (match lineal) → 0', type: 'action', sbsPause: true },
-  { id: 26, title: 'Join — espera fin del prefetch (handoff)', type: 'join', badge: 'join', sbsPause: false },
-  { id: 27, title: 'Delay asentar', type: 'delay', delayKey: 'asentarMs', defaultDurationMs: 50, sbsPause: false },
-  { id: 28, title: 'Post-pieza (safety / peer / holgura)', type: 'action', sbsPause: false },
-];
+  { id: 26, title: 'Delay asentar', type: 'delay', delayKey: 'asentarMs', defaultDurationMs: 50, sbsPause: false },
+  { id: 27, title: 'Post-pieza (safety / peer / holgura)', type: 'action', sbsPause: false },
+]
 
 function stepsFromFlow(flow: BackendFlowStep[]): CycleStep[] {
   return flow.map((s) => {
@@ -123,7 +121,7 @@ function stepsFromFlow(flow: BackendFlowStep[]): CycleStep[] {
         badge: isJoin ? 'join' : 'background',
         note: isJoin
           ? undefined
-          : 'Depósito ya hecho (manguera fuera). Prefetch en background; la secuencia continúa (pinzas → HOME).',
+          : 'Paso paralelo (no usado: el feed va tras HOME con ASDA=0).',
         sbsPause,
       };
     }
@@ -186,7 +184,6 @@ export const CycleTab: React.FC<CycleTabProps> = ({
       ? machineState.refillPrompt ||
         (machineState.refillActive ? 'working' : '')
       : '');
-  const showRecoveryTrack = !!recoveryStage;
   const showManualRefill =
     !machineState.recoveryAfterError &&
     !machineState.e050Lot &&
@@ -195,60 +192,17 @@ export const CycleTab: React.FC<CycleTabProps> = ({
     !!onRefillConfirm;
   const e050Lot = !!machineState.e050Lot;
   const skipCut = !!machineState.refillSkipCut;
-  const recoveryTitle =
-    recoveryStage === 'e050_materialist_wait'
-      ? t('e050_materialist_wait_title')
-      : recoveryStage === 'e050_materialist'
-        ? t('e050_materialist_title')
-      : recoveryStage === 'review_piece'
-            ? t('recovery_review_title')
-            : recoveryStage === 'continue_cycle'
-              ? t('recovery_continue_title')
-              : recoveryStage === 'after_cut'
-                ? t('refill_confirm_title_cut')
-                : recoveryStage === 'working'
-                  ? t('refill_confirm_title_working')
-                  : t('refill_confirm_title_feed');
-  const recoveryHint =
-    recoveryStage === 'e050_materialist_wait'
-      ? t('e050_materialist_wait_hint')
-      : recoveryStage === 'e050_materialist'
-        ? t('e050_materialist_hint')
-      : recoveryStage === 'review_piece'
-            ? t('recovery_review_hint')
-            : recoveryStage === 'continue_cycle'
-              ? t('recovery_continue_hint')
-              : recoveryStage === 'after_cut'
-                ? t('refill_confirm_hint_cut')
-                : recoveryStage === 'working'
-                  ? t('refill_confirm_hint_working')
-                  : skipCut
-                    ? t('refill_confirm_hint_feed_nocut')
-                    : t('refill_confirm_hint_feed');
-  const recoverTitle =
-    e050Lot
-      ? t('lot_recover_title_e050')
-      : (machineState.faultClass || '').toUpperCase() === 'C1'
-        ? t('lot_recover_title_c1')
-        : t('lot_recover_title_c2');
-  const recoverHintIdle = e050Lot
-    ? machineState.fault
-      ? t('lot_recover_hint_e050_reset')
-      : t('lot_recover_hint_e050_resume')
-    : (machineState.faultClass || '').toUpperCase() === 'C1'
-      ? t('lot_recover_hint_c1')
-      : machineState.fault
-        ? t('lot_recover_hint_reset')
-        : t('lot_recover_hint_resume');
-  const recoverSteps = e050Lot
-    ? `${t('lot_recover_step_ask')} → ${t('lot_recover_step_reset')} → ${t('lot_recover_step_resume')}`
-    : (machineState.faultClass || '').toUpperCase() === 'C1'
-      ? `${t('lot_recover_step_reset')} → ${t('lot_recover_step_home')} → ${t('lot_recover_step_start')}`
-      : `${t('lot_recover_step_reset')} → ${t('lot_recover_step_resume')} → ${t('lot_recover_step_piece')} → ${t('lot_recover_step_review')} → ${t('lot_recover_step_purge')} → ${t('lot_recover_step_continue')}`;
   const e050Ask = recoveryStage === 'e050_materialist';
   const nextFeedLabel = skipCut
     ? t('btn_refill_confirm_continue')
     : t('btn_refill_confirm_next_cut');
+  const showRecoveryActions =
+    recoveryStage === 'await_feed' ||
+    recoveryStage === 'after_feed' ||
+    recoveryStage === 'after_cut' ||
+    (e050Ask && !!machineState.recoveryAwaitingConfirm) ||
+    recoveryStage === 'review_piece' ||
+    recoveryStage === 'continue_cycle';
 
   const [config, setConfig] = useState<CycleConfig>(cycleConfig || DEFAULT_CYCLE_CONFIG);
   const [configDirty, setConfigDirty] = useState(false);
@@ -258,6 +212,17 @@ export const CycleTab: React.FC<CycleTabProps> = ({
   /** Evita que un SSE/poll viejo con LR pise L/R recién guardado. */
   const confirmedFeedSidesRef = useRef<'L' | 'R' | 'LR' | null>(null);
 
+  const backendHasPrefetch = useMemo(
+    () =>
+      (cycleFlow || []).some(
+        (s) =>
+          s.key === 'prefetch_start' ||
+          String(s.label || '')
+            .toLowerCase()
+            .includes('prefetch'),
+      ),
+    [cycleFlow],
+  );
   const sequenceSteps = useMemo(
     () => (cycleFlow && cycleFlow.length > 0 ? stepsFromFlow(cycleFlow) : CYCLE_STEPS_DEFINITION),
     [cycleFlow],
@@ -582,29 +547,10 @@ export const CycleTab: React.FC<CycleTabProps> = ({
         )}
       </div>
 
-      {(showRecoveryTrack ||
-        machineState.fault ||
-        machineState.recoveryAfterError ||
-        e050Lot) && (
+      {showRecoveryActions && (
         <div className="flex flex-wrap items-center gap-3 rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/50 px-4 py-3 shadow-2xs">
-          <div className="min-w-0 flex-1">
-            <p className="text-xs font-bold text-amber-950 dark:text-amber-100">
-              {recoverTitle}
-              {showRecoveryTrack ? ` · ${recoveryTitle}` : ''}
-            </p>
-            <p className="text-[11px] text-amber-900/80 dark:text-amber-200/80 mt-0.5">
-              {showRecoveryTrack ? recoveryHint : recoverHintIdle}
-            </p>
-            {(machineState.fault || machineState.lastFault) && (
-              <p className="mt-1 font-mono text-[11px] font-semibold text-red-800 dark:text-red-200">
-                {machineState.fault || machineState.lastFault}
-              </p>
-            )}
-            <p className="mt-1 font-mono text-[10px] text-amber-800 dark:text-amber-200">
-              {recoverSteps}
-            </p>
-          </div>
-          {recoveryStage === 'after_feed' && onRefillRetry && (
+          {(recoveryStage === 'await_feed' || recoveryStage === 'after_feed') &&
+            onRefillRetry && (
             <button
               id="btn-cycle-recovery-retry"
               type="button"
@@ -616,7 +562,8 @@ export const CycleTab: React.FC<CycleTabProps> = ({
               {t('btn_refill_confirm_retry')}
             </button>
           )}
-          {recoveryStage === 'after_feed' && onRefillLongFeed && (
+          {(recoveryStage === 'await_feed' || recoveryStage === 'after_feed') &&
+            onRefillLongFeed && (
             <button
               id="btn-cycle-recovery-long"
               type="button"
@@ -702,17 +649,23 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                 ? t('refill_confirm_title_cut')
                 : machineState.refillPrompt === 'working'
                   ? t('refill_confirm_title_working')
-                  : t('refill_confirm_title_feed')}
+                  : machineState.refillPrompt === 'await_feed'
+                    ? t('refill_confirm_title_await')
+                    : t('refill_confirm_title_feed')}
             </p>
             <p className="text-[11px] text-sky-800/80 dark:text-sky-200/80 mt-0.5">
               {machineState.refillPrompt === 'after_cut'
                 ? t('refill_confirm_hint_cut')
                 : machineState.refillPrompt === 'working'
                   ? t('refill_confirm_hint_working')
-                  : t('refill_confirm_hint_feed')}
+                  : machineState.refillPrompt === 'await_feed'
+                    ? t('refill_confirm_hint_await')
+                    : t('refill_confirm_hint_feed')}
             </p>
           </div>
-          {machineState.refillPrompt === 'after_feed' && onRefillRetry && (
+          {(machineState.refillPrompt === 'after_feed' ||
+            machineState.refillPrompt === 'await_feed') &&
+            onRefillRetry && (
             <button
               id="btn-cycle-refill-retry"
               type="button"
@@ -724,7 +677,9 @@ export const CycleTab: React.FC<CycleTabProps> = ({
               {t('btn_refill_confirm_retry')}
             </button>
           )}
-          {machineState.refillPrompt === 'after_feed' && onRefillLongFeed && (
+          {(machineState.refillPrompt === 'after_feed' ||
+            machineState.refillPrompt === 'await_feed') &&
+            onRefillLongFeed && (
             <button
               id="btn-cycle-refill-long"
               type="button"
@@ -736,31 +691,32 @@ export const CycleTab: React.FC<CycleTabProps> = ({
               {t('btn_refill_confirm_long')}
             </button>
           )}
+          {machineState.refillPrompt !== 'working' &&
+            machineState.refillPrompt !== 'await_feed' && (
+            <button
+              id="btn-cycle-refill-yes"
+              type="button"
+              onClick={() => onRefillConfirm(true)}
+              disabled={!machineState.refillAwaitingConfirm}
+              className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Check className="h-3.5 w-3.5" />
+              {machineState.refillPrompt === 'after_cut'
+                ? t('btn_refill_confirm_yes')
+                : t('btn_refill_confirm_next_cut')}
+            </button>
+          )}
           {machineState.refillPrompt !== 'working' && (
-            <>
-              <button
-                id="btn-cycle-refill-yes"
-                type="button"
-                onClick={() => onRefillConfirm(true)}
-                disabled={!machineState.refillAwaitingConfirm}
-                className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                <Check className="h-3.5 w-3.5" />
-                {machineState.refillPrompt === 'after_cut'
-                  ? t('btn_refill_confirm_yes')
-                  : t('btn_refill_confirm_next_cut')}
-              </button>
-              <button
-                id="btn-cycle-refill-no"
-                type="button"
-                onClick={() => onRefillConfirm(false)}
-                disabled={!machineState.refillAwaitingConfirm}
-                className="flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-200 disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                <X className="h-3.5 w-3.5" />
-                {t('btn_refill_confirm_no')}
-              </button>
-            </>
+            <button
+              id="btn-cycle-refill-no"
+              type="button"
+              onClick={() => onRefillConfirm(false)}
+              disabled={!machineState.refillAwaitingConfirm}
+              className="flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-200 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <X className="h-3.5 w-3.5" />
+              {t('btn_refill_confirm_no')}
+            </button>
           )}
         </div>
       )}
@@ -908,6 +864,12 @@ export const CycleTab: React.FC<CycleTabProps> = ({
           </div>
         </div>
 
+        {backendHasPrefetch && (
+          <div className="mx-4 sm:mx-6 mt-3 flex items-center gap-2 rounded-lg border border-rose-300/80 bg-rose-50 dark:border-rose-700/60 dark:bg-rose-950/40 px-3 py-2 text-xs text-rose-900 dark:text-rose-200">
+            <ShieldAlert className="h-4 w-4 shrink-0" />
+            <span>{t('cycle_stale_prefetch_warning')}</span>
+          </div>
+        )}
         {configDirty && (
           <div className="mx-4 sm:mx-6 mt-3 flex items-center gap-2 rounded-lg border border-amber-300/80 bg-amber-50 dark:border-amber-700/60 dark:bg-amber-950/40 px-3 py-2 text-xs text-amber-900 dark:text-amber-200">
             <ShieldAlert className="h-4 w-4 shrink-0" />

@@ -45,6 +45,14 @@ function isFullErrorText(text: string): boolean {
   return /^E\d{3}\b/i.test(text.trim());
 }
 
+/** Solo el código EXXX para el banner del módulo (el detalle queda en el banner de máquina). */
+function extractFaultCode(code?: string, fault?: string): string {
+  const raw = (code || '').trim();
+  if (/^E\d{3}$/i.test(raw)) return raw.toUpperCase();
+  const m = (fault || '').match(/\bE\d{3}\b/i);
+  return m ? m[0].toUpperCase() : '';
+}
+
 /** Estado corto para operador; EXXX completo solo en error. */
 function operatorModuleStatus(
   statusText: string | undefined,
@@ -230,7 +238,18 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
     machineState.workBlocked
   );
   const modKind = faultModuleKind(machineState.faultModule);
-  const modulePanelError = !!preFeederState.hasError || !!plcState.hasError;
+  const latchedCode = hasFault
+    ? extractFaultCode(machineState.faultCode, machineState.fault)
+    : '';
+  const motionLatched = hasFault && modKind === 'motion';
+  const plcLatched = hasFault && modKind === 'plc';
+  const pfLatched = hasFault && modKind === 'prefeeder';
+  const modulePanelError =
+    !!preFeederState.hasError ||
+    !!plcState.hasError ||
+    motionLatched ||
+    plcLatched ||
+    pfLatched;
   const faultLabel =
     machineState.fault ||
     (machineState.faultCode
@@ -261,6 +280,30 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
   const plcConnected = plcState.connection.connected;
   const plcHasError = !!plcState.hasError && plcConnected;
   const pfConnected = preFeederState.connection.connected;
+  const pfHasError = !!preFeederState.hasError && pfConnected;
+  const motionBannerFault =
+    motionLatched ||
+    (!!motionState.hasError && motionState.connection.connected);
+  const plcBannerFault = plcLatched || plcHasError;
+  const pfBannerFault = pfLatched || pfHasError;
+  const moduleBannerClass = (fault: boolean) =>
+    `rounded-xl border px-4 py-2.5 shadow-2xs flex flex-wrap items-center justify-between gap-3 transition-colors ${
+      fault
+        ? 'border-red-300 dark:border-red-800 bg-red-50/70 dark:bg-red-950/30 text-slate-800 dark:text-slate-200'
+        : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200'
+    }`;
+  const moduleTagClass = (fault: boolean) =>
+    `rounded px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider shrink-0 ${
+      fault
+        ? 'bg-red-100 dark:bg-red-950/60 border border-red-300 dark:border-red-800 text-red-700 dark:text-red-300'
+        : 'bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'
+    }`;
+  const faultCodeChip =
+    latchedCode ? (
+      <span className="rounded border border-red-300 dark:border-red-800 bg-red-100 dark:bg-red-950/60 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-red-700 dark:text-red-300">
+        {latchedCode}
+      </span>
+    ) : null;
   // Module Controls keeps independent PF diagnostics; machine RESET owns the global EXXX latch.
   const pfResetDisabled = !onPfReset || !pfConnected;
   const recoveryStage =
@@ -275,11 +318,12 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
   const lotHeld = machineState.cycleActive || machineState.recoveryAfterError || machineState.isPaused;
 
   const processStep: string = e050Lot
-    ? recoveryStage === 'e050_insufficient' ||
-      recoveryStage === 'e050_finish_process'
+    ? recoveryStage === 'e050_materialist'
       ? 'ask'
-      : recoveryStage === 'e050_empty_material' ||
-          ((recoveryStage === 'working' || recoveryStage === 'after_feed') &&
+      : recoveryStage === 'e050_materialist_wait' ||
+          ((recoveryStage === 'working' ||
+            recoveryStage === 'await_feed' ||
+            recoveryStage === 'after_feed') &&
             skipCut)
         ? 'empty'
         : recoveryStage === 'review_piece'
@@ -296,6 +340,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
       : recoveryStage === 'review_piece'
         ? 'review'
         : recoveryStage === 'working' ||
+            recoveryStage === 'await_feed' ||
             recoveryStage === 'after_feed' ||
             recoveryStage === 'after_cut'
           ? 'purge'
@@ -314,24 +359,14 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
     showRecoveryTrack;
   const showMachineResetCoach = showErrorProcess && processStep === 'reset';
   const showMachineResumeCoach = showErrorProcess && processStep === 'resume';
-
-  const recoverySteps: { id: string; label: string }[] = [
-    { id: 'reset', label: t('lot_recover_step_reset') },
-    { id: 'resume', label: t('lot_recover_step_resume') },
-    { id: 'piece', label: t('lot_recover_step_piece') },
-    { id: 'review', label: t('lot_recover_step_review') },
-    { id: 'purge', label: t('lot_recover_step_purge') },
-    { id: 'continue', label: t('lot_recover_step_continue') },
-  ];
-  const e050Steps: { id: string; label: string }[] = [
-    { id: 'ask', label: t('lot_recover_step_ask') },
-    { id: 'reset', label: t('lot_recover_step_reset') },
-    { id: 'resume', label: t('lot_recover_step_resume') },
-    { id: 'piece', label: t('lot_recover_step_piece') },
-    { id: 'review', label: t('lot_recover_step_review') },
-    { id: 'empty', label: t('lot_recover_step_empty') },
-  ];
-  const processSteps = e050Lot ? e050Steps : recoverySteps;
+  const showRecoveryActions =
+    recoveryStage === 'await_feed' ||
+    recoveryStage === 'after_feed' ||
+    recoveryStage === 'after_cut' ||
+    (recoveryStage === 'e050_materialist' &&
+      !!machineState.recoveryAwaitingConfirm) ||
+    recoveryStage === 'review_piece' ||
+    recoveryStage === 'continue_cycle';
 
   const showManualRefill =
     !machineState.recoveryAfterError &&
@@ -340,13 +375,11 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
     !!machineState.refillPrompt &&
     !!onRefillConfirm;
   const recoveryHint =
-    recoveryStage === 'e050_insufficient'
-      ? t('e050_insufficient_hint')
-      : recoveryStage === 'e050_finish_process'
-        ? t('e050_finish_hint')
-        : recoveryStage === 'e050_empty_material'
-          ? t('e050_empty_hint')
-          : recoveryStage === 'review_piece'
+    recoveryStage === 'e050_materialist'
+      ? t('e050_materialist_hint')
+      : recoveryStage === 'e050_materialist_wait'
+        ? t('e050_materialist_wait_hint')
+        : recoveryStage === 'review_piece'
             ? t('recovery_review_hint')
             : recoveryStage === 'continue_cycle'
               ? t('recovery_continue_hint')
@@ -354,12 +387,14 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                 ? t('refill_confirm_hint_cut')
                 : recoveryStage === 'working'
                   ? t('refill_confirm_hint_working')
-                  : skipCut
-                    ? t('refill_confirm_hint_feed_nocut')
-                    : t('refill_confirm_hint_feed');
+                  : recoveryStage === 'await_feed'
+                    ? t('refill_confirm_hint_await')
+                    : skipCut
+                      ? t('refill_confirm_hint_feed_nocut')
+                      : t('refill_confirm_hint_feed');
   const processHint = e050Lot
     ? processStep === 'ask'
-      ? recoveryStage === 'e050_finish_process'
+      ? machineState.e050FinishPiece
         ? t('lot_recover_hint_e050_finish')
         : t('lot_recover_hint_e050_ask')
       : processStep === 'reset'
@@ -429,7 +464,8 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
     connected: boolean,
     hasError: boolean,
     actions: React.ReactNode,
-    mode?: 'materialist' | 'busy' | null
+    mode?: 'materialist' | 'busy' | null,
+    cardFaultCode?: string
   ) => {
     const showError = hasError && connected;
     return (
@@ -454,6 +490,11 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-800 dark:text-slate-200 truncate">
               {title}
             </h3>
+            {showError && cardFaultCode ? (
+              <span className="rounded border border-red-300 dark:border-red-800 bg-red-100 dark:bg-red-950/60 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-red-700 dark:text-red-300">
+                {cardFaultCode}
+              </span>
+            ) : null}
           </div>
         </div>
         <p
@@ -463,7 +504,9 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               : 'text-slate-600 dark:text-slate-400'
           }`}
         >
-          {operatorModuleStatus(statusText, showError, connected, t, mode)}
+          {showError && cardFaultCode
+            ? t('state_error')
+            : operatorModuleStatus(statusText, showError, connected, t, mode)}
         </p>
         <div className="flex flex-wrap items-center gap-1.5">{actions}</div>
       </div>
@@ -568,11 +611,6 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               {t('lot_recover_last_error')}: {machineState.lastFault}
             </span>
           ) : null}
-          {showErrorProcess && (
-            <span className="rounded border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/50 px-2 py-0.5 text-[11px] font-semibold text-amber-900 dark:text-amber-100">
-              {processHint}
-            </span>
-          )}
           {machineState.cycleCompleted && !hasFault && (
             <span className="text-xs font-mono text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 px-2 py-0.5 rounded">
               {t('cycle_complete')}
@@ -761,38 +799,10 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               )}
             </div>
 
-            {showErrorProcess && (
+            {showRecoveryActions && (
               <div className="flex flex-wrap items-center gap-3 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/50 px-4 py-3">
-                <div className="min-w-0 flex-1">
-                  <p className="text-xs font-bold text-amber-950 dark:text-amber-100">
-                    {e050Lot
-                      ? t('lot_recover_title_e050')
-                      : t('lot_recover_title_c2')}
-                  </p>
-                  <p className="text-[11px] text-amber-900/80 dark:text-amber-200/80 mt-0.5">
-                    {processHint}
-                  </p>
-                  {(machineState.fault || machineState.lastFault) && (
-                    <p className="mt-1 font-mono text-[11px] font-semibold text-red-800 dark:text-red-200">
-                      {machineState.fault || machineState.lastFault}
-                    </p>
-                  )}
-                  <p className="mt-1 font-mono text-[10px] text-amber-800 dark:text-amber-200 flex flex-wrap gap-x-1">
-                    {processSteps.map((s, i) => (
-                      <span key={s.id}>
-                        {i > 0 ? ' → ' : ''}
-                        <span
-                          className={
-                            s.id === processStep ? 'font-bold underline' : 'opacity-50'
-                          }
-                        >
-                          {s.label}
-                        </span>
-                      </span>
-                    ))}
-                  </p>
-                </div>
-                {recoveryStage === 'after_feed' && onRefillRetry && (
+                {(recoveryStage === 'await_feed' || recoveryStage === 'after_feed') &&
+                  onRefillRetry && (
                   <button
                     id="btn-recovery-refill-retry"
                     type="button"
@@ -804,7 +814,8 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     {t('btn_refill_confirm_retry')}
                   </button>
                 )}
-                {recoveryStage === 'after_feed' && onRefillLongFeed && (
+                {(recoveryStage === 'await_feed' || recoveryStage === 'after_feed') &&
+                  onRefillLongFeed && (
                   <button
                     id="btn-recovery-refill-long"
                     type="button"
@@ -842,11 +853,20 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     {t('btn_refill_confirm_yes')}
                   </button>
                 )}
-                {(recoveryStage === 'e050_insufficient' ||
-                  recoveryStage === 'e050_finish_process' ||
-                  recoveryStage === 'e050_empty_material') &&
+                {recoveryStage === 'e050_materialist' &&
+                  machineState.recoveryAwaitingConfirm &&
                   onRecoveryReview && (
                   <>
+                    <button
+                      id="btn-recovery-e050-no"
+                      type="button"
+                      onClick={() => onRecoveryReview(false)}
+                      disabled={!machineState.recoveryAwaitingConfirm}
+                      className="flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3.5 py-2 text-xs font-bold text-slate-700 dark:text-slate-200 disabled:opacity-40"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                      {t('btn_e050_no_materialist')}
+                    </button>
                     <button
                       id="btn-recovery-e050-yes"
                       type="button"
@@ -855,17 +875,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                       className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 text-xs font-bold text-white disabled:opacity-40"
                     >
                       <Check className="h-3.5 w-3.5" />
-                      {t('btn_e050_yes')}
-                    </button>
-                    <button
-                      id="btn-recovery-e050-omit"
-                      type="button"
-                      onClick={() => onRecoveryReview(false)}
-                      disabled={!machineState.recoveryAwaitingConfirm}
-                      className="flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3.5 py-2 text-xs font-bold text-slate-700 dark:text-slate-200 disabled:opacity-40"
-                    >
-                      <X className="h-3.5 w-3.5" />
-                      {t('btn_e050_omit')}
+                      {t('btn_e050_yes_materialist')}
                     </button>
                   </>
                 )}
@@ -895,17 +905,23 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                       ? t('refill_confirm_title_cut')
                       : machineState.refillPrompt === 'working'
                         ? t('refill_confirm_title_working')
-                        : t('refill_confirm_title_feed')}
+                        : machineState.refillPrompt === 'await_feed'
+                          ? t('refill_confirm_title_await')
+                          : t('refill_confirm_title_feed')}
                   </p>
                   <p className="text-[11px] text-sky-800/80 dark:text-sky-200/80 mt-0.5">
                     {machineState.refillPrompt === 'after_cut'
                       ? t('refill_confirm_hint_cut')
                       : machineState.refillPrompt === 'working'
                         ? t('refill_confirm_hint_working')
-                        : t('refill_confirm_hint_feed')}
+                        : machineState.refillPrompt === 'await_feed'
+                          ? t('refill_confirm_hint_await')
+                          : t('refill_confirm_hint_feed')}
                   </p>
                 </div>
-                {machineState.refillPrompt === 'after_feed' && onRefillRetry && (
+                {(machineState.refillPrompt === 'after_feed' ||
+                  machineState.refillPrompt === 'await_feed') &&
+                  onRefillRetry && (
                   <button
                     id="btn-refill-confirm-retry"
                     type="button"
@@ -917,7 +933,9 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     {t('btn_refill_confirm_retry')}
                   </button>
                 )}
-                {machineState.refillPrompt === 'after_feed' && onRefillLongFeed && (
+                {(machineState.refillPrompt === 'after_feed' ||
+                  machineState.refillPrompt === 'await_feed') &&
+                  onRefillLongFeed && (
                   <button
                     id="btn-refill-confirm-long"
                     type="button"
@@ -929,66 +947,38 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     {t('btn_refill_confirm_long')}
                   </button>
                 )}
+                {machineState.refillPrompt !== 'working' &&
+                  machineState.refillPrompt !== 'await_feed' && (
+                  <button
+                    id="btn-refill-confirm-yes"
+                    type="button"
+                    onClick={() => onRefillConfirm(true)}
+                    disabled={!machineState.refillAwaitingConfirm}
+                    className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 text-xs font-bold text-white shadow-2xs active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
+                  >
+                    <Check className="h-3.5 w-3.5" />
+                    {machineState.refillPrompt === 'after_cut'
+                      ? t('btn_refill_confirm_yes')
+                      : t('btn_refill_confirm_next_cut')}
+                  </button>
+                )}
                 {machineState.refillPrompt !== 'working' && (
-                  <>
-                    <button
-                      id="btn-refill-confirm-yes"
-                      type="button"
-                      onClick={() => onRefillConfirm(true)}
-                      disabled={!machineState.refillAwaitingConfirm}
-                      className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 text-xs font-bold text-white shadow-2xs active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
-                    >
-                      <Check className="h-3.5 w-3.5" />
-                      {machineState.refillPrompt === 'after_cut'
-                        ? t('btn_refill_confirm_yes')
-                        : t('btn_refill_confirm_next_cut')}
-                    </button>
-                    <button
-                      id="btn-refill-confirm-no"
-                      type="button"
-                      onClick={() => onRefillConfirm(false)}
-                      disabled={!machineState.refillAwaitingConfirm}
-                      className="flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3.5 py-2 text-xs font-bold text-slate-700 dark:text-slate-200 shadow-2xs active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
-                    >
-                      <X className="h-3.5 w-3.5" />
-                      {t('btn_refill_confirm_no')}
-                    </button>
-                  </>
+                  <button
+                    id="btn-refill-confirm-no"
+                    type="button"
+                    onClick={() => onRefillConfirm(false)}
+                    disabled={!machineState.refillAwaitingConfirm}
+                    className="flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3.5 py-2 text-xs font-bold text-slate-700 dark:text-slate-200 shadow-2xs active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                    {t('btn_refill_confirm_no')}
+                  </button>
                 )}
               </div>
             )}
           </div>
 
           <div className="w-full lg:w-40 shrink-0 flex flex-col gap-2 border-t lg:border-t-0 lg:border-l border-slate-100 dark:border-slate-800 pt-4 lg:pt-0 lg:pl-4">
-            {showErrorProcess && (
-              <div className="rounded-md border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-2 py-1.5 text-[10px] leading-snug text-amber-900 dark:text-amber-100">
-                <p className="font-bold uppercase tracking-wide">
-                  {e050Lot
-                    ? t('lot_recover_title_e050')
-                    : t('lot_recover_title_c2')}
-                </p>
-                <p className="mt-0.5">{processHint}</p>
-                {(machineState.fault || machineState.lastFault) && (
-                  <p className="mt-1 font-mono font-semibold text-red-800 dark:text-red-200">
-                    {machineState.fault || machineState.lastFault}
-                  </p>
-                )}
-                <p className="mt-1 font-mono text-[10px] text-amber-800 dark:text-amber-200">
-                  {processSteps.map((s, i) => (
-                    <span key={s.id}>
-                      {i > 0 ? ' → ' : ''}
-                      <span
-                        className={
-                          s.id === processStep ? 'font-bold underline' : 'opacity-50'
-                        }
-                      >
-                        {s.label}
-                      </span>
-                    </span>
-                  ))}
-                </p>
-              </div>
-            )}
             {showPfCoach && (
               <div className="rounded-md border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-2 py-1.5 text-[10px] leading-snug text-amber-900 dark:text-amber-100">
                 <p className="font-bold uppercase tracking-wide">
@@ -1058,12 +1048,12 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               id="btn-reset-maquina"
               onClick={onReset}
               title={
-                  ? t('pf_recover_hint_reset')
-                  : showMachineResetCoach
-                    ? t('lot_recover_hint_reset')
-                    : undefined
+                showMachineResetCoach
+                  ? t('lot_recover_hint_reset')
+                  : undefined
               }
               className={`flex w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-2.5 text-xs font-semibold transition shadow-2xs disabled:opacity-40 disabled:cursor-not-allowed ${
+                showMachineResetCoach
                   ? 'border-amber-400 bg-amber-100 dark:bg-amber-950/60 text-amber-950 dark:text-amber-100 ring-2 ring-amber-300 ring-offset-1 animate-pulse'
                   : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 text-slate-700 dark:text-slate-200'
               }`}
@@ -1160,24 +1150,39 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
 
       {/* Estados de módulo — debajo de Control de máquina */}
       <div className="space-y-2">
-        <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-2.5 text-slate-800 dark:text-slate-200 shadow-2xs flex flex-wrap items-center justify-between gap-3 transition-colors">
+        <div className={moduleBannerClass(motionBannerFault)}>
           <div className="flex items-center gap-3 min-w-0">
-            <span className="rounded bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 shrink-0">
+            <span className={moduleTagClass(motionBannerFault)}>
               {t('tab_motion')}
             </span>
             <div className="flex items-center gap-2 min-w-0">
               <span
                 className={`h-2.5 w-2.5 rounded-full shrink-0 ${
-                  !motionState.connection.connected || motionState.hasError
+                  !motionState.connection.connected || motionBannerFault
                     ? 'bg-red-500'
                     : motionState.isMoving
                       ? 'bg-amber-500 animate-ping'
                       : 'bg-emerald-500'
                 }`}
               />
-              <span className="text-sm font-semibold text-slate-900 dark:text-white tracking-tight truncate">
-                {motionState.statusText || (motionState.isMoving ? t('motor_moving') : t('state_ready'))}
-              </span>
+              {motionLatched ? (
+                <>
+                  <span className="text-sm font-semibold tracking-tight text-red-700 dark:text-red-300">
+                    {t('state_error')}
+                  </span>
+                  {faultCodeChip}
+                </>
+              ) : (
+                <span
+                  className={`text-sm font-semibold tracking-tight truncate ${
+                    motionBannerFault
+                      ? 'text-red-700 dark:text-red-300'
+                      : 'text-slate-900 dark:text-white'
+                  }`}
+                >
+                  {motionState.statusText || (motionState.isMoving ? t('motor_moving') : t('state_ready'))}
+                </span>
+              )}
             </div>
 
             <span className="text-slate-300 dark:text-slate-700 hidden sm:inline">|</span>
@@ -1203,30 +1208,39 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
           </div>
         </div>
 
-        <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-2.5 text-slate-800 dark:text-slate-200 shadow-2xs flex flex-wrap items-center justify-between gap-3 transition-colors">
+        <div className={moduleBannerClass(plcBannerFault)}>
           <div className="flex items-center gap-3 min-w-0">
-            <span className="rounded bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 shrink-0">
+            <span className={moduleTagClass(plcBannerFault)}>
               {t('tab_plc')}
             </span>
             <div className="flex items-center gap-2 min-w-0">
               <span
                 className={`h-2.5 w-2.5 rounded-full shrink-0 ${
-                  !plcConnected || plcHasError
+                  !plcConnected || plcBannerFault
                     ? 'bg-red-500'
                     : 'bg-emerald-500 animate-pulse'
                 }`}
               />
-              <span
-                className={`text-sm font-semibold tracking-tight truncate ${
-                  plcHasError
-                    ? 'text-red-700 dark:text-red-300'
-                    : 'text-slate-900 dark:text-white'
-                }`}
-              >
-                {plcState.statusText || (activeValvesCount > 0
-                  ? `${activeValvesCount} ${t('valves_active')}`
-                  : t('state_ready'))}
-              </span>
+              {plcLatched ? (
+                <>
+                  <span className="text-sm font-semibold tracking-tight text-red-700 dark:text-red-300">
+                    {t('state_error')}
+                  </span>
+                  {faultCodeChip}
+                </>
+              ) : (
+                <span
+                  className={`text-sm font-semibold tracking-tight truncate ${
+                    plcBannerFault
+                      ? 'text-red-700 dark:text-red-300'
+                      : 'text-slate-900 dark:text-white'
+                  }`}
+                >
+                  {plcState.statusText || (activeValvesCount > 0
+                    ? `${activeValvesCount} ${t('valves_active')}`
+                    : t('state_ready'))}
+                </span>
+              )}
             </div>
 
             <span className="text-slate-300 dark:text-slate-700 hidden sm:inline">|</span>
@@ -1252,34 +1266,41 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
           </div>
         </div>
 
-        <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-2.5 text-slate-800 dark:text-slate-200 shadow-2xs flex flex-wrap items-center justify-between gap-3 transition-colors">
+        <div className={moduleBannerClass(pfBannerFault)}>
           <div className="flex items-center gap-3 min-w-0">
-            <span className="rounded bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 shrink-0">
+            <span className={moduleTagClass(pfBannerFault)}>
               {t('tab_prefeeder')}
             </span>
             <div className="flex items-center gap-2 min-w-0">
               <span
                 className={`h-2.5 w-2.5 rounded-full shrink-0 ${
-                  !pfConnected
+                  !pfConnected || pfBannerFault
                     ? 'bg-red-500'
-                    : pfHasError
-                      ? 'bg-red-500'
-                      : pfMode === 'materialist'
-                        ? 'bg-violet-500'
-                        : pfMode === 'busy'
-                          ? 'bg-emerald-500 animate-pulse'
-                          : 'bg-emerald-500'
+                    : pfMode === 'materialist'
+                      ? 'bg-violet-500'
+                      : pfMode === 'busy'
+                        ? 'bg-emerald-500 animate-pulse'
+                        : 'bg-emerald-500'
                 }`}
               />
-              <span
-                className={`text-sm font-semibold tracking-tight truncate ${
-                  pfHasError
-                    ? 'text-red-700 dark:text-red-300'
-                    : 'text-slate-900 dark:text-white'
-                }`}
-              >
-                {pfHeadline}
-              </span>
+              {pfLatched ? (
+                <>
+                  <span className="text-sm font-semibold tracking-tight text-red-700 dark:text-red-300">
+                    {t('state_error')}
+                  </span>
+                  {faultCodeChip}
+                </>
+              ) : (
+                <span
+                  className={`text-sm font-semibold tracking-tight truncate ${
+                    pfBannerFault
+                      ? 'text-red-700 dark:text-red-300'
+                      : 'text-slate-900 dark:text-white'
+                  }`}
+                >
+                  {pfHeadline}
+                </span>
+              )}
             </div>
 
             <span className="text-slate-300 dark:text-slate-700 hidden sm:inline">|</span>
@@ -1337,10 +1358,9 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
         ) : null}
         {showPfCoach ? (
           <p className="mt-3 text-xs text-amber-800 dark:text-amber-200">
-              ? t('pf_recover_hint_reset')
-              : resumeEnabled
-                ? t('pf_recover_hint_jog_resume')
-                : t('pf_recover_hint_jog')}
+            {resumeEnabled
+              ? t('pf_recover_hint_jog_resume')
+              : t('pf_recover_hint_jog')}
           </p>
         ) : null}
 
@@ -1349,7 +1369,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
             t('tab_prefeeder'),
             preFeederState.statusText,
             preFeederState.connection.connected,
-            !!preFeederState.hasError,
+            !!preFeederState.hasError || pfLatched,
             <>
               <button
                 id="btn-main-pf-start"
@@ -1430,7 +1450,8 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                 <span>{t('btn_busy_cycle')}</span>
               </button>
             </>,
-            pfMode
+            pfMode,
+            pfLatched ? latchedCode : undefined
           )}
           {pfJogCard('L')}
           {pfJogCard('R')}

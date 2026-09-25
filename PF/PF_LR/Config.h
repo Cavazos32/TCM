@@ -55,6 +55,8 @@ constexpr uint16_t SERVO_PWM_MAX_US       = 2500;
 constexpr uint16_t SERVO_PWM_NEUTRAL_US     = 1500;
 constexpr uint8_t  SERVO_LEDC_BITS        = 14;
 constexpr uint32_t DEREELER_START_DELAY_MS = 100;
+// Tras Stop() RMT el LEDC se suelta: reafirmar 1500 cada frame RC, no cada 250 ms.
+constexpr uint32_t SERVO_STOP_REASSERT_MS = 20;
 
 // ====================== RED / WiFi ======================
 // L: http://10.10.32.101 | R: http://10.10.32.102 | Master: http://10.10.32.100
@@ -96,7 +98,7 @@ constexpr float TENSION_BOOST_RPM_OFFSET = 30.0f;
 // ====================== BUFFER / HOLGURA ======================
 // Legacy UI/JSON: el monitor ya no enclava FAULT_BUFFER_TIMEOUT.
 constexpr float BUFFER_REFILL_FAULT_SEC = 10.0f;
-constexpr float M2_HOLGURA_FAULT_SEC      = 1.5f;   // ausente ≥ esto + Buffer Full ON → PF_ERR_HOLGURA
+constexpr float M2_HOLGURA_FAULT_SEC      = 1.5f;   // ausencia acumulada tras Full visto → PF_ERR_HOLGURA
 constexpr float M2_HOLGURA_FAULT_SEC_MIN  = 0.3f;
 constexpr float M2_HOLGURA_FAULT_SEC_MAX  = 30.0f;
 constexpr uint32_t M2_HOLGURA_FILTER_MS   = 80;

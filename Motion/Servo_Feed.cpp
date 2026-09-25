@@ -564,12 +564,26 @@ static bool feedVelocityChange(bool sideR, float velocityPct)
   return true;
 }
 
+// Halt de perfil (0x010F, HaltOpt=2 → rampa 0x6085 ya primada en configure).
+// Un frame: para armar L y R en el mismo tick antes de cualquier SDO.
+static void feedVelocityHaltCw(bool sideR)
+{
+  sendCanHaltImmediate(sideR);
+}
+
+static void feedVelocityHaltBurst(bool sideR)
+{
+  for (uint8_t i = 0; i < FEED_LASER_HALT_BURST; i++)
+    sendCanHaltImmediate(sideR);
+}
+
+// Failsafe / abort: Halt primero, TVel=0 después. No reescribir 0x6085 aquí
+// (bloquea el otro lado y el TVel=0 solo ya arranca rampa 0x6084).
 static bool feedVelocityStop(bool sideR)
 {
   if (!canInitialized) return false;
-  feedCanPrimeHaltDecelSide(sideR);
-  for (uint8_t i = 0; i < FEED_LASER_HALT_BURST; i++)
-    sendCanHaltImmediate(sideR);
+  feedVelocityHaltBurst(sideR);
+  canWriteI32OneNode(sideR, SERVO_OD_TARGET_VELOCITY, 0, "TVel0");
   return true;
 }
 
@@ -658,8 +672,10 @@ struct FeedSideRt {
   float omAtLaser = -1.0f;
   uint32_t velStartedMs = 0;
   uint32_t velHaltMs = 0;
+  uint32_t velStopRetryMs = 0;
   uint32_t encWatchDeadlineMs = 0;
   bool velEncoderSeen = false;
+  bool velTvelZeroSent = false;
 };
 
 static FeedSideRt feedSides[2];
@@ -1040,8 +1056,10 @@ static void feedSideClearDiag(FeedSideRt& s)
   s.omAtLaser = -1.0f;
   s.velStartedMs = 0;
   s.velHaltMs = 0;
+  s.velStopRetryMs = 0;
   s.encWatchDeadlineMs = 0;
   s.velEncoderSeen = false;
+  s.velTvelZeroSent = false;
 }
 
 // Globals = "último lado que terminó" (HTTP/overview). Fuente de verdad = feedSides[].
@@ -1249,15 +1267,50 @@ static float feedSideReadOmLiveMm(bool sideR, FeedSideRt& s)
   return s.omLiveMm;
 }
 
+// Tope LR-X: primer CAN = CW Halt. OM y TVel=0 no van antes (el servo sigue).
 static void feedSideVelocityHaltNow(bool sideR, uint32_t now, const char* why)
 {
   FeedSideRt& s = feedSideAt(sideR);
   if (s.velStopLatched) return;
   s.velStopLatched = true;
-  s.omAtLaser = feedSideReadOmLiveMm(sideR, s);
-  feedVelocityStop(sideR);
+  feedVelocityHaltCw(sideR);
+  for (uint8_t i = 1; i < FEED_LASER_HALT_BURST; i++)
+    feedVelocityHaltCw(sideR);
   s.velHaltMs = now;
-  Serial.printf("FEED %c %s\n", sideR ? 'R' : 'L', why ? why : "QUICK STOP");
+  s.velStopRetryMs = now + FEED_VEL_STOP_FAILSAFE_MS;
+  s.omAtLaser = feedSideReadOmLiveMm(sideR, s);
+  Serial.printf("FEED %c %s\n", sideR ? 'R' : 'L', why ? why : "HALT");
+}
+
+// GPIO crudo → un Halt por lado. L y R se arman antes de burst/SDO/OM.
+static bool feedPollVelocityLaserCw(bool sideR, uint32_t now)
+{
+  FeedSideRt& s = feedSideAt(sideR);
+  if (!s.active || s.skipValidate || s.velStopLatched) return false;
+  if (s.phase != FSP_VEL_FAST && s.phase != FSP_VEL_SLOW) return false;
+  if (!feedLaserMaterialPresentRaw(sideR)) return false;
+  s.laserState = true;
+  s.velStopLatched = true;
+  s.phase = FSP_VEL_STOPPING;
+  s.velHaltMs = now;
+  s.velStopRetryMs = now + FEED_VEL_STOP_FAILSAFE_MS;
+  feedVelocityHaltCw(sideR);
+  return true;
+}
+
+// Watchdog / fallo PV: halt + TVel0 y esperar 0x606C~0 en VEL_STOPPING.
+// No llamar feedSideFinish aquí: restaurar PP con el servo en movimiento lo deja corriendo.
+static void feedSideVelocityAbort(bool sideR, uint32_t now, uint8_t errByte, const char* reason)
+{
+  FeedSideRt& s = feedSideAt(sideR);
+  s.result = FVR_NG;
+  s.errByte = errByte;
+  if (reason && reason[0]) {
+    strncpy(s.fault, reason, sizeof(s.fault) - 1);
+    s.fault[sizeof(s.fault) - 1] = '\0';
+  }
+  feedSideVelocityHaltNow(sideR, now, reason);
+  s.phase = FSP_VEL_STOPPING;
 }
 
 static void feedSideStartVelocity(bool sideR)
@@ -1287,6 +1340,9 @@ static void feedSideStartVelocity(bool sideR)
     return;
   }
 
+  // Remanente / 1ª carga: LR-X OFF → hunt a SLOW (no FAST; el flanco llega cerca).
+  s.huntLaser = true;
+
   sendCanHaltImmediate(sideR);
   s.settleUntilMs = millis() + FEED_HALT_SETTLE_MS;
   s.phase = FSP_VEL_PREPARE;
@@ -1307,16 +1363,14 @@ static bool feedSideVelocityWatchdogs(bool sideR, uint32_t now, float om)
   const uint8_t laserErr = sideR ? MOT_ERR_LASER_R : MOT_ERR_LASER_L;
 
   if (s.velStartedMs != 0 && (now - s.velStartedMs) > feedVelTimeoutMs) {
-    feedSideVelocityHaltNow(sideR, now, "VELOCITY FEED TIMEOUT");
-    feedSideFinish(sideR, FVR_NG, MOT_ERR_FEED_TIMEOUT, "FEED: timeout");
+    feedSideVelocityAbort(sideR, now, MOT_ERR_FEED_TIMEOUT, "FEED: timeout");
     return true;
   }
 
   if (om >= feedVelMaxTravelMm) {
     Serial.printf("OM=%.1f LR-X=OFF\n", (double)om);
     Serial.println("VELOCITY FEED MAX TRAVEL");
-    feedSideVelocityHaltNow(sideR, now, "VELOCITY FEED MAX TRAVEL");
-    feedSideFinish(sideR, FVR_NG, laserErr, "VELOCITY FEED MAX TRAVEL");
+    feedSideVelocityAbort(sideR, now, laserErr, "VELOCITY FEED MAX TRAVEL");
     return true;
   }
 
@@ -1324,8 +1378,7 @@ static bool feedSideVelocityWatchdogs(bool sideR, uint32_t now, float om)
     if (om >= FEED_OM_DIR_CHECK_MM) {
       s.velEncoderSeen = true;
     } else if (!feedSkipEncoderConfirm) {
-      feedSideVelocityHaltNow(sideR, now, "VELOCITY FEED NO OM");
-      feedSideFinish(sideR, FVR_NG, MOT_ERR_ENCODER_NO_PULSES, "FEED: sin incremento OM");
+      feedSideVelocityAbort(sideR, now, MOT_ERR_ENCODER_NO_PULSES, "FEED: sin incremento OM");
       return true;
     }
   }
@@ -1337,8 +1390,7 @@ static bool feedSideVelocityWatchdogs(bool sideR, uint32_t now, float om)
       s.dirChecked = true;
       const bool wrongDir = sideR ? (live < 0.0f) : (live > 0.0f);
       if (wrongDir) {
-        feedSideVelocityHaltNow(sideR, now, "VELOCITY FEED DIR");
-        feedSideFinish(sideR, FVR_NG, MOT_ERR_FEED_DIR_CW, "FEED: sentido horario");
+        feedSideVelocityAbort(sideR, now, MOT_ERR_FEED_DIR_CW, "FEED: sentido horario");
         return true;
       }
     }
@@ -1357,7 +1409,14 @@ static void feedSideService(bool sideR, uint32_t now)
   if (!s.active) return;
 
   if ((now - s.opStartMs) > (FEED_WAIT_TIMEOUT_MS + FEED_WAIT_EXTRA_MS)) {
-    canHaltSide(sideR);
+    if (s.velModeActive && s.phase != FSP_VEL_STOPPING && s.phase != FSP_VEL_SETTLE) {
+      feedSideVelocityAbort(sideR, now, MOT_ERR_FEED_TIMEOUT, "FEED: timeout");
+      return;
+    }
+    if (s.velModeActive)
+      feedVelocityStop(sideR);
+    else
+      canHaltSide(sideR);
     feedSideFinish(sideR, FVR_NG, MOT_ERR_FEED_TIMEOUT, "FEED: timeout");
     return;
   }
@@ -1594,16 +1653,26 @@ static void feedSideService(bool sideR, uint32_t now)
       }
       feedOmResetSide(sideR, false);
       Serial.printf("OM Set0\n");
-      if (!feedVelocityConfigure(sideR) || !feedVelocityStart(sideR, feedVelFastPct)) {
-        feedSideFinish(sideR, FVR_NG, MOT_ERR_FEED_CAN_NO_RESP, "FEED: CAN PV");
-        break;
+      {
+        const float startPct = s.huntLaser ? feedVelSlowPct : feedVelFastPct;
+        if (!feedVelocityConfigure(sideR) || !feedVelocityStart(sideR, startPct)) {
+          feedVelocityStop(sideR);
+          feedSideFinish(sideR, FVR_NG, MOT_ERR_FEED_CAN_NO_RESP, "FEED: CAN PV");
+          break;
+        }
+        s.velStartedMs = now;
+        s.encWatchDeadlineMs = now + FEED_VEL_ENC_WATCH_MS;
+        s.velStopLatched = false;
+        s.velTvelZeroSent = false;
+        if (s.huntLaser) {
+          Serial.printf("HUNT SLOW %.0f%% (LR-X OFF)\n", (double)feedVelSlowPct);
+          s.phase = FSP_VEL_SLOW;
+        } else {
+          Serial.printf("FAST %.0f%% transition=%.1fmm\n",
+                        (double)feedVelFastPct, (double)s.velTransitionMm);
+          s.phase = FSP_VEL_FAST;
+        }
       }
-      s.velStartedMs = now;
-      s.encWatchDeadlineMs = now + FEED_VEL_ENC_WATCH_MS;
-      s.velStopLatched = false;
-      Serial.printf("FAST %.0f%% transition=%.1fmm\n",
-                    (double)feedVelFastPct, (double)s.velTransitionMm);
-      s.phase = FSP_VEL_FAST;
       break;
 
     case FSP_VEL_FAST:
@@ -1615,7 +1684,7 @@ static void feedSideService(bool sideR, uint32_t now)
         }
         s.laserState = feedLaserMaterialPresentRaw(sideR);
         if (s.laserState) {
-          feedSideVelocityHaltNow(sideR, now, "LR-X ON → QUICK STOP");
+          feedSideVelocityHaltNow(sideR, now, "LR-X ON → HALT");
           s.phase = FSP_VEL_STOPPING;
           break;
         }
@@ -1636,6 +1705,18 @@ static void feedSideService(bool sideR, uint32_t now)
 
     case FSP_VEL_STOPPING:
       if (s.velHaltMs == 0) s.velHaltMs = now;
+      if (s.velStopRetryMs == 0)
+        s.velStopRetryMs = s.velHaltMs + FEED_VEL_STOP_FAILSAFE_MS;
+      // TVel=0 después del Halt (y después de armar el otro lado en el mismo tick).
+      if (!s.velTvelZeroSent) {
+        canWriteI32OneNode(sideR, SERVO_OD_TARGET_VELOCITY, 0, "TVel0");
+        s.velTvelZeroSent = true;
+      }
+      if (now >= s.velStopRetryMs) {
+        feedVelocityStop(sideR);
+        s.velTvelZeroSent = true;
+        s.velStopRetryMs = now + FEED_VEL_STOP_FAILSAFE_MS;
+      }
       if (s.lastTrPollMs != 0 && (now - s.lastTrPollMs) < FEED_SS_TR_POLL_MS)
         break;
       s.lastTrPollMs = now;
@@ -1643,6 +1724,11 @@ static void feedSideService(bool sideR, uint32_t now)
         int32_t velocityActual = 0;
         if (feedVelocityIsStopped(sideR, now, s.velHaltMs, &velocityActual)) {
           Serial.printf("SERVO STOPPED velActual=%ld\n", (long)velocityActual);
+          if (s.result == FVR_NG || s.errByte != 0) {
+            feedSideFinish(sideR, FVR_NG, (uint8_t)s.errByte,
+                           s.fault[0] ? s.fault : "FEED NG");
+            break;
+          }
           s.settleUntilMs = now + FEED_OM_HALT_SETTLE_MS;
           s.omReadMiss = 0;
           s.phase = FSP_VEL_SETTLE;
@@ -1762,16 +1848,10 @@ static void feedPollLaserHaltSide(bool sideR, uint32_t now)
   const bool watch = (s.phase == FSP_WAIT_SERVO || s.phase == FSP_WAIT_SERVO_CORR)
       && s.haltOnLaserRise;
   const bool seek = (s.phase == FSP_LASER_SEEK);
-  const bool vel = (s.phase == FSP_VEL_FAST || s.phase == FSP_VEL_SLOW);
-  if (!watch && !seek && !vel) return;
+  if (!watch && !seek) return;
   if (!feedLaserMaterialPresentRaw(sideR)) return;
   s.laserState = true;
   s.haltOnLaserRise = false;
-  if (vel) {
-    feedSideVelocityHaltNow(sideR, now, "LR-X ON → QUICK STOP");
-    s.phase = FSP_VEL_STOPPING;
-    return;
-  }
   feedLaserHaltNow(sideR);
   if (seek) {
     s.settleUntilMs = now + FEED_HALT_SETTLE_MS;
@@ -1822,6 +1902,21 @@ void feedLoop()
 
   const uint32_t now = millis();
   serviceCANRx();
+  // LR-X: un Halt L y un Halt R antes de burst/SDO (prefetch || HOME no serializa tope).
+  const bool velHitL = feedPollVelocityLaserCw(false, now);
+  const bool velHitR = feedPollVelocityLaserCw(true, now);
+  if (velHitL) {
+    for (uint8_t i = 1; i < FEED_LASER_HALT_BURST; i++)
+      feedVelocityHaltCw(false);
+    feedSides[0].omAtLaser = feedSideReadOmLiveMm(false, feedSides[0]);
+    Serial.printf("FEED L LR-X ON → HALT\n");
+  }
+  if (velHitR) {
+    for (uint8_t i = 1; i < FEED_LASER_HALT_BURST; i++)
+      feedVelocityHaltCw(true);
+    feedSides[1].omAtLaser = feedSideReadOmLiveMm(true, feedSides[1]);
+    Serial.printf("FEED R LR-X ON → HALT\n");
+  }
   feedPollLaserHaltSide(false, now);
   feedPollLaserHaltSide(true, now);
   feedSideService(false, now);

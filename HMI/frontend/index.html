@@ -3,6 +3,23 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      function hmiShowErr(msg) {
+        var r = document.getElementById('root');
+        if (r) r.textContent = String(msg);
+      }
+      window.addEventListener('error', function (ev) {
+        if (ev.target && ev.target.tagName === 'SCRIPT') {
+          hmiShowErr('No cargo el JS: ' + (ev.target.src || ''));
+        } else if (ev.message) {
+          hmiShowErr(ev.message + ' @ ' + (ev.filename || '') + ':' + ev.lineno);
+        }
+      }, true);
+      window.addEventListener('unhandledrejection', function (ev) {
+        var r = ev.reason;
+        hmiShowErr(r && r.stack ? r.stack : r);
+      });
+    </script>
     <title>TCM HMI - Control Industrial</title>
     <meta name="description" content="Interfaz HMI optimizada para control de máquina, Motion ASDA B3, PLC y PreFeeder con reducción de tiempos de respuesta." />
     <meta property="og:title" content="TCM HMI - Control Industrial" />
@@ -11,7 +28,9 @@
     <meta name="twitter:card" content="summary_large_image" />
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root" style="font:14px/1.4 system-ui,sans-serif;padding:24px;color:#334155">
+      Cargando TCM HMI…
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

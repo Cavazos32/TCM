@@ -171,7 +171,7 @@
 #define FEED_VEL_TIMEOUT_MS_MIN     1000u
 #define FEED_VEL_TIMEOUT_MS_MAX     30000u
 #define FEED_VEL_ENC_WATCH_MS       500u
-#define FEED_VEL_STOP_FAILSAFE_MS   250u
+#define FEED_VEL_STOP_FAILSAFE_MS   250u  // re-emitir Halt+TVel0 si 0x606C no es ~0
 
 // ====================== Feed runtime timing ======================
 #define FEED_FAULT_REASON_MAX       96
@@ -211,9 +211,9 @@ enum FeedSidePhase : uint8_t {
   FSP_LASER_SEEK,       // creep a trozos hasta láser ON o timeout
   FSP_LASER_SEEK_HALT,  // halt por flanco ON; settle corto → SETTLE_FINAL
   FSP_VEL_PREPARE,      // PV: halt + Set0 + 0x6060=3
-  FSP_VEL_FAST,         // PV: 0x60FF fast; OM solo estima transición
-  FSP_VEL_SLOW,         // PV: 0x60FF slow; tope = LR-X crudo
-  FSP_VEL_STOPPING,     // Halt / QS; espera servo parado
+  FSP_VEL_FAST,         // PV: 0x60FF fast (viaje largo; láser ya no hunt)
+  FSP_VEL_SLOW,         // PV: 0x60FF slow; hunt si LR-X OFF al start; tope = GPIO
+  FSP_VEL_STOPPING,     // CW Halt ya emitido; TVel=0 + espera 0x606C~0
   FSP_VEL_SETTLE,       // OM final + restaurar PP
   FSP_DONE_OK,
   FSP_DONE_NG

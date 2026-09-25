@@ -557,14 +557,12 @@ const char index_html[] PROGMEM = R"rawliteral(
         <p class="info-section-title">Núcleo 1 · DeReeler + Servo (con Iniciar)</p>
         <ol class="info-flow">
           <li class="info-step-note"><strong>Secuencia:</strong> trigger Tfeed → feeder consume · DeReeler/servo siguen hasta Full ON</li>
-          <li>Buffer Full GPIO 19 estable (ON ~80 ms) → DeReeler parado · servo parado</li>
+          <li>Buffer Full GPIO 19 HIGH → DeReeler/servo paran al instante; rearranque solo tras OFF ~200 ms</li>
           <li>Feeder en Tfeed no pausa DeReeler/servo (relleno en paralelo)</li>
           <li>Buffer Full OFF sostenido (~200 ms) → servo primero · DeReeler CW tras <span class="info-param">100</span> ms · <span class="info-param" data-info-key="autoRpm">60 RPM</span></li>
           <li>Servo GPIO 26 gira en CW e inversión → PWM <span class="info-param" data-info-key="servoPwm">800 µs</span> (ajustable · neutro 1500)</li>
-          <li>Tensión GPIO 23 → +30 RPM (solo velocidad · sentido = bobinas)</li>
-          <li class="info-step-wait"><span class="info-param" data-info-key="autoRev">2.0 s</span> · duración boost tensión</li>
+          <li>DeReeler en marcha + tensión GPIO 23 → +30 RPM continuo (mismo sentido). Al soltar → RPM nominal</li>
           <li>Vuelve a CW si Buffer Full sigue inactivo</li>
-          <li class="info-step-wait"><span class="info-param" data-info-key="tensionCooldown">0 s</span> · espera entre rutinas de tensión</li>
           <li class="info-step-note"><strong>Fallas enclavadas</strong> hasta Reset + Iniciar (se reportan al TCM por TCP)</li>
           <li>Buffer Max GPIO 21 → para todo</li>
           <li>Cilindro abierto GPIO 25 → para todo</li>
@@ -575,7 +573,7 @@ const char index_html[] PROGMEM = R"rawliteral(
         <ol class="info-flow">
           <li class="info-step-note">Tarea <em>m2_holgura</em> · ciclo ~5 ms · feeder: trigger TCP / helper holgura / refill</li>
           <li class="info-step-note">Misma condición: ventana de relleno + Auto ON</li>
-          <li>Holgura GPIO 22: ON = OK · OFF ≥ <span class="info-param" data-info-key="holguraHelperMs">100 ms</span> → helper feed · ≥ <span class="info-param" data-info-key="holguraFault">1.5 s</span> y Buffer Full ON → falla (durante relleno no enclava)</li>
+          <li>Holgura GPIO 22: ON = OK · OFF ≥ <span class="info-param" data-info-key="holguraHelperMs">100 ms</span> → helper feed · ausencia acumulada ≥ <span class="info-param" data-info-key="holguraFault">1.5 s</span> tras Full visto → falla (tirón / helper no cancela; primer relleno no enclava)</li>
           <li>Helper holgura · <span class="info-param" data-info-key="holguraHelperRpm">60 RPM</span> · <span class="info-param" data-info-key="holguraHelperS">1.0 s</span> · no corta Tfeed TCP en curso</li>
           <li>Trigger TCP desde TCM → alimenta Tfeed · <span class="info-param" data-info-key="rpm2">60 RPM</span> · en paralelo con relleno</li>
           <li class="info-step-wait"><span class="info-param" data-info-key="triggerFeed">2.0 s</span> · duración Tfeed (editable) · no cortar hasta fin (salvo Stop/falla/Buffer Max)</li>
@@ -710,7 +708,8 @@ const char index_html[] PROGMEM = R"rawliteral(
       <h2>Helper Holgura</h2>
       <p class="meta compact">
         Sensor ON = holgura OK. Sensor OFF ≥ umbral → feeder a velocidad/duración propias (prioridad sobre trigger TCP).
-        Si ausente ≥ falla → error PF-006 / opcode Holgura L|R.
+        Si la ausencia acumulada ≥ falla → error PF-006 / opcode Holgura L|R.
+        Un tirón o pulso del sensor no cancela el timeout: hay que sostener holgura ≥ falla (s) con feeder quieto.
       </p>
       <div class="form-row">
         <div class="form-group">
@@ -728,7 +727,7 @@ const char index_html[] PROGMEM = R"rawliteral(
           <input type="number" id="holgura-helper-absent-ms" min="20" max="5000" step="10" value="100">
         </div>
         <div class="form-group">
-          <label for="holgura-fault-s">Ausente + Full → falla (s)</label>
+          <label for="holgura-fault-s">Ausente tras Full → falla (s)</label>
           <input type="number" id="holgura-fault-s" min="0.3" max="30" step="0.1" value="1.5">
         </div>
       </div>
@@ -757,17 +756,17 @@ const char index_html[] PROGMEM = R"rawliteral(
     <div class="card">
       <h2>CW - CCW Settings</h2>
       <p class="meta compact">
-        GPIO 23 tensión: +30 RPM · no cambia sentido (bobinas en planta) · duración = campo abajo.
+        DeReeler en marcha + GPIO 23 tensión: +30 RPM continuo (mismo sentido). Al soltar → RPM de la UI.
         Timeout tensión fijo: 10 s.
       </p>
       <div class="form-group">
         <label for="auto-rev">Boost tensión (s)</label>
-        <p class="field-desc">TEMP: RPM UI + 30 en CW · duración del boost al detectar tensión.</p>
+        <p class="field-desc">Reservado (NVS). El boost ya no es por tiempo: dura mientras haya tensión y el DeReeler gire.</p>
         <input type="number" id="auto-rev" min="0.1" max="60" step="0.1" value="2.0">
       </div>
       <div class="form-group">
         <label for="tension-cooldown">Espera entre rutinas (s)</label>
-        <p class="field-desc">Pausa antes de volver a activar boost por tensión.</p>
+        <p class="field-desc">Reservado (NVS). El boost continuo no usa esta espera.</p>
         <input type="number" id="tension-cooldown" min="0" max="60" step="0.1" value="0">
       </div>
       <div class="form-group">

@@ -5,7 +5,17 @@ import { defineConfig } from 'vite';
 
 export default defineConfig(() => {
   return {
-    plugins: [react(), tailwindcss()],
+    plugins: [
+      react(),
+      tailwindcss(),
+      {
+        name: 'strip-crossorigin',
+        transformIndexHtml(html: string) {
+          // crossorigin fuerza CORS; Flask/Waitress no manda ACAO y Chrome no ejecuta el módulo.
+          return html.replace(/\s+crossorigin(?:="[^"]*")?/gi, '');
+        },
+      },
+    ],
     base: '/',
     build: {
       outDir: path.resolve(__dirname, 'dist'),

@@ -167,6 +167,11 @@ def _no_cache_spa_shell(resp: Response):
         resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         resp.headers["Pragma"] = "no-cache"
         resp.headers["Expires"] = "0"
+    # Vite marca <script crossorigin>; sin ACAO Chrome no ejecuta el módulo.
+    if request.path.startswith("/assets/"):
+        origin = request.headers.get("Origin") or "*"
+        resp.headers["Access-Control-Allow-Origin"] = origin
+        resp.headers["Cross-Origin-Resource-Policy"] = "cross-origin"
     return resp
 
 
@@ -176,6 +181,9 @@ def _api_json_404(_err):
     # el frontend hace res.json() y revienta con Unexpected token '<'.
     if request.path.startswith("/api/"):
         return jsonify({"ok": False, "error": "not_found", "path": request.path}), 404
+    # JS/CSS hasheado ausente: no devolver index.html (página en blanco).
+    if request.path.startswith("/assets/"):
+        return jsonify({"error": "asset_not_found", "path": request.path}), 404
     if DIST_DIR.joinpath("index.html").is_file():
         return send_from_directory(DIST_DIR, "index.html")
     return jsonify({"error": "not found"}), 404
@@ -227,7 +235,12 @@ def api_events():
 
     def stream():
         try:
-            yield f"data: {json.dumps(get_state().snapshot())}\n\n"
+            try:
+                yield f"data: {json.dumps(get_state().snapshot())}\n\n"
+            except Exception as exc:
+                print(f"[HMI] SSE snapshot: {exc}", flush=True)
+                yield "event: error\ndata: {\"ok\":false}\n\n"
+                return
             while True:
                 try:
                     payload = q.get(timeout=15)
@@ -241,13 +254,13 @@ def api_events():
             if q in _sse_queues:
                 _sse_queues.remove(q)
 
+    # No poner header Connection: waitress lo trata como hop-by-hop y responde 500.
     return Response(
         stream(),
         mimetype="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
-            "Connection": "keep-alive",
         },
     )
 
@@ -300,7 +313,6 @@ def api_cycle_reset():
     return jsonify(
         get_state().cmd_error_reset(
             confirm=bool(body.get("confirm", False)),
-            # Hard Reset máquina → ASDA move to 0 (CMD_MOVE_ZERO) + Reset PLC.
             do_home=bool(body.get("doHome", False)),
         )
     )
@@ -318,7 +330,7 @@ def api_error_reset():
     return jsonify(
         get_state().cmd_error_reset(
             confirm=bool(body.get("confirm", False)),
-            do_home=bool(body.get("doHome", True)),
+            do_home=bool(body.get("doHome", False)),
         )
     )
 
@@ -497,6 +509,9 @@ def spa_assets(asset_path: str):
     target = DIST_DIR / asset_path
     if target.is_file():
         return send_from_directory(DIST_DIR, asset_path)
+    # JS/CSS hasheado ausente no debe devolver HTML (el navegador queda en blanco).
+    if asset_path.startswith("assets/"):
+        return jsonify({"error": "asset_not_found", "path": asset_path}), 404
     if DIST_DIR.joinpath("index.html").is_file():
         return send_from_directory(DIST_DIR, "index.html")
     return jsonify({"error": "not found"}), 404
@@ -509,12 +524,28 @@ def main() -> None:
     ui = DIST_DIR / "index.html"
     if ui.is_file():
         stale = " (src más nuevo — rebuild falló o desactivado)" if frontend_dist_is_stale() else ""
-        print(f"TCM HMI — http://{addr}  (UI: frontend/dist){stale}")
+        print(f"TCM HMI — http://{addr}  (UI: frontend/dist){stale}", flush=True)
     else:
-        print(f"TCM HMI — http://{addr}  (UI no compilada — cd frontend && npm run build)")
+        print(
+            f"TCM HMI — http://{addr}  (UI no compilada — cd frontend && npm run build)",
+            flush=True,
+        )
     # Más hilos + timeout de canal: evita CloseWait eternos que dejan la HMI sin responder.
     serve(app, listen=addr, threads=24, channel_timeout=30)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nHMI detenido.", flush=True)
+    except Exception:
+        import traceback
+
+        traceback.print_exc()
+        if sys.stdin.isatty():
+            try:
+                input("El HMI se detuvo. Enter para cerrar...")
+            except EOFError:
+                pass
+        sys.exit(1)

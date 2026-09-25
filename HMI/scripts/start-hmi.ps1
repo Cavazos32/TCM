@@ -1,4 +1,4 @@
-# TCM HMI — arranca servidor Flask y abre el navegador
+# TCM HMI - servidor en ESTA ventana (no cerrar) y abre el navegador
 param(
     [int]$Port = 5050,
     [switch]$NoBrowser
@@ -24,20 +24,6 @@ function Test-HmiPort {
     }
 }
 
-function Test-HmiServer {
-    if (-not (Test-HmiPort)) { return $false }
-    $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
-    if ($curl) {
-        try {
-            $code = & curl.exe -s -o $null -w '%{http_code}' --connect-timeout 1 --max-time 2 "$Url/api/state" 2>$null
-            return ($code -eq '200')
-        } catch {
-            return $true
-        }
-    }
-    return $true
-}
-
 function Get-PythonExe {
     $venvPy = Join-Path $HmiRoot '.venv\Scripts\python.exe'
     if (Test-Path $venvPy) { return $venvPy }
@@ -50,20 +36,24 @@ function Open-Browser {
     }
 }
 
-# Servidor ya escuchando → solo abrir web
 if (Test-HmiPort) {
-    Write-Host "TCM HMI ya en ejecucion ($Url)"
+    Write-Host "TCM HMI ya esta en ejecucion ($Url)"
+    Write-Host "cycle.py / app.py NO se recargan: cierra la ventana del servidor y vuelve a iniciar."
     Open-Browser
+    Write-Host "Si la pagina esta en blanco: Ctrl+F5"
+    Write-Host "Esta ventana no es el servidor; se puede cerrar."
+    Read-Host 'Enter para salir'
     exit 0
 }
 
 if (-not (Test-Path $DistIndex)) {
-    Write-Host "Compilando UI (frontend)..."
+    Write-Host 'Compilando UI (frontend)...'
     Push-Location (Join-Path $HmiRoot 'frontend')
     try {
         npm run build
         if ($LASTEXITCODE -ne 0) {
-            Write-Error "npm run build fallo"
+            Write-Error 'npm run build fallo'
+            Read-Host 'Enter para cerrar'
             exit 1
         }
     } finally {
@@ -72,31 +62,27 @@ if (-not (Test-Path $DistIndex)) {
 }
 
 $python = Get-PythonExe
-$serverCmd = "cd /d `"$HmiRoot`" && title TCM HMI :$Port && `"$python`" app.py"
+$env:PYTHONUNBUFFERED = '1'
 
-Write-Host "Iniciando servidor TCM HMI en :$Port ..."
-Start-Process cmd.exe -ArgumentList '/k', $serverCmd
-
-$ready = $false
-for ($i = 1; $i -le 30; $i++) {
-    Start-Sleep -Milliseconds 500
-    if (Test-HmiPort) {
-        $ready = $true
-        break
-    }
-    if ($i % 2 -eq 0) {
-        Write-Host "  esperando puerto $Port ... ($([math]::Floor($i / 2))/15)"
-    }
+if (-not $NoBrowser) {
+    $waitCmd = "for (`$i=0; `$i -lt 60; `$i++) { Start-Sleep -Milliseconds 500; try { `$c = New-Object System.Net.Sockets.TcpClient; `$c.Connect('127.0.0.1',$Port); `$c.Close(); Start-Process '$Url'; break } catch {} }"
+    Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList @(
+        '-NoProfile',
+        '-ExecutionPolicy', 'Bypass',
+        '-Command', $waitCmd
+    )
 }
 
-Open-Browser
+Write-Host "TCM HMI - $Url"
+Write-Host 'Deja esta ventana abierta. Cerrarla apaga el HMI.'
+Write-Host ''
 
-if ($ready) {
-    Write-Host "Listo: $Url"
-    Start-Sleep -Seconds 1
-    exit 0
+Set-Location $HmiRoot
+& $python -u app.py
+$code = $LASTEXITCODE
+if ($code -ne 0 -and $null -ne $code) {
+    Write-Host ''
+    Write-Host "El servidor salio con error $code"
+    Read-Host 'Enter para cerrar'
 }
-
-Write-Warning "El servidor tarda. Revisa la ventana 'TCM HMI :$Port'."
-Start-Sleep -Seconds 3
-exit 0
+exit $code

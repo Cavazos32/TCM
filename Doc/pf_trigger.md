@@ -2,7 +2,7 @@
 
 El **trigger** es el Tfeed al PreFeeder (`0x4C` derecha / `0x51` izquierda). No es el Feed de Motion ni el *In process ON*.
 
-Va en el **paso 3** de la pieza (no en el 22). El 22 solo abre pinzas. El 21 es prefetch de alimentación Motion.
+Va en el **paso 3** de la pieza (no en el 21). El 21 solo abre pinzas. El feed Motion de la siguiente es el paso 25 (tras HOME, ASDA=0).
 
 **Interruptor de ciclo** (`pfTriggerEnabled` en `cycle_config.json`, UI Cycle → Material handling): **ON** (default) manda Tfeed entre piezas. **OFF** omite siempre el paso 3; el PreFeeder se queda solo con el helper de holgura. No es `Tfeed (s) = 0` en el HTML de L/R: ese valor se clampa a 0.1 s y el feeder igual arranca.
 
@@ -48,8 +48,9 @@ Holgura ausente = aviso de que algo va mal. Se le hace caso. Si choca con un tri
 | Tfeed llega **mientras** el helper corre | Se descarta el trigger. Holgura no se corta ni se reinicia. |
 | Tfeed y holgura coinciden (choque) | **Holgura**. |
 | Holgura ausente y el ciclo “querría” Tfeed (paso 3, C2, etc.) | **Holgura**. No se fuerza trigger. |
-| Relleno (Buffer Full **OFF**, p. ej. Start esperando Full) | Helper puede correr. **No** enclava E057/E063: aún no hay lazo y la máquina no está produciendo. |
-| Ausencia se alarga más allá del helper **y** Buffer Full ya está ON | Falla de holgura (PF), no otro Tfeed. |
+| Relleno (Buffer Full **aún no visto**, p. ej. Start esperando Full) | Helper puede correr. **No** enclava E057/E063: aún no hay lazo y la máquina no está produciendo. |
+| Ausencia se alarga más allá del helper **después** de haber visto Buffer Full | Falla de holgura (PF), aunque Full luego se apague al producir. No otro Tfeed. |
+| Tirón / helper / Tfeed pica el sensor un momento | **No** cancela el timeout. Solo holgura sostenida ≥ falla (s) con feeder idle borra el acumulado. |
 
 El ciclo **no** tiene un Tfeed extra “si falta holgura” (pre-pieza / post-pieza). Eso sería tratar el aviso como si se curara con el mismo trigger de producción.
 
@@ -61,9 +62,10 @@ El ciclo **no** tiene un Tfeed extra “si falta holgura” (pre-pieza / post-pi
 |---|---|
 | Arranque de lote: Start + *In process ON* | Arma sensores. **Espera Buffer Full confirmado** (1ª vez de cada Start) antes de la 1ª pieza. No es Tfeed. |
 | Resume máquina (Pause/Error) | Rearma In process. **Espera Buffer Full confirmado** (igual que Start) antes de seguir. No es Tfeed. |
-| Paso 4 — Feed / handoff | Alimentación Motion. |
-| Paso 21 — Prefetch (piezas 1…N−1) | Feed Motion en paralelo. |
-| Paso 21 — última pieza | Prefetch Motion **omitido**. |
+| Continuar ciclo (tras recovery) | El prompt está en Pause (PF Idle). Al confirmar, Busy rearma In process y **espera Buffer Full** (igual que Start/Resume) antes de la siguiente pieza. |
+| Paso 4 — Feed / handoff | Alimentación Motion (1ª / recovery; si ya hubo feed post-HOME, omite). |
+| Paso 25 — Feed post-HOME (piezas 1…N−1) | Tras ASDA=0: Feed Motion de la siguiente (Tfeed ya fue / irá en paso 3). |
+| Paso 25 — última pieza | Feed Motion **omitido**. |
 | C2 Resume con láser ya ON | Omite el **Feed** Motion. El Tfeed también se omite (ya se mandó). |
 | Fin de lote OK | Espera Buffer Full + holgura y *In process OFF*. Sin Tfeed extra. |
 

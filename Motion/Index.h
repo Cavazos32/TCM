@@ -1260,7 +1260,7 @@ canvas{width:100%;max-width:640px;height:160px;background:#151b21;border:1px sol
 
   <section>
     <h2>Test feed · L / R</h2>
-    <p style="color:var(--muted);font-size:.82rem;margin:0 0 .75rem">Target fijo 55 mm · Position + Sensor (producción) o Velocity + Sensor (LR-X = tope). Purga/refill sigue en Position.</p>
+    <p style="color:var(--muted);font-size:.82rem;margin:0 0 .75rem">Target fijo 55 mm · Position + Sensor (producción) o Velocity + Sensor (LR-X = tope: OFF→Slow, ON→Halt inmediato). Purga/refill sigue en Position.</p>
     <div class="feed-side-row" id="feedModeRow">
       <span class="feed-side-tag">Modo</span>
       <button type="button" class="btn btn-accent" id="feedModePos">Position + Sensor</button>

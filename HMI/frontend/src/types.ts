@@ -1,6 +1,6 @@
 export type TabType = 'maquina' | 'cycle' | 'motion' | 'plc' | 'prefeeder' | 'andon';
 
-/** Purga: feed largo desde el prompt after_feed (skipValidate en Motion). */
+/** Purga: Long feed desde await_feed / after_feed (skipValidate en Motion). */
 export const REFILL_LONG_FEED_MM = 100;
 
 export interface CycleConfig {
@@ -27,7 +27,7 @@ export interface CycleConfig {
   motionWaitTimeoutS: number;
   feedWaitTimeoutS: number;
   pfReadyTimeoutS: number;
-  /** Watchdog de pieza (s). Si no cierra (Pause excluida) → E008/E009. Join prefetch excluido. */
+  /** Watchdog de pieza (s). Si no cierra (Pause excluida) → E008/E009. Feed post-HOME de la siguiente excluido. */
   pieceWatchTimeoutS?: number;
   /** Feed / Stage2 OM: 'L' | 'R' | 'LR' */
   feedSides: 'L' | 'R' | 'LR';
@@ -107,7 +107,7 @@ export interface MachineState {
   cycleBusy: boolean;
   refillActive: boolean;
   refillAwaitingConfirm: boolean;
-  /** working | after_feed | after_cut | "" */
+  /** working | await_feed | after_feed | after_cut | "" */
   refillPrompt: string;
   /** review_piece | continue_cycle | e050_* | "" */
   recoveryPrompt: string;

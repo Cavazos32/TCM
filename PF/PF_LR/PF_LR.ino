@@ -112,7 +112,6 @@ AutoState autoState      = AUTO_OFF;
 float     autoRpm        = AUTO_RPM_DEFAULT;
 float     autoReverseSec = AUTO_REVERSE_DEFAULT;
 float     tensionCooldownSec = TENSION_COOLDOWN_DEFAULT;
-uint32_t  tensionBoostUntilMs = 0;  // boost +RPM en AUTO_CW (sin cambiar sentido)
 uint32_t  servoLeadStartMs = 0;
 uint32_t  tensionLastRoutineMs = 0;
 uint32_t  tensionActiveSinceMs = 0;
@@ -121,6 +120,10 @@ static bool tensionReverseStable = false;
 uint32_t  bufferEmptySinceMs = 0;
 uint32_t  bufferFullRecoverSinceMs = 0;  // Buffer Full estable antes de cancelar timeout
 volatile uint32_t holguraAbsentSinceMs = 0;
+static volatile uint32_t holguraAbsentAccumMs = 0;   // ausencia dinámica; tirón no la borra
+static volatile uint32_t holguraAbsentLastMs = 0;
+static volatile uint32_t holguraRecoverSinceMs = 0;
+static volatile bool holguraFaultEligible = false;  // Full visto en esta ventana armada
 SystemFault systemFault = FAULT_NONE;
 volatile bool motor2AbortRequested = false;
 
@@ -222,6 +225,9 @@ static uint16_t servoMotionPwmUs()
 static void servoWriteUsForced(uint16_t us)
 {
   us = constrain(us, SERVO_PWM_MIN_US, SERVO_PWM_MAX_US);
+  // RMT del DeReeler/Feeder puede soltar el canal LEDC; sin re-attach
+  // el write no llega al pin y el RC se queda en el último PWM (sigue alimentando).
+  ledcAttach(PIN_SERVO_PWM, 50, SERVO_LEDC_BITS);
   servoLastOutputUs = us;
   ledcWrite(PIN_SERVO_PWM, servoUsToDuty(us));
 }
@@ -234,12 +240,22 @@ static void servoWriteUsIfChanged(uint16_t us)
   servoWriteUsForced(us);
 }
 
+static void servoAssertNeutral(bool force)
+{
+  static uint32_t lastNeutralMs = 0;
+  const bool need = servoRunning || servoLastOutputUs != SERVO_PWM_NEUTRAL_US;
+  if (!force && !need && (uint32_t)(millis() - lastNeutralMs) < SERVO_STOP_REASSERT_MS)
+    return;
+  servoWriteUsForced(SERVO_PWM_NEUTRAL_US);
+  servoRunning = false;
+  lastNeutralMs = millis();
+}
+
 static void servoStop()
 {
   if (!servoRunning && servoLastOutputUs == SERVO_PWM_NEUTRAL_US)
     return;
-  servoWriteUsForced(SERVO_PWM_NEUTRAL_US);
-  servoRunning = false;
+  servoAssertNeutral(true);
 }
 
 static void applyServoActivePwmUs(uint16_t us)
@@ -320,11 +336,11 @@ static bool bufferFullActive()
   return bufferFullStable;
 }
 
-// Parar relleno solo con Full confirmado (~80 ms HIGH). Blips cortos en medio
-// del buffer no deben cortar DeReeler/servo.
+// Parar al primer HIGH (el lazo en Full suele chatterar y nunca llega a 80 ms
+// seguidos). Rearrancar solo con bufferFullAllowsMotion() (OFF ~200 ms).
 static bool bufferFullStopNow()
 {
-  return bufferFullActive();
+  return bufferFullStable || bufferFullRaw();
 }
 
 // Rearrancar solo tras Full OFF sostenido (~200 ms). No rearrancar en rebote al soltar.
@@ -380,24 +396,24 @@ static void updateBufferFullFilter()
 
 // Corta DeReeler+servo. Un Stop() por consigna; si el RMT ignora, reintenta cada 250 ms.
 // Stop() cada loop con currentRPM()>1 → vibración / “trabado”.
+// RC: neutro ANTES y DESPUÉS del Stop() — el RMT suelta LEDC y el pin se queda
+// en el último PWM de marcha si solo se escribe 1500 una vez (cache “ya parado”).
 static void forceStopDereelerAndServo()
 {
   static uint32_t lastStopMs = 0;
   const bool commanded = motor && fabsf(commandedRpm) > 0.01f;
   const bool stillSpinning = motor && fabsf(motor->currentRPM()) > 1.0f;
+
+  // Primer corte o motor aún vivo: 1500 ya. En hold, el throttle de 20 ms basta.
+  servoAssertNeutral(commanded || stillSpinning);
+
   if (commanded || (stillSpinning && (uint32_t)(millis() - lastStopMs) >= 250u))
   {
     motor->Stop();
     lastStopMs = millis();
+    servoAssertNeutral(true);
   }
   commandedRpm = 0.0f;
-  tensionBoostUntilMs = 0;
-
-  if (servoRunning || servoLastOutputUs != SERVO_PWM_NEUTRAL_US)
-  {
-    servoWriteUsForced(SERVO_PWM_NEUTRAL_US);
-    servoRunning = false;
-  }
 }
 
 static bool bufferMaxActive()
@@ -487,30 +503,9 @@ static void updateTensionReverseFilter()
     tensionReverseStable = true;
 }
 
-static bool tensionCanTriggerRoutine()
-{
-  if (!tensionReverseStable || !tensionCooldownReady())
-    return false;
-  // Con cooldown UI = 0 y tensión pegada/HIGH: al salir de REVERSING volvía a
-  // invertir en el mismo tick → DeReeler solo “tiembla” (manual no invierte).
-  if (tensionLastRoutineMs != 0)
-  {
-    const uint32_t minGapMs =
-        (uint32_t)(autoReverseSec * 1000.0f) + 500u;  // duración inversión + 0.5 s CW
-    if ((uint32_t)(millis() - tensionLastRoutineMs) < minGapMs)
-      return false;
-  }
-  return true;
-}
-
 static bool tensionRoutineBlocked()
 {
   return tensionSensorActive() && !tensionCooldownReady();
-}
-
-static void tensionMarkRoutineTriggered()
-{
-  tensionLastRoutineMs = millis();
 }
 
 static void stopAllMotors();
@@ -557,6 +552,16 @@ static void updateHolguraFilter()
 
   if ((uint32_t)(now - holguraFilterChangeMs) >= M2_HOLGURA_FILTER_MS)
     holguraStablePresent = raw;
+}
+
+static void holguraFaultClocksReset(bool clearEligible)
+{
+  holguraAbsentSinceMs = 0;
+  holguraAbsentAccumMs = 0;
+  holguraAbsentLastMs = 0;
+  holguraRecoverSinceMs = 0;
+  if (clearEligible)
+    holguraFaultEligible = false;
 }
 
 static StepperRMT* motorByIndex(uint8_t idx)
@@ -691,7 +696,7 @@ static bool motorRun(float signedRpm)
   return motorRun(0, signedRpm);
 }
 
-// TEMP: RPM nominal UI + boost; no cambia sentido (solo velocidad).
+// RPM UI + boost; no cambia sentido (solo velocidad).
 static float autoRpmTensionBoost()
 {
   float rpm = autoRpm + TENSION_BOOST_RPM_OFFSET;
@@ -700,10 +705,20 @@ static float autoRpmTensionBoost()
   return rpm;
 }
 
+// DeReeler ya en marcha: tensión estable → +30 RPM continuo; si suelta → nominal.
+static float autoDereelerTargetRpm()
+{
+  return tensionReverseStable ? autoRpmTensionBoost() : autoRpm;
+}
+
+static void motorRunAutoDereeler()
+{
+  motorRun(autoDereelerTargetRpm());
+}
+
 // Arranque desde Buffer Full inactivo: servo ya; DeReeler tras DEREELER_START_DELAY_MS.
 static void beginAutoCwWithServoLead()
 {
-  tensionBoostUntilMs = 0;
   servoLeadStartMs = millis();
   autoState = AUTO_SERVO_LEAD;
   // Arranque inmediato del RC (Forced: no depender de cache si forceStop dejó neutro).
@@ -811,8 +826,9 @@ static void applyRefillOutputs()
 
   if (refillDereelerOn)
   {
-    if (fabsf(commandedRpm - autoRpm) > 0.5f)
-      motorRun(autoRpm);
+    const float want = autoDereelerTargetRpm();
+    if (fabsf(commandedRpm - want) > 0.5f)
+      motorRun(want);
   }
   else if (fabsf(commandedRpm) > 0.01f)
     motorRun(0.0f);
@@ -1136,7 +1152,7 @@ static void autoReset()
     tensionActiveSinceMs = 0;
   bufferEmptySinceMs = 0;
   bufferFullRecoverSinceMs = 0;
-  holguraAbsentSinceMs = 0;
+  holguraFaultClocksReset(true);
 
   clearFillUntilReady("reset");
   autoEnabled = false;
@@ -1256,36 +1272,15 @@ static void serviceAuto()
     case AUTO_SERVO_LEAD:
       if ((uint32_t)(millis() - servoLeadStartMs) >= DEREELER_START_DELAY_MS)
       {
-        motorRun(autoRpm);
+        motorRunAutoDereeler();
         autoState = AUTO_CW;
         DBG_PRINTF("AUTO: servo lead %lums -> DeReeler CW\n", (unsigned long)DEREELER_START_DELAY_MS);
       }
       break;
 
     case AUTO_CW:
-    {
-      const uint32_t now = millis();
-      if (tensionBoostUntilMs != 0)
-      {
-        if ((int32_t)(now - tensionBoostUntilMs) >= 0)
-        {
-          tensionBoostUntilMs = 0;
-          motorRun(autoRpm);
-          DBG_PRINTLN("AUTO: fin boost tension -> RPM nominal");
-        }
-        else
-          motorRun(autoRpmTensionBoost());
-      }
-      if (tensionBoostUntilMs == 0 && tensionCanTriggerRoutine())
-      {
-        tensionBoostUntilMs = now + (uint32_t)(autoReverseSec * 1000.0f);
-        motorRun(autoRpmTensionBoost());
-        tensionMarkRoutineTriggered();
-        DBG_PRINTF("AUTO: TENSION -> +%.0f RPM (total %.0f) %.1fs\n",
-                      TENSION_BOOST_RPM_OFFSET, autoRpmTensionBoost(), autoReverseSec);
-      }
+      motorRunAutoDereeler();
       break;
-    }
 
     default:
       break;
@@ -1531,7 +1526,7 @@ static void enterSystemFault(SystemFault fault, bool pushPeer)
   syncServoToAutoState();
   bufferEmptySinceMs = 0;
   bufferFullRecoverSinceMs = 0;
-  holguraAbsentSinceMs = 0;
+  holguraFaultClocksReset(true);
 
   Serial.printf("FALTA [%s]: ", pfErrorTagFromFault(fault));
   if (fault == FAULT_BUFFER_TIMEOUT)
@@ -1607,42 +1602,78 @@ static void updateTensionFaultMonitor()
 }
 
 // Buffer Full consumido: ya no enclava por timeout de relleno (E052/E058).
-// DeReeler/servo siguen parando en Full ON y reanudando en Full OFF (filtro GPIO).
+// DeReeler/servo paran en Full HIGH (crudo o estable) y reanudan tras OFF ~200 ms.
 static void updateBufferRefillFaultMonitor()
 {
   bufferEmptySinceMs = 0;
   bufferFullRecoverSinceMs = 0;
 }
 
-// Sin holgura estable ≥ fault_s: falla solo con Buffer Full ya ON.
-// Durante relleno (Full OFF) el helper puede correr; no enclavar E057/E063
-// — el slack aparece al formar el lazo, y Start aún no está produciendo.
+// Sin holgura estable ≥ fault_s: falla si el lazo ya se formó (Full visto).
+// El acumulado solo cuenta ausencia. Un tirón / helper / Tfeed que pica el
+// sensor no borra el timeout. Recuperar exige holgura sostenida ≥ fault_s
+// con feeder idle. Primer relleno (Full aún no visto) no enclava.
 static void updateHolguraFaultMonitor()
 {
   if (systemFault != FAULT_NONE || idleMode || refillOverrideActive()
-      || !sensorsMotionArmed() || !bufferFullActive())
+      || !sensorsMotionArmed())
   {
-    holguraAbsentSinceMs = 0;
+    holguraFaultClocksReset(true);
     return;
   }
+
+  if (bufferFullActive())
+    holguraFaultEligible = true;
+
+  if (!holguraFaultEligible)
+  {
+    holguraFaultClocksReset(false);
+    return;
+  }
+
+  const uint32_t now = millis();
+  const uint32_t faultMs = (uint32_t)(holguraFaultSec * 1000.0f);
 
   if (holguraStableActive())
   {
-    holguraAbsentSinceMs = 0;
+    holguraAbsentLastMs = 0;
+    // Helper/Tfeed tiran la manguera y activan GPIO22: no es holgura real.
+    if (motor2Phase != M2_PHASE_IDLE)
+    {
+      holguraRecoverSinceMs = 0;
+      return;
+    }
+    if (holguraRecoverSinceMs == 0)
+      holguraRecoverSinceMs = now;
+    else if ((uint32_t)(now - holguraRecoverSinceMs) >= faultMs)
+    {
+      holguraAbsentAccumMs = 0;
+      holguraAbsentSinceMs = 0;
+    }
     return;
   }
 
-  if (holguraAbsentSinceMs == 0)
+  holguraRecoverSinceMs = 0;
+  if (holguraAbsentLastMs == 0)
   {
-    holguraAbsentSinceMs = millis();
-    Serial.printf("M2: sin holgura (estable) — falla en %.1fs si no recupera\n",
-                  (float)holguraFaultSec);
+    holguraAbsentLastMs = now;
+    if (holguraAbsentAccumMs == 0)
+    {
+      holguraAbsentSinceMs = now;
+      Serial.printf("M2: sin holgura (estable) — falla en %.1fs si no recupera\n",
+                    (float)holguraFaultSec);
+    }
   }
-  else if ((uint32_t)(millis() - holguraAbsentSinceMs)
-           >= (uint32_t)(holguraFaultSec * 1000.0f))
+  else
   {
+    uint32_t dt = (uint32_t)(now - holguraAbsentLastMs);
+    if (dt > 50) dt = 50;
+    holguraAbsentLastMs = now;
+    holguraAbsentAccumMs += dt;
+  }
+
+  if (holguraAbsentAccumMs >= faultMs)
     enterSystemFault(FAULT_HOLGURA_TIMEOUT);
-  }
 }
 
 static void motor2SoftStopToIdle()
@@ -2510,7 +2541,7 @@ static String peerStatusJson(const char* type)
   j += "\",\"sensorsArmed\":";
   j += sensorsMotionArmed() ? "true" : "false";
   j += ",\"home\":";
-  j += bufferFullStopNow() ? "true" : "false";
+  j += bufferFullActive() ? "true" : "false";
   j += ",\"endstop\":";
   j += bufferMaxActive() ? "true" : "false";
   j += ",\"tension\":";
@@ -2586,7 +2617,7 @@ static String peerStatusJson(const char* type)
 
 static void peerTxEvents()
 {
-  const bool home = bufferFullStopNow();
+  const bool home = bufferFullActive();
   const bool endstop = bufferMaxActive();
   const bool tension = tensionSensorActive();
   const bool cyl = cylinderOpenActive();
@@ -3349,6 +3380,9 @@ void loop()
   }
   peerService();
   serviceHttp(8);
+  // HTTP/peer + feeder RMT (otro núcleo) pueden soltar LEDC tras el stop de Full.
+  if (!idleMode && bufferFullStopNow())
+    servoAssertNeutral(false);
 
   updateBufferFullFilter();
   updateBufferMaxFaultMonitor();
@@ -3360,4 +3394,6 @@ void loop()
   serviceRefillPulses();
   serviceAuto();
   serviceHttp(8);
+  if (!idleMode && bufferFullStopNow())
+    servoAssertNeutral(false);
 }

@@ -45,7 +45,8 @@ TIMING_CMD_SLOW_S = 0.080
 # No modificar Feed / FEED_TARGET_FIXED_MM / Move ABS manual.
 # Excepción refill: skipValidate + mm opcional (Long feed). Ciclo de lote sigue en 55 mm.
 
-# Purga: feed largo desde el prompt after_feed (Motion skipValidate).
+# Purga: no alimenta sola. Tras park, espera Retry (55) o Long feed (100).
+# Long feed = skipValidate en Motion.
 REFILL_LONG_FEED_MM = 100.0
 
 # WIP Delivery (HOME): soplo al volver a 0.
@@ -71,21 +72,22 @@ WIP_BLOWER_LINEAL_MATCH_MAX_S = 30.0
 # Piso de asiento cortador antes de MOVE depósito (PLC pulso KEEP ~100 ms
 # + gap ~50 ms + retracción neumática). cutter_post_ms suele ser más corto.
 CUTTER_SETTLE_BEFORE_DEPOSIT_MS = 250
+# HOME / Start: ASDA en 0 (caché Reached). No alimentar si está fuera.
+ASDA_HOME_EPS_MM = 0.5
 
 # Protocolo máquina: machine_states.py (0x40–0x49). Andon solo refleja esos bytes.
-# Pasos atómicos (acción / delay independientes).
-# kind=parallel SOLO en: arranque prefetch (background) y join/handoff.
-# El resto es secuencia principal (action|wait) — no implica “todo a la vez”.
+# Pasos atómicos (acción / delay independientes). Secuencia principal (action|wait).
+# Feed de la siguiente pieza: solo tras HOME con ASDA en 0 (no paralelo).
 #
 # sbsPause: en modo Step by Step, pausa tras completar ese paso (checkpoint
-# físico). False = auto (delay / validación / join interno): visible en la
+# físico). False = auto (delay / validación interna): visible en la
 # lista, pero no exige Next. Un Next avanza el grupo físico + sus internos.
 FLOW_STEPS: list[dict[str, Any]] = [
     {"id": 1, "key": "holder_on", "label": "Holder+Encoder ON (solo 1ª pieza)", "kind": "action", "sbsPause": False},
     {"id": 2, "key": "wait_holder_on", "label": "Delay Holder ON", "kind": "wait", "delayKey": "holderOnMs", "sbsPause": True},
     # Tfeed ANTES del feed (contrato Review / secuencia productiva).
     {"id": 3, "key": "pf_trigger", "label": "Trigger PreFeeder (Tfeed)", "kind": "action", "sbsPause": False},
-    {"id": 4, "key": "feed", "label": "Alimentación (feed / handoff)", "kind": "action", "sbsPause": True},
+    {"id": 4, "key": "feed", "label": "Alimentación (feed / ya listo post-HOME)", "kind": "action", "sbsPause": True},
     {"id": 5, "key": "offset", "label": "Offset alimentación (Motion, paso lógico)", "kind": "action", "sbsPause": False},
     {"id": 6, "key": "grippers_on", "label": "Pinzas cierran", "kind": "action", "sbsPause": False},
     {"id": 7, "key": "wait_grippers_on", "label": "Delay tras cerrar pinzas", "kind": "wait", "delayKey": "grippersOnMs", "sbsPause": False},
@@ -100,37 +102,27 @@ FLOW_STEPS: list[dict[str, Any]] = [
     {"id": 16, "key": "wait_cutter_pulse", "label": "Delay entre Set y Res cortador", "kind": "wait", "delayKey": "cutterPulseMs", "sbsPause": False, "delayEditable": False},
     {"id": 17, "key": "cutter_off", "label": "Cortador OFF", "kind": "action", "sbsPause": False},
     {"id": 18, "key": "wait_cutter_post", "label": "Delay post-corte", "kind": "wait", "delayKey": "cutterPostMs", "sbsPause": True},
-    # Depósito ANTES del prefetch: la manguera debe salir del área antes de pre-alimentar.
     {"id": 19, "key": "deposit", "label": "Extra / depósito lineal", "kind": "action", "sbsPause": False},
     {"id": 20, "key": "wait_deposit_dwell", "label": "Delay tras depósito", "kind": "wait", "delayKey": "dwellAtDestMs", "sbsPause": True},
+    {"id": 21, "key": "grippers_off", "label": "Pinzas abren", "kind": "action", "sbsPause": False},
+    {"id": 22, "key": "wait_gripper_release", "label": "Delay tras abrir pinzas", "kind": "wait", "delayKey": "gripperReleaseMs", "sbsPause": True},
     {
-        "id": 21,
-        "key": "prefetch_start",
-        "label": "Prefetch feed — arranca en background",
-        "kind": "parallel",
-        "parallelRole": "start",
-        "sbsPause": False,
-    },
-    {"id": 22, "key": "grippers_off", "label": "Pinzas abren", "kind": "action", "sbsPause": False},
-    {"id": 23, "key": "wait_gripper_release", "label": "Delay tras abrir pinzas", "kind": "wait", "delayKey": "gripperReleaseMs", "sbsPause": True},
-    {
-        "id": 24,
+        "id": 23,
         "key": "gripper_clearance",
         "label": "Despeje ASDA post-pinzas (+clearance)",
         "kind": "action",
         "sbsPause": True,
     },
-    {"id": 25, "key": "home", "label": "HOME: MOVE→0 + delay + blower ≡ |L|", "kind": "action", "sbsPause": True},
+    {"id": 24, "key": "home", "label": "HOME: MOVE→0 + delay + blower ≡ |L|", "kind": "action", "sbsPause": True},
     {
-        "id": 26,
-        "key": "handoff",
-        "label": "Join — espera fin del prefetch (handoff)",
-        "kind": "parallel",
-        "parallelRole": "join",
-        "sbsPause": False,
+        "id": 25,
+        "key": "feed_after_home",
+        "label": "Feed post-HOME (ASDA=0)",
+        "kind": "action",
+        "sbsPause": True,
     },
-    {"id": 27, "key": "wait_asentar", "label": "Delay asentar", "kind": "wait", "delayKey": "asentarMs", "sbsPause": False},
-    {"id": 28, "key": "post_piece", "label": "Post-pieza (safety / peer / holgura)", "kind": "action", "sbsPause": False},
+    {"id": 26, "key": "wait_asentar", "label": "Delay asentar", "kind": "wait", "delayKey": "asentarMs", "sbsPause": False},
+    {"id": 27, "key": "post_piece", "label": "Post-pieza (safety / peer / holgura)", "kind": "action", "sbsPause": False},
 ]
 PROGRESS_STEPS = len(FLOW_STEPS)
 STEP_NAMES = {0: "idle", **{s["id"]: s["key"] for s in FLOW_STEPS}}
@@ -184,7 +176,7 @@ class CycleConfig:
     motion_wait_timeout_s: float = 25.0
     feed_wait_timeout_s: float = 15.0
     pf_ready_timeout_s: float = 15.0
-    # Pieza 1 ≈ 5–6 s (incluye feed). Join prefetch no usa este tope.
+    # Pieza 1 ≈ 5–6 s (incluye feed). Feed post-HOME de la *siguiente* no usa este tope.
     piece_watch_timeout_s: float = 20.0
     # Feed / Stage2 OM: "L" | "R" | "LR" (producción = ambos)
     feed_sides: str = "LR"
@@ -464,7 +456,7 @@ class CycleRunner:
         self._step_by_step = False
         self._refill_mode = False
         self._refill_awaiting_confirm = False
-        self._refill_prompt = ""  # "" | after_feed | after_cut
+        self._refill_prompt = ""  # "" | await_feed | after_feed | after_cut | working
         self._refill_confirm = threading.Event()
         self._refill_reject = threading.Event()
         self._refill_retry = threading.Event()
@@ -499,7 +491,7 @@ class CycleRunner:
         self._flow_interrupt = threading.Event()
         # In process OFF por Pause/Error; Resume/Busy rearma. Evita doble OFF/ON.
         self._pf_held_idle = False
-        # Resume: misma espera Buffer Full que Start (la consume el hilo de ciclo).
+        # Resume / Continuar ciclo: misma espera Buffer Full que Start (hilo de ciclo).
         self._resume_need_buffer_full = False
         self._lot_rpm = 1200.0
         self._lot_length_mm: float = 0.0
@@ -787,7 +779,7 @@ class CycleRunner:
             self._recovery_awaiting = False
             self._recovery_prompt = ""
             self._fault = ""
-                self._pause.clear()
+            self._pause.clear()
             with self._lock:
                 self._sync_pause_exclusion_locked(time.monotonic())
             self._leave_pause_andon()
@@ -803,6 +795,21 @@ class CycleRunner:
         self._host.cycle_notify()
         return {"ok": True}
 
+    def release_for_manual_refill(self, timeout_s: float = 2.0) -> dict[str, Any]:
+        """Suelta un lote en Pause (p. ej. E050) para arrancar purga suelta.
+
+        Comando de operador (Purge), no Stop automático por el EXXX.
+        """
+        if not self.is_active():
+            return {"ok": True}
+        self.request_stop()
+        th = self._thread
+        if th is not None and th.is_alive():
+            th.join(timeout=max(0.2, float(timeout_s)))
+        if self.is_active():
+            return {"ok": False, "error": "Detener ciclo para purgar"}
+        return {"ok": True}
+
     def request_refill(
         self,
         rpm: float,
@@ -810,12 +817,12 @@ class CycleRunner:
         feed_mm: float | None = None,
         asda_mm: float | None = None,
     ) -> dict[str, Any]:
-        """Purga/refill: ASDA park → holder+encoder → feed → (retry|cut) → home.
+        """Purga/refill: ASDA park → holder → espera Retry/Long → feed → cut → home.
 
-        Tras feed: operador Retry, Long feed (100 mm) o Next Cutting.
+        Tras park: operador Retry (55 mm) o Long feed (100 mm); no hay feed automático.
+        Tras feed: Retry, Long feed o Next Cutting.
         Tras corte: Next Return ASDA to 0.
         Feed físico sin validación láser ni OM (skipValidate en Motion).
-        Retry = refillMm (55). Long feed = 100 mm (campo mm en FEED 0x12/0x13).
         """
         with self._lock:
             if self._active:
@@ -836,6 +843,10 @@ class CycleRunner:
         self._aborted = False
         self._fault = ""
         self._recovery = ""
+        self._clear_recovery_gate()
+        self._e050_materialist_requested = False
+        self._e050_materialist_wait = False
+        self._e050_normal_recovery = ""
         self._last_ok = False
         self._refill_confirm.clear()
         self._refill_reject.clear()
@@ -850,7 +861,8 @@ class CycleRunner:
             self._refill_mode = True
         self._set_state(TX_BUSY)
         self._host.cycle_log(
-            f"Refill Start — ASDA→{use_asda:g} mm · feed≈{use_feed:g} mm · "
+            f"Refill Start — ASDA→{use_asda:g} mm · "
+            f"espera Retry ({use_feed:g} mm) o Long feed {REFILL_LONG_FEED_MM:g} mm · "
             f"lados={CycleConfig.normalize_feed_sides(cfg.feed_sides)}"
         )
         args = (float(rpm), use_feed, use_asda)
@@ -866,6 +878,8 @@ class CycleRunner:
             return {"ok": False, "error": "Sin refill pendiente de confirmación"}
         prompt = self._refill_prompt
         if ok:
+            if prompt == "await_feed":
+                return {"ok": False, "error": "Purga: usa Retry o Long feed"}
             self._refill_confirm.set()
             if prompt == "after_feed":
                 if self._refill_skip_cut:
@@ -881,14 +895,14 @@ class CycleRunner:
         return {"ok": True}
 
     def retry_refill(self, feed_mm: float | None = None) -> dict[str, Any]:
-        """Reintenta solo el feed (válido tras alimentar, antes del corte).
+        """Retry (55 mm) o Long feed. Válido en await_feed y after_feed.
 
         feed_mm=None → Retry con refillMm. feed_mm=100 → Long feed.
         """
         if not self._refill_awaiting_confirm:
             return {"ok": False, "error": "Sin refill pendiente de confirmación"}
-        if self._refill_prompt != "after_feed":
-            return {"ok": False, "error": "Retry solo tras alimentar (antes del corte)"}
+        if self._refill_prompt not in ("await_feed", "after_feed"):
+            return {"ok": False, "error": "Retry / Long feed solo en espera de alimentación"}
         next_mm: float | None = None
         if feed_mm is not None:
             next_mm = float(feed_mm)
@@ -1212,6 +1226,12 @@ class CycleRunner:
             return False
         with self._lock:
             self._recovery_prompt = ""
+        # El prompt pone Pause → In process OFF. Busy rearma, pero no usa
+        # request_resume: hay que esperar Buffer Full igual que Start/Resume.
+        if not self._ensure_pf_buffer_full_after_resume(
+            "Continuar ciclo", force=True
+        ):
+            return False
         self._host.cycle_log(
             "Recovery: Continuar ciclo — siguiente pieza (validar referencia láser)"
         )
@@ -1851,8 +1871,8 @@ class CycleRunner:
                 f"- RPM: `{rpm:g}`",
                 f"- Lados feed: `{sides}`",
                 "",
-                "Metrología por pieza: ASDA y OM desde caché TCP "
-                "(Reached / GetMeasured). OM = feed ~55 mm, no el largo de corte.",
+                "Metrología: lectura al corte, lectura al llegar a 0, encoder "
+                "(GetMeasured). Encoder = feed, no el largo de corte.",
                 "",
             ]
             path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -1904,7 +1924,7 @@ class CycleRunner:
             "despeje",
             "home_cmd",
             "home",
-            "prefetch_join",
+            "feed_next",
             "pf_trigger",
         )
         parts: list[str] = []
@@ -1994,40 +2014,35 @@ class CycleRunner:
                 return by_tag[tag]
         return None
 
-    def _timing_metro_lines(self, metro: list[dict[str, Any]]) -> list[str]:
-        notes = {
-            "post-feed": "feed síncrono de esta pieza (~55 mm)",
-            "handoff": "prefetch de esta pieza (join previo)",
-            "c2-skip-feed": "recovery/recovery: láser ON, sin feed nuevo",
-            "start-skip-feed": "Start: láser ON, sin feed",
-            "post-lineal": "ASDA vs target de corte",
-            "post-depósito": "ASDA tras extra",
-            "post-home": "ASDA tras HOME",
-            "post-join": "feed de la *siguiente* pieza (prefetch)",
+    def _metro_log_readings(self, metro: list[dict[str, Any]]) -> dict[str, Any]:
+        """Corte, llegada a 0 y encoder de la pieza. Sin depósito ni delta."""
+        feed = self._metro_pick(
+            metro, "post-feed", "handoff", "c2-skip-feed", "start-skip-feed"
+        )
+        lin = self._metro_pick(metro, "post-lineal")
+        home = self._metro_pick(metro, "post-home")
+        enc = feed or lin
+        return {
+            "corte": None if lin is None else lin.get("asda"),
+            "en0": None if home is None else home.get("asda"),
+            "om_l": None if enc is None else enc.get("om_l"),
+            "om_r": None if enc is None else enc.get("om_r"),
         }
-        rows = [
+
+    def _timing_metro_lines(self, metro: list[dict[str, Any]]) -> list[str]:
+        r = self._metro_log_readings(metro)
+        return [
             "### Metrología",
             "",
-            "Caché TCP. `—` = aún no hubo evento. "
-            "OM ≠ largo físico de la manguera.",
-            "",
-            "| Instante | ASDA | target | Δ ASDA | OM L | OM R | nota |",
-            "|----------|-----:|-------:|-------:|-----:|-----:|------|",
+            "| Corte | En 0 | Encoder L | Encoder R |",
+            "|------:|-----:|----------:|----------:|",
+            "| {corte} | {en0} | {ol} | {or_} |".format(
+                corte=self._fmt_mm(r.get("corte")),
+                en0=self._fmt_mm(r.get("en0")),
+                ol=self._fmt_mm(r.get("om_l")),
+                or_=self._fmt_mm(r.get("om_r")),
+            ),
         ]
-        for s in metro:
-            tag = str(s.get("tag") or "")
-            rows.append(
-                "| `{tag}` | {asda} | {tgt} | {dlt} | {ol} | {or_} | {note} |".format(
-                    tag=tag,
-                    asda=self._fmt_mm(s.get("asda")),
-                    tgt=self._fmt_mm(s.get("target")),
-                    dlt=self._fmt_mm(s.get("delta"), signed=True),
-                    ol=self._fmt_mm(s.get("om_l")),
-                    or_=self._fmt_mm(s.get("om_r")),
-                    note=notes.get(tag, ""),
-                )
-            )
-        return rows
 
     @staticmethod
     def _timing_anomaly_lines(samples: list[dict[str, Any]]) -> list[str]:
@@ -2090,7 +2105,8 @@ class CycleRunner:
             "despeje",
             "home_cmd",
             "home",
-            "prefetch_join",
+            "feed_next_cmd",
+            "feed_next",
         ]
         ordered = [k for k in preferred if k in seen]
         ordered.extend(
@@ -2142,29 +2158,17 @@ class CycleRunner:
         if pieces and any(p.get("metro") for p in pieces):
             lines.append("### Metrología lote")
             lines.append("")
-            lines.append(
-                "| Pieza | ASDA lineal | Δ ASDA | OM L | OM R | ASDA dep | ASDA home |"
-            )
-            lines.append(
-                "|------:|------------:|-------:|-----:|-----:|---------:|----------:|"
-            )
+            lines.append("| Pieza | Corte | En 0 | Encoder L | Encoder R |")
+            lines.append("|------:|------:|-----:|----------:|----------:|")
             for p in pieces:
-                metro = list(p.get("metro") or [])
-                feed = self._metro_pick(
-                    metro, "post-feed", "handoff", "c2-skip-feed", "start-skip-feed"
-                )
-                lin = self._metro_pick(metro, "post-lineal")
-                dep = self._metro_pick(metro, "post-depósito")
-                home = self._metro_pick(metro, "post-home")
+                r = self._metro_log_readings(list(p.get("metro") or []))
                 lines.append(
-                    "| {rep} | {asda} | {dlt} | {ol} | {or_} | {dep} | {home} |".format(
+                    "| {rep} | {corte} | {en0} | {ol} | {or_} |".format(
                         rep=p.get("rep"),
-                        asda=self._fmt_mm((lin or {}).get("asda")),
-                        dlt=self._fmt_mm((lin or {}).get("delta"), signed=True),
-                        ol=self._fmt_mm((feed or {}).get("om_l")),
-                        or_=self._fmt_mm((feed or {}).get("om_r")),
-                        dep=self._fmt_mm((dep or {}).get("asda")),
-                        home=self._fmt_mm((home or {}).get("asda")),
+                        corte=self._fmt_mm(r.get("corte")),
+                        en0=self._fmt_mm(r.get("en0")),
+                        ol=self._fmt_mm(r.get("om_l")),
+                        or_=self._fmt_mm(r.get("om_r")),
                     )
                 )
             lines.append("")
@@ -2653,7 +2657,7 @@ class CycleRunner:
     def _wait_pf_buffer_full_on_start(
         self, timeout_s: float, *, reason: str = "Start"
     ) -> bool:
-        """Buffer Full confirmado (Start / Resume) antes de producir.
+        """Buffer Full confirmado (Start / Resume / Continuar ciclo) antes de producir.
 
         Ya Full → sale al primer tick. Vacío → espera relleno. Stop aborta.
         Timeout o EXXX PF (E052/E058) fallan el lote; no se alimenta a ciegas.
@@ -2706,25 +2710,28 @@ class CycleRunner:
             self._host.pf_request_status()
             time.sleep(0.1)
 
-    def _ensure_pf_buffer_full_after_resume(self) -> bool:
-        """Tras Resume: misma espera Buffer Full que Start. False = abort/fault.
+    def _ensure_pf_buffer_full_after_resume(
+        self, reason: str = "Resume", *, force: bool = False
+    ) -> bool:
+        """Tras Resume / Continuar ciclo: misma espera Buffer Full que Start.
 
         request_resume no bloquea: deja el flag y rearma In process (Busy).
+        Continuar ciclo no pasa por request_resume: force=True.
         Si el hilo de ciclo gana la carrera, rearma aquí antes de esperar.
         La espera no suma a CT (Start también es prep fuera de reloj).
         """
         with self._lock:
-            if not self._resume_need_buffer_full:
+            if not force and not self._resume_need_buffer_full:
                 return True
             self._resume_need_buffer_full = False
         if not self._use_prefeeder():
             return True
         if self._pf_held_idle:
-            self._pf_rearm_in_process("Resume")
+            self._pf_rearm_in_process(reason)
         t0 = time.monotonic()
         ok = self._wait_pf_buffer_full_on_start(
             timeout_s=float(self.get_config().pf_ready_timeout_s),
-            reason="Resume",
+            reason=reason,
         )
         with self._lock:
             if self._cycle_t0 is not None:
@@ -2857,25 +2864,24 @@ class CycleRunner:
         self._host.cmd_plc_holder(False)
         self._host.cmd_plc_encoder(False)
 
-    def _ensure_asda_at_zero(self) -> bool:
-        """Al Start: si ASDA no está en 0, ir a 0 y confirmar Reached antes del lote.
+    def _ensure_asda_at_zero(self, *, reason: str = "Start") -> bool:
+        """Si ASDA no está en 0 (caché Reached), MOVE_ZERO y esperar Reached.
 
-        Evita arrancar el lineal desde posición residual. Paso 24 sigue haciendo
-        HOME entre piezas; esto cubre el arranque / abort previo.
+        Start del lote y, si hace falta, re-home antes del feed post-HOME.
         """
         pos = self._host.asda_position_mm()
-        if pos is not None and abs(float(pos)) <= 0.5:
+        if pos is not None and abs(float(pos)) <= ASDA_HOME_EPS_MM:
             self._host.cycle_log(
-                f"ASDA ya en 0 (pos={float(pos):.2f} mm) — sin MOVE_ZERO al Start"
+                f"ASDA ya en 0 (pos={float(pos):.2f} mm) — sin MOVE_ZERO ({reason})"
             )
             return True
         if pos is not None:
             self._host.cycle_log(
-                f"ASDA pos={float(pos):.2f} mm ≠ 0 — MOVE_ZERO al Start"
+                f"ASDA pos={float(pos):.2f} mm ≠ 0 — MOVE_ZERO ({reason})"
             )
         else:
             self._host.cycle_log(
-                "ASDA pos desconocida — MOVE_ZERO al Start (referencia)"
+                f"ASDA pos desconocida — MOVE_ZERO ({reason})"
             )
         self._host.clear_motion_wait_flags()
         if not self._host.cmd_motion_move_zero(self._lot_rpm):
@@ -2887,7 +2893,7 @@ class CycleRunner:
 
     def _prepare_before_cut(self) -> bool:
         # Start: tools a seguro + Holder/Encoder ON + ASDA en 0 confirmado.
-        # HOME entre piezas sigue en paso 24.
+        # HOME entre piezas: paso home; feed de la siguiente solo con ASDA=0.
         self._host.cycle_log(
             "prepareBeforeCut: cutters/grippers safe + Holder/Encoder cerrados"
         )
@@ -2896,10 +2902,54 @@ class CycleRunner:
         if self._should_abort():
             return False
         return self._ensure_asda_at_zero()
-    def _run_feed(self, *, skip_validate: bool = False, feed_mm: float | None = None) -> bool:
+    def _confirm_asda_at_zero_for_feed(self) -> bool:
+        """Tras HOME: alimentar solo si ASDA está en 0 (caché TCP / Reached)."""
+        pos = self._host.asda_position_mm()
+        if pos is not None and abs(float(pos)) <= ASDA_HOME_EPS_MM:
+            self._host.cycle_log(
+                f"ASDA en 0 confirmado (pos={float(pos):.2f} mm) — feed permitido"
+            )
+            return True
+        if pos is not None:
+            self._host.cycle_log(
+                f"ASDA pos={float(pos):.2f} mm ≠ 0 tras HOME — "
+                "MOVE_ZERO antes del feed"
+            )
+        else:
+            self._host.cycle_log(
+                "ASDA pos desconocida tras HOME — MOVE_ZERO antes del feed"
+            )
+        return self._ensure_asda_at_zero(reason="post-HOME")
+
+    def _run_feed_after_home(self, rep: int, qty: int) -> bool:
+        """Feed de la *siguiente* pieza. Exige ASDA en 0. Tfeed sigue en el paso 3."""
+        if not self._confirm_asda_at_zero_for_feed():
+            return False
+        if int(rep) >= int(qty):
+            self._host.cycle_log("Feed post-HOME: omitido (última pieza)")
+            return True
+        if self._feed_reference_visible():
+            self._metro_snap("post-feed-next")
+            self._host.cycle_log(
+                "Feed post-HOME omitido (láser ya ON) — handoff listo"
+            )
+            return True
+        return self._run_feed(
+            apply_piece_watch=False, timing_tag="feed_next", metro_tag="post-feed-next"
+        )
+
+    def _run_feed(
+        self,
+        *,
+        skip_validate: bool = False,
+        feed_mm: float | None = None,
+        apply_piece_watch: bool = True,
+        timing_tag: str = "feed",
+        metro_tag: str = "post-feed",
+    ) -> bool:
         self._host.clear_motion_wait_flags()
         sides = self._feed_side_list()
-        cmd_op = self._begin_op("feed_cmd")
+        cmd_op = self._begin_op(f"{timing_tag}_cmd")
         failed: list[str] = []
         if "L" in sides:
             if not self._host.cmd_motion_feed_l(
@@ -2924,13 +2974,13 @@ class CycleRunner:
             self._host.cycle_log(f"Feed: start falló lados={''.join(failed)}")
             self._raise_fault("feed_cmd")
             return False
-        op = self._begin_op("feed")
-        if not self._wait_feed(log_ok=False):
+        op = self._begin_op(timing_tag)
+        if not self._wait_feed(log_ok=False, apply_piece_watch=apply_piece_watch):
             self._end_op(op, ok=False)
-            self._metro_snap("post-feed")
+            self._metro_snap(metro_tag)
             return False
         sec = self._end_op(op, ok=True)
-        self._metro_snap("post-feed")
+        self._metro_snap(metro_tag)
         self._host.cycle_log(
             f"Feed OK lados={''.join(sides)} · wait={self._fmt_op(sec)} "
             f"cmd={self._fmt_op(cmd_sec)}"
@@ -2940,7 +2990,9 @@ class CycleRunner:
     def _wait_refill_operator_decision(self, prompt: str) -> str:
         """'ok' | 'reject' | 'retry'. Abort/Stop → 'reject'.
 
-        prompt: after_feed (Retry / Long feed / Next Cutting) | after_cut (Next ASDA 0).
+        prompt: await_feed (Retry / Long feed, sin corte)
+              | after_feed (Retry / Long feed / Next Cutting)
+              | after_cut (Next ASDA 0).
         """
         with self._lock:
             self._refill_prompt = prompt
@@ -2950,7 +3002,12 @@ class CycleRunner:
         self._refill_retry.clear()
         self._pause.set()
         self._enter_pause_andon()
-        if prompt == "after_feed":
+        if prompt == "await_feed":
+            self._host.cycle_log(
+                f"Refill: park listo — Retry o Long feed {REFILL_LONG_FEED_MM:g} mm "
+                "(sin feed automático)"
+            )
+        elif prompt == "after_feed":
             if self._refill_skip_cut:
                 self._host.cycle_log(
                     f"Refill: feed listo — Retry, Long feed {REFILL_LONG_FEED_MM:g} mm "
@@ -2968,9 +3025,9 @@ class CycleRunner:
             while True:
                 if self._should_abort() or self._refill_reject.is_set():
                     return "reject"
-                if self._refill_confirm.is_set():
+                if prompt != "await_feed" and self._refill_confirm.is_set():
                     return "ok"
-                if prompt == "after_feed" and self._refill_retry.is_set():
+                if prompt in ("await_feed", "after_feed") and self._refill_retry.is_set():
                     return "retry"
                 time.sleep(0.05)
         finally:
@@ -3066,13 +3123,21 @@ class CycleRunner:
             self._progress = 35
 
         use_feed: float | None = feed_mm
+        fed_once = False
         while True:
+            if not fed_once:
+                decision = self._wait_refill_operator_decision("await_feed")
+                if decision != "retry":
+                    return "cancel"
+                use_feed = self._refill_next_feed_mm
+                self._refill_next_feed_mm = None
             shown = float(use_feed) if use_feed is not None else 55.0
             self._host.cycle_log(
                 f"Refill: alimentar {shown:g} mm (sin validación láser/OM)"
             )
             if not self._run_feed(skip_validate=True, feed_mm=use_feed):
                 return "fail"
+            fed_once = True
             with self._lock:
                 self._progress = 55
             if self._should_abort():
@@ -3116,7 +3181,7 @@ class CycleRunner:
         return "ok"
 
     def _run_refill(self, rpm: float, feed_mm: float, asda_mm: float) -> None:
-        """ASDA park → holder → feed ↔ retry → cut → home (prompts operador)."""
+        """ASDA park → holder → espera Retry/Long → feed ↔ retry → cut → home."""
         with self._lock:
             self._active = True
             self._refill_mode = True
@@ -3291,6 +3356,9 @@ class CycleRunner:
             self._started_at = time.monotonic()
             self._reset_ct_clocks_locked()
         self._host.cycle_notify()
+        self._host.cycle_log(
+            "Cycle flow: feed post-HOME (ASDA=0) — sin prefetch paralelo"
+        )
         try:
             if not self._prepare_before_cut():
                 self._finish(False)
@@ -3334,7 +3402,7 @@ class CycleRunner:
                     self._host.cycle_log("PreFeeder: In process ON (ciclo Busy)")
                 else:
                     self._host.cycle_log("PreFeeder: In process ON falló")
-                # Start y Resume: no alimentar hasta Buffer Full confirmado.
+                # Start, Resume y Continuar ciclo: no alimentar hasta Buffer Full.
                 # Si ya está Full (lote previo settled), sale al primer tick.
                 if not self._wait_pf_buffer_full_on_start(
                     timeout_s=float(self.get_config().pf_ready_timeout_s)
@@ -3344,7 +3412,6 @@ class CycleRunner:
             target_mm = 0.0
             completed = 0
             handoff_ready = False
-            prefetch_running = False
             for rep in range(1, qty + 1):
                 while True:
                     early_exit = True
@@ -3379,21 +3446,23 @@ class CycleRunner:
                                 break
                             if self._do_wait(rep, qty, "wait_holder_on", "holder_on_ms"):
                                 break
-                        # 3 Tfeed ANTES del feed (luego 4 Feed / handoff)
+                        # 3 Tfeed (1ª omite; 2…N incluido última = lote siguiente)
                         if self._enter(rep, qty, "pf_trigger"):
                             break
                         if not self._do_pf_trigger(rep):
                             break
                         if self._after_step("pf_trigger"):
                             break
-                        # 4 Feed / handoff
+                        # 4 Feed / ya listo post-HOME
                         if self._enter(rep, qty, "feed"):
                             break
                         if handoff_ready:
                             handoff_ready = False
                             self._recovery_skip_feed = False
                             self._metro_snap("handoff")
-                            self._host.cycle_log("Feed: handoff (prefetch ya listo)")
+                            self._host.cycle_log(
+                                "Feed: handoff (ya alimentado post-HOME, ASDA=0)"
+                            )
                         elif (
                             (
                                 rep == 1
@@ -3505,6 +3574,10 @@ class CycleRunner:
                             and self._host.pf_has_fault()
                         ):
                             self._raise_current_pf_fault("Corte: PreFeeder en error")
+                            if (
+                                self._recovery_after_error
+                                or self._e050_finish_piece
+                            ):
                                 self._host.cycle_log(
                                     "recovery: completar corte pese a EXXX PF"
                                 )
@@ -3546,12 +3619,11 @@ class CycleRunner:
                             break
                         if self._do_wait(rep, qty, "wait_cutter_post", "cutter_post_ms"):
                             break
-                        # 19–20 Depósito + delay (manguera fuera del área ANTES del prefetch)
+                        # 19–20 Depósito + delay. Feed de la siguiente: tras HOME (ASDA=0).
                         # wip_pos_signed = posición firmada confirmada; wip_start_mm = |pos|
                         # (fuente soplo WIP fin; se actualiza tras despeje post-pinzas).
                         wip_pos_signed: float | None = None
                         wip_start_mm: float | None = None
-                        prefetch_running = False
                         if self._enter(rep, qty, "deposit"):
                             break
                         extra = self._deposit_extra_mm(rep)
@@ -3613,31 +3685,7 @@ class CycleRunner:
                             break
                         if self._do_wait(rep, qty, "wait_deposit_dwell", "dwell_at_dest_ms"):
                             break
-                        # 21 Prefetch — inicia paralelo A (tras depósito: manguera ya movida)
-                        if self._enter(rep, qty, "prefetch_start"):
-                            break
-                        if rep < qty:
-                            self._host.clear_motion_wait_flags()
-                            sides = self._feed_side_list()
-                            failed: list[str] = []
-                            if "L" in sides and not self._host.cmd_motion_feed_l():
-                                failed.append("L")
-                            if "R" in sides and not self._host.cmd_motion_feed_r():
-                                failed.append("R")
-                            if failed:
-                                self._host.cycle_log(
-                                    f"∥ Prefetch: start falló lados={''.join(failed)}"
-                                )
-                                self._raise_fault("feed_cmd")
-                                break
-                            prefetch_running = True
-                            self._host.cycle_log(
-                                f"∥ Prefetch feed lados={''.join(sides)} "
-                                f"en paralelo con pinzas/HOME (post-depósito)"
-                            )
-                        if self._after_step("prefetch_start"):
-                            break
-                        # 22–23 Pinzas OFF + delay (∥ A) — Tfeed ya fue al inicio de pieza
+                        # 21–22 Pinzas OFF + delay
                         if self._enter(rep, qty, "grippers_off"):
                             break
                         grip_off_op = self._begin_op("grippers_off")
@@ -3656,7 +3704,7 @@ class CycleRunner:
                             clearance_target = self._clearance_target_mm(
                                 wip_pos_signed, float(target_mm), clr
                             )
-                            self._arm_motion_leg(prefetch_running)
+                            self._arm_motion_leg(False)
                             self._host.cycle_log(
                                 f"Despeje MOVE → {clearance_target:.1f} mm "
                                 f"(+|clearance|={clr:.1f})"
@@ -3698,62 +3746,38 @@ class CycleRunner:
                             )
                         if self._after_step("gripper_clearance"):
                             break
-                        # 25 HOME + WIP continuo (match-lineal) → 0
+                        # 24 HOME + WIP continuo (match-lineal) → 0
                         if self._enter(rep, qty, "home"):
                             break
                         if not self._home_with_wip_delivery(
                             wip_start_mm,
                             self._lot_rpm,
-                            prefetch_running=prefetch_running,
+                            prefetch_running=False,
                         ):
                             break
                         if self._after_step("home"):
                             break
-                        # 26 Handoff / join paralelo A
-                        if self._enter(rep, qty, "handoff"):
+                        # 25 Feed de la siguiente: solo con ASDA en 0
+                        if self._enter(rep, qty, "feed_after_home"):
                             break
-                        if prefetch_running:
-                            join_op = self._begin_op("prefetch_join")
-                            # El reloj de esta pieza ya cerró el trabajo (HOME).
-                            # No cortar el feed de la siguiente con el watchdog de 1ª.
-                            if self._wait_feed(log_ok=False, apply_piece_watch=False):
-                                join_sec = self._end_op(join_op, ok=True)
-                                handoff_ready = True
-                                self._metro_snap("post-join")
+                        if not self._run_feed_after_home(rep, qty):
+                            if self._restart_piece or self._fault:
+                                break
+                            if self._recovery_after_error:
                                 self._host.cycle_log(
-                                    f"∥ Join: prefetch listo (handoff)"
-                                    f" · {self._fmt_op(join_sec)}"
+                                    "Feed post-HOME falló — recovery sigue a "
+                                    "post_piece (Pause; Reset→Resume)"
                                 )
                             else:
-                                self._end_op(join_op, ok=False)
-                                self._metro_snap("post-join")
-                                handoff_ready = False
-                                if self._restart_piece:
-                                    break
-                                # recovery: pieza ya cortada — no abortar; ir a post_piece → Pause.
-                                # Abortar aquí hacía break del while y el for seguía
-                                # disparando Tfeed/Feed en las piezas restantes.
-                                    self._host.cycle_log(
-                                        "∥ Join: prefetch falló — recovery sigue a "
-                                        "post_piece (Pause; Reset→Resume)"
-                                    )
-                                else:
-                                    if not self._fault:
-                                        self._raise_fault("feed_incomplete")
-                                    break
-                            prefetch_running = False
-                        if self._after_step("handoff"):
+                                self._raise_fault("feed_incomplete")
+                                break
+                        elif int(rep) < int(qty):
+                            handoff_ready = True
+                        if self._after_step("feed_after_home"):
                             break
-                        # 27–28 Asentar + post-pieza
-                        if not handoff_ready:
-                            if self._do_wait(rep, qty, "wait_asentar", "asentar_ms"):
-                                break
-                        else:
-                            if self._enter(rep, qty, "wait_asentar"):
-                                break
-                            self._host.cycle_log("Asentar omitido (handoff listo)")
-                            if self._after_step("wait_asentar"):
-                                break
+                        # 26–27 Asentar + post-pieza
+                        if self._do_wait(rep, qty, "wait_asentar", "asentar_ms"):
+                            break
                         if self._enter(rep, qty, "post_piece"):
                             break
                         # Congelar CT al entrar a post_piece (antes Finish).
@@ -3775,7 +3799,6 @@ class CycleRunner:
                                 early_exit = True
                                 break
                             handoff_ready = False
-                            prefetch_running = False
                             self._recovery_skip_feed = True
                             self._recovery_skip_pf_trigger = False
                         elif self._recovery_after_error:
@@ -3784,7 +3807,6 @@ class CycleRunner:
                                 break
                             self._recovery_after_error = False
                             handoff_ready = False
-                            prefetch_running = False
                             self._recovery_skip_feed = True
                             self._recovery_skip_pf_trigger = False
                         early_exit = False
@@ -3794,7 +3816,6 @@ class CycleRunner:
                         break  # pieza OK → siguiente rep
                     if self._consume_restart_piece():
                         handoff_ready = False
-                        prefetch_running = False
                         self._recovery_skip_feed = True
                         self._host.cycle_log(
                             f"recovery: reinicio pieza {rep}/{qty} desde step 0"
@@ -3806,7 +3827,6 @@ class CycleRunner:
                         and self._wait_recovery_resume_hold()
                     ):
                         handoff_ready = False
-                        prefetch_running = False
                         self._recovery_skip_feed = True
                         self._recovery_skip_pf_trigger = True
                         continue

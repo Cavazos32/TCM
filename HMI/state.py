@@ -229,13 +229,6 @@ _PF_OK_WHEN_ACTIVE = frozenset(
     {TX_BUFFER_FULL_L, TX_BUFFER_FULL_R, TX_HOLGURA_L, TX_HOLGURA_R}
 )
 
-# Tras ErrorState el Master suele ir a Busy (Auto ON), no solo Idle/Return.
-_PF_CLEAR_LATCH_STATES = frozenset(
-    {TX_PF_INIT, TX_PF_IDLE, TX_PF_BUSY, TX_PF_RETURN}
-)
-
-
-
 def _ts() -> str:
     # HH:MM:SS.mmm (strftime %f = microsegundos)
     return datetime.now().strftime("%H:%M:%S.%f")[:-3]
@@ -487,19 +480,20 @@ class HmiState:
     def snapshot(self, *, slim: bool = False) -> dict[str, Any]:
         cycle_snap = self._cycle.snapshot()
         if slim:
-            # FLOW_STEPS es estático; la UI ya lo tiene del primer snapshot.
             cycle_snap = dict(cycle_snap)
-            cycle_snap.pop("flow", None)
         with self._lock:
             # EXXX remains latched until explicit RESET validation.
             progress = self._cycle_live_progress(cycle_snap)
             resume = (
-                self._stopped_pending_resume
-                or (
-                    bool(cycle_snap.get("paused"))
-                    and not bool(cycle_snap.get("refillAwaitingConfirm"))
-                    and not bool(cycle_snap.get("recoveryAwaitingConfirm"))
-                    and not bool(cycle_snap.get("refillActive"))
+                not bool(self._error_policy.latch.active)
+                and (
+                    self._stopped_pending_resume
+                    or (
+                        bool(cycle_snap.get("paused"))
+                        and not bool(cycle_snap.get("refillAwaitingConfirm"))
+                        and not bool(cycle_snap.get("recoveryAwaitingConfirm"))
+                        and not bool(cycle_snap.get("refillActive"))
+                    )
                 )
             )
 
@@ -700,7 +694,7 @@ class HmiState:
             return bool(self._motion.get(key))
 
     def refresh_motion_lasers(self) -> bool:
-        """GET /api/status: actualiza laserL/R. El ciclo de lote no lo usa (caché TCP)."""
+        """GET /api/status: actualiza láser L/R y exhaust. El ciclo no lo usa."""
         host = getattr(self._client, "_host", DEFAULT_HOST)
         try:
             data = motion_http_asda_status(host=str(host), timeout=0.35)
@@ -708,13 +702,19 @@ class HmiState:
             return False
         if not isinstance(data, dict):
             return False
-        if "laserL" not in data and "laserR" not in data:
+        if (
+            "laserL" not in data
+            and "laserR" not in data
+            and "safetyExhaust" not in data
+        ):
             return False
         with self._lock:
             if "laserL" in data:
                 self._motion["laserL"] = bool(data["laserL"])
             if "laserR" in data:
                 self._motion["laserR"] = bool(data["laserR"])
+            if "safetyExhaust" in data:
+                self._motion["safetyExhaust"] = bool(data["safetyExhaust"])
         return True
 
     def refresh_asda_position_mm(self) -> float | None:
@@ -875,7 +875,7 @@ class HmiState:
         self._stage2_fault = ""
 
     def clear_motion_reached_flag(self) -> None:
-        """Solo Idle/Reached — conserva LengthOK/NG del prefetch en paralelo."""
+        """Solo Idle/Reached — conserva LengthOK/NG si un feed sigue activo."""
         self._motion_idle_or_reached.clear()
 
     def wait_motion_idle_or_reached(self, timeout_s: float) -> bool:
@@ -1457,6 +1457,9 @@ class HmiState:
         return {"ok": ok_m}
 
     def cmd_resume(self) -> dict:
+        blocked = self._work_blocked_error()
+        if blocked:
+            return {"ok": False, "error": blocked}
         snap = self._cycle.snapshot()
         if snap.get("paused"):
             if self._pf_client.connected:
@@ -1479,6 +1482,8 @@ class HmiState:
         if ok:
             with self._lock:
                 self._plc_apply_home_valve_cache()
+                if self._plc.get("last_state_byte") in (None, TX_PLC_ERROR):
+                    self._plc["last_state_byte"] = TX_PLC_IDLE
                 self._plc["status"] = {
                     "text": f"{log_label} — estados OFF (0x01E)",
                     "kind": "ok",
@@ -1559,6 +1564,7 @@ class HmiState:
                 module_reset_ok = bool(self._pf_client.cmd_reset())
                 if module_reset_ok:
                     with self._lock:
+                        self._pf_clear_fault_cache()
                         self._pf["status"] = {
                             "text": "Reset enviado L+R (0x02C)",
                             "kind": "ok",
@@ -1583,6 +1589,7 @@ class HmiState:
                 self._client.cmd_status()
             except Exception:
                 pass
+            self.refresh_motion_lasers()
         elif "plc" in module:
             try:
                 self._plc_client.cmd_status()
@@ -1833,12 +1840,23 @@ class HmiState:
         feed_mm: float | None = None,
         asda_mm: float | None = None,
     ) -> dict:
-        """Purga/refill material: ASDA park → feed → corte → confirm → HOME."""
+        """Purga/refill material: ASDA park → espera Retry/Long → feed → corte → HOME.
+
+        E050 (encoder / aire / manguera): se permite con latch activo.
+        Start/Resume siguen bloqueados; el EXXX no se borra.
+        """
         with self._lock:
-            blocked = self._work_blocked_error()
-            if blocked:
-                return {"ok": False, "error": blocked}
+            e050 = self._e050_latched()
+            if not e050:
+                blocked = self._work_blocked_error()
+                if blocked:
+                    return {"ok": False, "error": blocked}
             rpm = self._rpm
+        if e050:
+            released = self._cycle.release_for_manual_refill()
+            if not released.get("ok"):
+                return released
+            _append_log(self._main_log, "E050: Purge / Refill con latch activo")
         return self._cycle.request_refill(rpm, feed_mm=feed_mm, asda_mm=asda_mm)
 
     def cmd_cycle_refill_confirm(self, ok: bool = True) -> dict:
@@ -1900,7 +1918,8 @@ class HmiState:
         if ok and action == "motion_reset":
             with self._lock:
                 self._stopped_pending_resume = False
-                self._last_state_byte = None
+                if self._last_state_byte in (None, TX_ERROR):
+                    self._last_state_byte = TX_IDLE
                 self._motion["status"] = {
                     "text": "Errores limpiados (0x016)",
                     "kind": "ok",
@@ -2181,9 +2200,10 @@ class HmiState:
                 )
             return {"ok": False, "error": err}
         if action == "reset":
-            # Reset local PF (0x02C): limpia ErrorState + latch HMI.
+            # Reset local PF (0x02C): limpia ErrorState + caché de EXXX.
             # No request_reset de ciclo ni Home/PLC — eso es Reset de máquina y pierde setup.
             with self._lock:
+                self._pf_clear_fault_cache()
                 self._pf["status"] = {"text": "Reset enviado L+R (0x02C)", "kind": "ok"}
 
             self._notify()
@@ -2440,19 +2460,21 @@ class HmiState:
             self._notify()
 
     def _motion_is_healthy(self) -> bool:
-        """Motion source condition: link up, a known state, and not ErrorState."""
+        """Motion OK: enlace, no ErrorState, y la causa viva del EXXX ya no está.
+
+        E004/E005 son un disparo de la ventana de feed (seek/validador), no un
+        interlock GPIO. Láser OFF es el estado normal del hunt; Motion no los
+        re-lanza por nivel. None en last_state_byte (ack Reset 0x16 con Motion
+        ya Idle) no es ErrorState. E006 sí es sensor vivo.
+        """
         if not self._motion.get("connected"):
             return False
-        b = self._last_state_byte
-        if b is None:
+        if self._last_state_byte == TX_ERROR:
             return False
-        return b != TX_ERROR
-
+        code = (self._error_policy.latch.code or "").upper()
+        if code == "E006" and bool(self._motion.get("safetyExhaust")):
             return False
-        b = self._last_state_byte
-        if b is None:
-            return False
-        return b != TX_ERROR
+        return True
 
     def _plc_primary_active_error_byte(self) -> int | None:
         """EXXX PLC activo en caché de válvulas (Cutter/Gripper/Holder/Encoder)."""
@@ -2479,23 +2501,32 @@ class HmiState:
             return False
         return self._apply_detail_error(primary, source="plc")
 
+    def _e050_latched(self) -> bool:
+        latch = self._error_policy.latch
+        return bool(latch.active and latch.code == "E050")
+
     def _work_blocked_error(self) -> str | None:
-        """Motivo para rechazar Start/Refill. Latch EXXX o fallo PLC en caché."""
+        """Motivo para rechazar Start/Resume. Latch EXXX o fallo PLC.
+
+        Purge/Refill con E050 no usa esta puerta (ver cmd_cycle_refill).
+        """
         latch = self._error_policy.latch
         if latch.active:
             ui = latch.ui_text or latch.code or "error activo"
-            return f"Error activo — {ui} (Reset antes de Start)"
+            return f"Error activo — {ui} (Reset antes de Start/Resume)"
         if self._plc.get("connected") and self._plc_has_fault():
             st = (self._plc.get("status") or {}).get("text") or "PLC en error"
-            return f"Error activo — {st} (Reset antes de Start)"
+            return f"Error activo — {st} (Reset antes de Start/Resume)"
         return None
 
     def _plc_is_healthy(self) -> bool:
-        """PLC OK: enlace up, no ErrorState, sin sensor de seguridad activo."""
+        """PLC OK: enlace up, no ErrorState, sin sensor de seguridad activo.
+
+        None en last_state_byte (Reset 0x1E con PLC ya Idle) no es ErrorState.
+        """
         if not self._plc.get("connected"):
             return False
-        b = self._plc.get("last_state_byte")
-        if b is None or b == TX_PLC_ERROR:
+        if self._plc.get("last_state_byte") == TX_PLC_ERROR:
             return False
         return self._plc_primary_active_error_byte() is None
 
@@ -2529,6 +2560,18 @@ class HmiState:
         if not ui or self._pf_is_generic_state_text(ui):
             return False
         return self._pf_master_error_in_lot()
+
+    def _pf_clear_fault_cache(self) -> None:
+        """Tras Reset 0x2C aceptado: el Master ya no tiene el EXXX enclavado."""
+        self._pf["error_any"] = False
+        self._pf["master_error_ui"] = ""
+        self._pf["master_error_side"] = ""
+        for e in self._pf["errors"].values():
+            e["active"] = False
+        for k in self._pf["fault_active"]:
+            self._pf["fault_active"][k] = False
+        if self._pf.get("last_state_byte") in (None, TX_PF_ERROR):
+            self._pf["last_state_byte"] = TX_PF_IDLE
 
     def _pf_is_healthy(self) -> bool:
         """PreFeeder OK: enlace up y sin EXXX/errorAny (no exige salir de 0x3C)."""
@@ -3150,7 +3193,10 @@ class HmiState:
                     return True
                 if msg.get("actuator") == "motion" and ok and byte_code == 0x16:
                     self._stopped_pending_resume = False
-                    self._last_state_byte = None
+                    # Reset aceptado: no ErrorState. Idle si Motion no re-empuja
+                    # (ya estaba Idle → asdaTcpPushStateIfChanged no reenvía).
+                    if self._last_state_byte in (None, TX_ERROR):
+                        self._last_state_byte = TX_IDLE
                     text = detail or "Errores limpiados (0x016)"
                     self._set_banner(text, "ok")
                     self._set_motion_status(text, "ok")
@@ -3343,8 +3389,13 @@ class HmiState:
             if mtype == "ack":
                 ok = msg.get("ok", True)
                 detail = msg.get("message", "")
+                byte_code = int(msg.get("byte", 0) or 0)
                 if msg.get("actuator") == "plc":
                     if ok:
+                        if byte_code == CMD_RESET:
+                            self._plc_apply_home_valve_cache()
+                            if self._plc.get("last_state_byte") in (None, TX_PLC_ERROR):
+                                self._plc["last_state_byte"] = TX_PLC_IDLE
                         self._set_plc_status(detail or "Comando PLC OK", "ok")
                     else:
                         text = detail or "Comando rechazado"
@@ -3607,17 +3658,10 @@ class HmiState:
         self._set_pf_status(text, self._pf_status_kind_for_byte(int(byte_code)))
 
     def _pf_apply_state_byte(self, byte_code: int) -> bool:
-        """Actualiza estado PF. True si cambió. Res latch al salir de ErrorState."""
+        """Actualiza estado PF. True si cambió. El latch EXXX no se limpia aquí."""
         if not byte_code or byte_code == self._pf["last_state_byte"]:
             return False
-        prev_byte = self._pf["last_state_byte"]
         self._pf["last_state_byte"] = byte_code
-        if (
-            prev_byte == TX_PF_ERROR
-            and byte_code in _PF_CLEAR_LATCH_STATES
-        ):
-            # Auto ON → Busy (no Idle): antes solo Idle/Return hacían Res.
-
         if self._pf_cached_has_fault():
             # Idle/Busy no deben tapar un EXXX del lote (UI verde + ciclo bloqueado).
             self._pf_paint_detail_status()
@@ -3778,8 +3822,11 @@ class HmiState:
             if mtype == "ack":
                 ok = msg.get("ok", True)
                 detail = msg.get("message", "")
+                byte_code = int(msg.get("byte", 0) or 0)
                 if msg.get("actuator") == "prefeeder":
                     if ok:
+                        if byte_code == PF_CMD_RESET:
+                            self._pf_clear_fault_cache()
                         self._set_pf_status(detail or "Comando PreFeeder OK", "ok")
                     else:
                         text = detail or "Comando rechazado"

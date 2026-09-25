@@ -9,6 +9,9 @@
 #include <WebServer.h>
 #include <Preferences.h>
 #include <math.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/queue.h>
 #include "Index.h"
 #include "Config.h"
 #include "Asda.h"
@@ -104,15 +107,25 @@ static bool motionIsOccupied() {
 
 static void asdaTcpPushStateIfChanged();
 static bool asdaTcpLinkOk();
+static void asdaTcpConsumeCmds();
+static void asdaTcpPollEvents();
+static void asdaTcpStartTask();
 
 // ASDA TCP — protocolo maestro (bytes tabla ASDA)
+// COMMUNICATION IMPACT
+// Componente: socket HMI :8767 (asdaTcpServer/Client)
+// Cambio: task FreeRTOS dueña del socket; loop consume mailbox + encola TX
+// Causal: CMD→ACK tardaba porque loop no llegaba a serviceAsdaTcp (Modbus/CAN/HTTP)
+// Riesgo: WiFiClient no thread-safe — solo el task TCP hace print/read/stop
+// Alternativa sin tocar comm: no elimina el retraso de atención del socket
 static WiFiServer asdaTcpServer(MOTION_TCP_PORT);
 static WiFiClient asdaTcpClient;
 static char asdaTcpRxLine[384];
 static uint16_t asdaTcpRxLen = 0;
 static bool asdaTcpServicesUp = false;
 static bool asdaTcpWasConnected = false;
-static bool asdaTcpNeedInit = true;
+static volatile bool asdaTcpLinked = false;
+static volatile bool asdaTcpNeedInit = true;
 static bool asdaTcpStopPending = false;
 static bool asdaTcpNotifyReached = false;
 static int32_t asdaTcpReachedPos = 0;
@@ -123,7 +136,38 @@ static bool motionTcpNotifyFeedOkL = false;
 static bool motionTcpNotifyFeedNgL = false;
 static bool motionTcpNotifyFeedOkR = false;
 static bool motionTcpNotifyFeedNgR = false;
-static bool motionTcpNotifyIoStatus = false;  // push niveles laser/safety al maestro
+static volatile bool motionTcpNotifyIoStatus = false;  // push niveles laser/safety al maestro
+
+enum AsdaTcpCmdKind : uint8_t {
+  ASDA_TCP_Q_ASDA = 1,
+  ASDA_TCP_Q_ENC,
+  ASDA_TCP_Q_FEED,
+  ASDA_TCP_Q_MOTION,
+  ASDA_TCP_Q_RESET_ALL,
+};
+
+struct AsdaTcpCmdMsg {
+  AsdaTcpCmdKind kind;
+  uint8_t cmdByte;
+  char line[384];
+  uint32_t rxUs;
+};
+
+struct AsdaTcpTxMsg {
+  char line[896];
+  uint8_t isAck;
+  uint32_t queuedUs;
+};
+
+static const UBaseType_t ASDA_TCP_TASK_CORE = 1;
+static const UBaseType_t ASDA_TCP_TASK_PRIO = 2;  // loopTask Arduino = 1
+static const uint32_t ASDA_TCP_TASK_STACK = 8192;
+static const UBaseType_t ASDA_TCP_CMD_Q_LEN = 4;
+static const UBaseType_t ASDA_TCP_TX_Q_LEN = 8;
+
+static TaskHandle_t asdaTcpTaskHandle = nullptr;
+static QueueHandle_t asdaTcpCmdQ = nullptr;
+static QueueHandle_t asdaTcpTxQ = nullptr;
 // Estado vivo sensores IO (status TCP / HMI) — debounced
 static bool ioLaserRActive = false;
 static bool ioLaserLActive = false;
@@ -1077,8 +1121,8 @@ static void asdaRefreshLiveStatus(uint16_t& trigger,
   okT = cachedTriggerOk;
   okP = cachedPosOk;
 
-  // Con HMI TCP: solo caché. handleClient() corre *antes* de serviceAsdaTcp;
-  // read16+read32 aquí (hasta 2×300 ms) retrasa el ACK de CMD_MOVE.
+  // Con HMI TCP: solo caché. read16+read32 aquí (hasta 2×300 ms) retrasa
+  // el consume del mailbox / ACK de CMD_MOVE.
   const bool needLive = !motionIsOccupied() && !asdaTcpLinkOk();
   const uint32_t now = millis();
   if (needLive && (lastLiveStatusMs == 0 || (now - lastLiveStatusMs) >= STATUS_LIVE_MIN_MS)) {
@@ -2516,17 +2560,66 @@ void handleOverviewMark() {
 // ASDA TCP — esclavo maestro (JSON + newline, puerto MOTION_TCP_PORT)
 // =============================================================================
 static bool asdaTcpLinkOk() {
+  return asdaTcpLinked;
+}
+
+// Solo el task TCP: WiFiClient no es thread-safe.
+static bool asdaTcpSocketUp() {
   return asdaTcpClient && asdaTcpClient.connected();
 }
 
-static bool asdaTcpTx(const String& m) {
-  if (!asdaTcpLinkOk()) return false;
+static bool asdaTcpTxNow(const String& m) {
+  if (!asdaTcpSocketUp()) {
+    asdaTcpLinked = false;
+    return false;
+  }
   bool ok = asdaTcpClient.print(m) > 0;
   if (!m.endsWith("\n"))
     ok = (asdaTcpClient.print("\n") > 0) && ok;
-  if (!ok)
+  if (!ok) {
     asdaTcpClient.stop();
+    asdaTcpLinked = false;
+  }
   return ok;
+}
+
+static bool asdaTcpQueueTx(const String& m) {
+  if (!asdaTcpTxQ || !asdaTcpLinked) return false;
+  AsdaTcpTxMsg msg;
+  memset(&msg, 0, sizeof(msg));
+  const unsigned len = m.length();
+  if (len >= sizeof(msg.line)) return false;
+  memcpy(msg.line, m.c_str(), len + 1);
+  msg.isAck = (strstr(msg.line, "\"type\":\"ack\"") != nullptr) ? 1 : 0;
+  msg.queuedUs = micros();
+  if (msg.isAck) LAT_MARK("8");
+  if (xQueueSend(asdaTcpTxQ, &msg, pdMS_TO_TICKS(20)) != pdTRUE)
+    return false;
+  return true;
+}
+
+// Loop: encola. Task TCP: escribe el socket.
+static bool asdaTcpTx(const String& m) {
+  if (asdaTcpTaskHandle && xTaskGetCurrentTaskHandle() == asdaTcpTaskHandle)
+    return asdaTcpTxNow(m);
+  return asdaTcpQueueTx(m);
+}
+
+static void asdaTcpDrainTx() {
+  if (!asdaTcpTxQ) return;
+  AsdaTcpTxMsg msg;
+  while (xQueueReceive(asdaTcpTxQ, &msg, 0) == pdTRUE) {
+    if (msg.isAck) {
+      LAT_MARK("9");
+#if MOT_LATENCY_DEBUG
+      const uint32_t nowUs = micros();
+      Serial.printf("[LAT-MOT] ACK-TX queuedUs=%lu txUs=%lu dtUs=%lu\n",
+                    (unsigned long)msg.queuedUs, (unsigned long)nowUs,
+                    (unsigned long)(nowUs - msg.queuedUs));
+#endif
+    }
+    asdaTcpTxNow(String(msg.line));
+  }
 }
 
 static int asdaTcpJInt(const char* j, const char* k, int d) {
@@ -2910,6 +3003,52 @@ static uint8_t asdaTcpResolveCmdByte(const char* line) {
   return 0;
 }
 
+static bool asdaTcpPostCmd(uint8_t kind, uint8_t cmdByte, const char* line) {
+  if (!asdaTcpCmdQ) return false;
+  AsdaTcpCmdMsg msg;
+  memset(&msg, 0, sizeof(msg));
+  msg.kind = (AsdaTcpCmdKind)kind;
+  msg.cmdByte = cmdByte;
+  strncpy(msg.line, line, sizeof(msg.line) - 1);
+  msg.rxUs = micros();
+  LAT_MARK("2q");
+  if (xQueueSend(asdaTcpCmdQ, &msg, pdMS_TO_TICKS(50)) != pdTRUE) {
+    asdaTcpTxNow(String("{\"ver\":") + MOTION_PROTO_VER
+                 + ",\"type\":\"ack\",\"ok\":false,"
+                 "\"message\":\"ocupado\"}");
+    return false;
+  }
+  return true;
+}
+
+static void asdaTcpConsumeCmds() {
+  if (!asdaTcpCmdQ) return;
+  AsdaTcpCmdMsg msg;
+  while (xQueueReceive(asdaTcpCmdQ, &msg, 0) == pdTRUE) {
+    LAT_MARK("3c");
+    switch (msg.kind) {
+      case ASDA_TCP_Q_RESET_ALL:
+        motionTcpDoResetAll();
+        break;
+      case ASDA_TCP_Q_ENC:
+        encoderTcpDoByte(msg.cmdByte, msg.line);
+        break;
+      case ASDA_TCP_Q_FEED:
+        feederTcpDoByte(msg.cmdByte, msg.line);
+        break;
+      case ASDA_TCP_Q_MOTION:
+        motionTcpDoByte(msg.cmdByte, msg.line);
+        break;
+      case ASDA_TCP_Q_ASDA:
+        asdaTcpDoByte(msg.cmdByte, msg.line);
+        break;
+      default:
+        break;
+    }
+  }
+}
+
+// Task TCP: clasifica. No ejecuta Modbus/CAN/FSM.
 static void asdaTcpOnLine(const char* line) {
   if (!strstr(line, "\"type\":\"command\"")) return;
   LAT_MARK("2");
@@ -2917,11 +3056,11 @@ static void asdaTcpOnLine(const char* line) {
   const String cmd = asdaTcpJStr(line, "command");
   if (cmd == "ping") {
     // Keepalive de enlace (regla C1): ack mínimo, sin Modbus/status.
-    asdaTcpTx("{\"type\":\"pong\"}");
+    asdaTcpTxNow("{\"type\":\"pong\"}");
     return;
   }
   if (cmd == "resetAll" || cmd == "ResetMotion") {
-    motionTcpDoResetAll();
+    asdaTcpPostCmd(ASDA_TCP_Q_RESET_ALL, 0, line);
     return;
   }
 
@@ -2931,39 +3070,39 @@ static void asdaTcpOnLine(const char* line) {
     if (cmdByte == ENC_CMD_MEASURE_R || cmdByte == ENC_CMD_SET0_R
         || cmdByte == ENC_TX_ERROR
         || cmdByte == ENC_CMD_MEASURE_L || cmdByte == ENC_CMD_SET0_L) {
-      encoderTcpDoByte(cmdByte, line);
+      asdaTcpPostCmd(ASDA_TCP_Q_ENC, cmdByte, line);
       return;
     }
     if (cmdByte >= FEED_CMD_FEED_R && cmdByte <= FEED_CMD_FEED_L) {
-      feederTcpDoByte(cmdByte, line);
+      asdaTcpPostCmd(ASDA_TCP_Q_FEED, cmdByte, line);
       return;
     }
     if (cmdByte == MOT_CMD_RESET_ERR) {
-      motionTcpDoByte(cmdByte, line);
+      asdaTcpPostCmd(ASDA_TCP_Q_MOTION, cmdByte, line);
       return;
     }
     if (cmdByte >= 0x01 && cmdByte <= 0x0E) {
-      asdaTcpDoByte(cmdByte, line);
+      asdaTcpPostCmd(ASDA_TCP_Q_ASDA, cmdByte, line);
       return;
     }
-    asdaTcpTx(String("{\"ver\":") + MOTION_PROTO_VER
-              + ",\"type\":\"ack\",\"ok\":false,"
-              "\"message\":\"byte/cmd desconocido\"}");
+    asdaTcpTxNow(String("{\"ver\":") + MOTION_PROTO_VER
+                 + ",\"type\":\"ack\",\"ok\":false,"
+                 "\"message\":\"byte/cmd desconocido\"}");
     return;
   }
 
   const uint8_t cmdByte = asdaTcpResolveCmdByte(line);
   if (!cmdByte) {
-    asdaTcpTx(String("{\"ver\":") + MOTION_PROTO_VER
-              + ",\"type\":\"ack\",\"actuator\":\"asda\",\"ok\":false,"
-              "\"message\":\"Falta byte o command valido\"}");
+    asdaTcpTxNow(String("{\"ver\":") + MOTION_PROTO_VER
+                 + ",\"type\":\"ack\",\"actuator\":\"asda\",\"ok\":false,"
+                 "\"message\":\"Falta byte o command valido\"}");
     return;
   }
   if (cmdByte == MOT_CMD_RESET_ERR) {
-    motionTcpDoByte(cmdByte, line);
+    asdaTcpPostCmd(ASDA_TCP_Q_MOTION, cmdByte, line);
     return;
   }
-  asdaTcpDoByte(cmdByte, line);
+  asdaTcpPostCmd(ASDA_TCP_Q_ASDA, cmdByte, line);
 }
 
 static void asdaTcpRxDrain() {
@@ -2984,13 +3123,13 @@ static void asdaTcpRxDrain() {
 static void asdaTcpOnClientAccepted() {
   asdaTcpClient.setNoDelay(true);
   asdaTcpRxLen = 0;
-  asdaTcpLastStateByte = 0;
   asdaTcpNeedInit = true;
 #if MOT_IO_SENSOR_EVENTS
   motionTcpNotifyIoStatus = true;  // sync inicial laser/safety al HMI
 #endif
-  asdaTcpTx(String("{\"ver\":") + MOTION_PROTO_VER
-            + ",\"type\":\"hello\",\"role\":\"motion\"}");
+  asdaTcpLinked = true;
+  asdaTcpTxNow(String("{\"ver\":") + MOTION_PROTO_VER
+               + ",\"type\":\"hello\",\"role\":\"motion\"}");
   Serial.printf("[ASDA-TCP] On desde %s\n",
                 asdaTcpClient.remoteIP().toString().c_str());
   asdaTcpWasConnected = true;
@@ -3028,6 +3167,7 @@ static void asdaTcpEnsureServices() {
 static void asdaTcpStopServices() {
   // Invalidar siempre el socket (también zombies con connected()==false).
   if (asdaTcpClient) asdaTcpClient.stop();
+  asdaTcpLinked = false;
   asdaTcpWasConnected = false;
   asdaTcpRxLen = 0;
   if (!asdaTcpServicesUp) return;
@@ -3219,6 +3359,7 @@ static void asdaTcpPollEvents() {
   motionTcpPollIoSensorEvents();
 }
 
+// Solo socket. Modbus/FSM/eventos de app: loop (mailbox + asdaTcpPollEvents).
 static void serviceAsdaTcp() {
   if (WiFi.status() != WL_CONNECTED) {
     asdaTcpStopServices();
@@ -3230,7 +3371,8 @@ static void serviceAsdaTcp() {
   if (asdaTcpAcceptIncoming())
     return;
 
-  if (!asdaTcpLinkOk()) {
+  if (!asdaTcpSocketUp()) {
+    asdaTcpLinked = false;
     if (asdaTcpWasConnected) {
       Serial.println("[ASDA-TCP] Off");
       asdaTcpWasConnected = false;
@@ -3238,9 +3380,36 @@ static void serviceAsdaTcp() {
     return;
   }
 
+  asdaTcpLinked = true;
   asdaTcpWasConnected = true;
   asdaTcpRxDrain();
-  asdaTcpPollEvents();
+}
+
+static void asdaTcpTask(void* /*arg*/) {
+  for (;;) {
+    serviceAsdaTcp();
+    asdaTcpDrainTx();
+    vTaskDelay(pdMS_TO_TICKS(1));
+  }
+}
+
+static void asdaTcpStartTask() {
+  if (asdaTcpTaskHandle) return;
+  asdaTcpCmdQ = xQueueCreate(ASDA_TCP_CMD_Q_LEN, sizeof(AsdaTcpCmdMsg));
+  asdaTcpTxQ = xQueueCreate(ASDA_TCP_TX_Q_LEN, sizeof(AsdaTcpTxMsg));
+  if (!asdaTcpCmdQ || !asdaTcpTxQ) {
+    Serial.println("[ASDA-TCP] Fallo colas FreeRTOS");
+    return;
+  }
+  const BaseType_t ok = xTaskCreatePinnedToCore(
+      asdaTcpTask, "asdaTcp", ASDA_TCP_TASK_STACK, nullptr,
+      ASDA_TCP_TASK_PRIO, &asdaTcpTaskHandle, ASDA_TCP_TASK_CORE);
+  if (ok != pdPASS) {
+    asdaTcpTaskHandle = nullptr;
+    Serial.println("[ASDA-TCP] Fallo task");
+    return;
+  }
+  Serial.println("[ASDA-TCP] Task core 1 prio 2");
 }
 
 // =============================================================================
@@ -3289,10 +3458,9 @@ static void serviceWifi() {
     return;
   }
 
-  // STA caído: invalidar TCP de inmediato; luego rearmar WiFi sin bloquear.
+  // STA caído: el task TCP invalida el socket (asdaTcpStopServices).
   if (wifiStaWasConnected) {
     wifiStaWasConnected = false;
-    asdaTcpStopServices();
     wifiConnectStartedMs = 0;
     wifiLastKickMs = 0;  // permitir reintento inmediato
     Serial.println("WiFi perdido — reconectando...");
@@ -3359,7 +3527,7 @@ void setup() {
   wifiKickConnect(/*isRetry=*/false);
   if (WiFi.status() != WL_CONNECTED)
     Serial.println("WiFi pendiente — reconexion no bloqueante en loop...");
-  asdaTcpEnsureServices();
+  asdaTcpStartTask();
 
   server.on("/", HTTP_GET, handleRoot);
   server.on("/api/status", HTTP_GET, handleStatus);
@@ -3411,9 +3579,10 @@ void setup() {
 
 void loop() {
   serviceWifi();
+  asdaTcpConsumeCmds();
   server.handleClient();
   motionPollIoSensors();
-  serviceAsdaTcp();
+  asdaTcpPollEvents();
   motionPrepPollOnce();
   if (motionJobActive)
     pollMotionOnce();

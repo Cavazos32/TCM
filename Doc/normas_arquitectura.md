@@ -31,9 +31,10 @@ Ejemplo: PreFeeder no recibe “el ASDA no llegó”; recibe Stop / ErrorState /
 
 ### Regla A2 — Main interpreta la política; el EXXX es identidad compartida
 
-La **política** C1/C2/C3 (stop all, pause, finish step, secuencias de salida) la aplica **solo HMI / Main**.  
+La **política de recuperación** (latch EXXX, Reset validado, Start/Resume) la aplica **solo HMI / Main**.  
 El **código EXXX** es la identidad del fallo del módulo: el esclavo lo genera y Main lo muestra.  
-Entre esclavos no se reenvía el EXXX; se alinean por **estado**.
+Entre esclavos no se reenvía el EXXX; se alinean por **estado**.  
+C1/C2/C3 **no** seleccionan el flujo de recuperación.
 
 ---
 
@@ -47,12 +48,12 @@ Se trata como **flip-flop**:
 | Señal | Significado |
 |-------|-------------|
 | **Set** | Un evento activa la condición (sensor, timeout, comando fallido, enlace caído, cambio de estado). |
-| **Res** | Limpia la condición: **Reset HMI** explícito **o** Res observacional (abajo). |
+| **Res** | Limpia la condición: **Reset HMI** explícito **después** de validar que la causa ya no está activa. |
 
 Mientras no haya **Set**, no hay acción obligatoria. No inventar polling de “por si acaso”.
 
-**Res observacional (HMI):** si el latch EXXX sigue activo pero el **módulo fuente ya no está en error** (caché HMI: no ErrorState, sensores/fallos del módulo OK, enlace up) y **no hay ciclo activo**, Main limpia el latch **sin** mandar Reset/All Off a los esclavos. Así el operador no pierde un setup ya hecho solo porque olvidó Reset.  
-No aplica a E06x de enlace (solo al recuperar socket). **Tampoco a E068 (ciclo abortado) ni si el último lote quedó NO OK:** In process OFF / Idle del PreFeeder no borra el aborto; el Res es explícito. Con lote C2/C3 en Pause sigue haciendo falta soft-Res explícito antes de Resume.
+**Reset HMI (Res):** envía Reset al módulo fuente, lee la condición actual (caché actualizada / sensores del EXXX) y **solo entonces** libera el latch. Si la causa sigue activa, el EXXX y el estado ERROR se conservan. Start y Resume quedan bloqueados.  
+No hay Res observacional: recuperar el enlace o ver Idle en el esclavo **no** borra el latch. E06x y E068 también exigen Reset explícito.
 
 **Excepción de enlace:** el heartbeat TCP (`ping`/`pong` o keepalive) solo verifica que el socket vive.  
 No es sondeo de sensores ni de estado de aplicación. Los sensores/válvulas se publican por **evento** (cambio) o status push del esclavo.
@@ -68,20 +69,20 @@ En el esclavo PLC, cada comando de válvula (`on` / `off`) genera **un pulso** e
 El enclavado lo hace el PLC neumático (KEEP: Set / Res).  
 - Querer **ON** (Set) → un pulso (solo si el estado lógico cambia a on).  
 - Querer **OFF** (Res) → otro pulso (solo si cambia a off).  
-- **Boot / All Off** = pulsos OFF de cada válvula lógica ON (holder incluido). El holder lo activa rutina o manual. Solo bajo demanda (UI All Off / ciclo / **Home de máquina**), **no** desde C1/C2/C3, Stop, Pause ni Reset HMI.  
-- **Reset PLC (`0x1E`):** desde control PLC **o** desde **Reset HMI hard** (machine controls). Tras Reset, el esclavo deja estados lógicos en OFF; HMI refleja OFF (no inventa All Off previo ni pulsos extra). Soft-Res C2/C3 **no** manda Reset PLC.  
+- **Boot / All Off** = pulsos OFF de cada válvula lógica ON (holder incluido). El holder lo activa rutina o manual. Solo bajo demanda (UI All Off / ciclo / **Home de máquina**), **no** desde Stop, Pause ni Reset HMI.  
+- **Reset PLC (`0x1E`):** desde control PLC **o** desde **Reset HMI** si el EXXX es del PLC. Tras Reset, el esclavo deja estados lógicos en OFF; HMI refleja OFF (no inventa All Off previo ni pulsos extra). Pause / Error de máquina **no** mandan Reset PLC.  
 - Ancho de pulso: `VALVE_PULSE_MS` (100 ms) para que el KEEP lea bien.  
 No pulsar si el estado lógico ya coincide (un pulso de más invertiría el KEEP).  
 El estado lógico (JSON/status/UI) refleja la posición pretendida; el pin físico solo es impulso.  
 HMI/ciclo siguen enviando `on: true|false` como hasta ahora.
 
-**Límite máquina ↔ PLC:** error general de máquina, Stop, Pause y soft-Res C2/C3 **no** mandan válvulas ni Reset PLC.  
-**Reset HMI hard** sí manda **Reset PLC (`0x1E`)** (UI refleja OFF).  
+**Límite máquina ↔ PLC:** error general de máquina, Stop y Pause **no** mandan válvulas KEEP.  
+**Reset HMI** manda **Reset PLC (`0x1E`)** solo si el EXXX latcheado es del PLC (UI refleja OFF).  
 **Home de máquina** (control de máquina): ASDA → posición 0 + encoders Set0 L/R + **All Off** neumática.  
 Operar PLC manual = pulso ON/OFF, All Off, o Reset PLC.
 
 **Excepción Blower:** no es KEEP. El pin queda **ON (nivel)** durante `durationSec` (ajustable en UI PLC; el esclavo debe respetar ese valor, no un default fijo si viene en el comando) y luego **OFF** automático.  
-C2/C3 Pause y soft-Res pueden mandar **solo Blower OFF** (cancela el timer). No es All Off ni pulso KEEP de otras válvulas.
+Pause y Error de máquina pueden mandar **solo Blower OFF** (cancela el timer). No es All Off ni pulso KEEP de otras válvulas.
 
 ---
 
@@ -103,7 +104,7 @@ La UI no muestra “E###: módulo en falla genérica” cuando existe (o debió 
 Cuando Main debe alinear al resto: publica estado de máquina (p. ej. Error `0x46`, Stop) y/o comandos Stop/Reset de módulo.  
 No reenvía el EXXX a todos los esclavos.
 
-**Pause / Error → PreFeeder Idle.** Al publicar Pause (`0x48`) o Error (`0x46`), Main desarma el PreFeeder (`In process OFF` → Idle). No usa Stop `0x2B` (enclava PF-007). Resume / Busy rearma In process y **espera Buffer Full** (igual que Start) antes de seguir. C1 y Stop de operador sí mandan Stop `0x2B`.
+**Pause / Error → PreFeeder Idle.** Al publicar Pause (`0x48`) o Error (`0x46`), Main desarma el PreFeeder (`In process OFF` → Idle). No usa Stop `0x2B` (enclava PF-007). Resume / Busy / Continuar ciclo rearma In process y **espera Buffer Full** (igual que Start) antes de seguir. C1 y Stop de operador sí mandan Stop `0x2B`.
 
 ---
 
@@ -157,67 +158,50 @@ Resto de módulos en red → estados / stop / reset.
 
 ### Regla R4 — Salida fija (no variable)
 
-Salir de un error **solo** con la secuencia de su clase.  
-No hay caminos distintos por EXXX, por módulo ni por atajo de operador.  
-**Excepción documentada:** E050 con pieza/lote activo (abajo). Fuera de lote, E050 sigue C1.  
+Salir de un error **solo** con la secuencia unificada.  
+No hay caminos distintos por clase C1/C2/C3, por EXXX (salvo E050 documentado) ni por atajo de operador.  
 Cambiar un paso u orden = cambiar **este documento** primero.
 
-#### Secuencia C1
+#### Secuencia unificada
 
-1. Ya hubo stop de máquina (Motion/PF/ciclo). **PLC no se toca.**  
-2. Corregir causa física si aplica.  
-3. UI muestra EXXX y exige **confirmación**.  
-4. Operador confirma.  
-5. **Reset HMI** (Res): limpia latch + reset Motion/PF/ciclo + **Reset PLC (`0x1E`)**. HMI refleja válvulas OFF.  
-6. **Validar** estados coherentes.  
-7. **Homing general** obligatorio.  
-8. Idle / aceptar Start.
+```text
+ERROR → latch EXXX → mostrar EXXX → detener secuencia
+  → módulos no afectados conservan su estado
+  → PF In process OFF
+  → esperar RESET
+  → Reset módulo + validar condición real
+       ├─ sigue activa → conservar EXXX + ERROR (Start/Resume bloqueados)
+       └─ desapareció → liberar latch
+            ├─ lote activo → Pause → esperar RESUME
+            └─ sin lote → Idle → esperar START
+```
 
-**Atajo permitido:** si tras corregir la causa el operador ya validó / hizo Home/setup y el módulo fuente está Idle/OK (sin ErrorState) con **ciclo inactivo**, HMI aplica **Res observacional** del latch (sin Reset a esclavos ni All Off). No obliga a repetir Reset HMI solo para borrar el EXXX en barra. No aplica si el lote abortó (E068 / último lote NO OK).
+1. UI muestra `EXXX: Module, Descripción` y queda enclavado.  
+2. Se detiene la secuencia. **No** se pinta ERROR en todos los esclavos.  
+3. Pause / Error máquina → PreFeeder Idle (`In process OFF`). No es Stop `0x2B`.  
+4. Corregir causa física si aplica.  
+5. **Reset HMI:** Reset del módulo fuente → validar condición. Si sigue, no se libera el latch. **No Home. No Start automático.**  
+6. **Sin lote:** Idle. Esperar Start.  
+7. **Con lote activo:** Pause. **Resume** (solo si el latch ya no está) → Start/Init PF → Buffer Full → terminar la pieza → review OK → purga (refill existente; no alimentar sola: espera Retry o Long feed; no mover ASDA si ya está en park) → Continuar ciclo → Buffer Full (igual que Start/Resume) → siguiente pieza.
 
-Prohibido: Reset sin confirmación (salvo Res observacional con módulo ya OK); Start sin home tras Reset C1 formal; saltar validación en la secuencia formal; mandar **All Off** desde C1 (All Off = Home de máquina / control PLC).
+**Home** es comando explícito del operador. Reset jamás llama Home.
 
-#### Secuencia C2 / C3 (lote activo)
-
-El lote **no se cierra** en el error. **Stop** solo si el operador pulsa Stop.
-
-1. Pause (no siguiente step). **PLC no se toca.** C2 y C3 igual: no auto-terminan la pieza.  
-2. Corregir causa si aplica.  
-3. **Reset HMI** (Res) — **soft**: limpia latch + reset Motion/PF; **no** aborta el lote ni va a Idle.  
-4. **Resume** → **terminar la pieza** con FLOW_STEPS actual (sin pasos nuevos).  
-   Si el feed de esa pieza **ya está en la referencia láser** (visible), **no alimentar de nuevo**: primero validar L/R; ON → omitir feed. OFF → feed normal.  
-5. Operario **revisa la pieza** y da OK.  
-6. **Purga** (secuencia refill existente: park → feed 55 mm → Next Cutting → corte → Next ASDA 0).  
-7. Operario pulsa **Continuar ciclo**. La siguiente pieza valida la referencia láser: si ya visible, omite feed; si no, Tfeed (si `pfTriggerEnabled`) + Feed. Sin handoff residual. Para parar: botón Stop.
-
-Pause C2/C3 no come timeouts de feed/lineal: un wait no debe `_finish` el lote.
-
-Prohibido: Resume sin Reset; continuar lote sin review + purga + Continuar ciclo; matar el ciclo en el Reset C2/C3; Stop automático (solo el botón); tocar válvulas desde C2/C3; añadir pasos de recuperación a FLOW_STEPS.
-
-C1 sigue ganando (stop + Reset hard + home + Idle/Start). Fuera de lote, C3 termina el paso en curso y Pause.
-
-Orden resumido:
-
-- **C1:** Confirmación → Reset → Validar → Homing → Idle/Start (o Res observacional si módulo ya OK y ciclo inactivo)  
-- **C2/C3 (lote):** Reset (soft) → Resume → terminar pieza → review OK → purga → Continuar ciclo → sigue el lote (Stop = botón)  
-- **E050 + lote/pieza activo:** Pause (no C1 abort) → preguntar → Reset soft → Resume (o Start si el lote ya cerró)
+Prohibido: Resume o Start con latch activo; borrar el EXXX sin validar; Home automático desde Reset; Stop automático del lote (solo el botón); tocar válvulas KEEP desde Pause/Error; añadir pasos de recuperación a FLOW_STEPS.
 
 #### Excepción E050 (lote/pieza activo)
 
-E050 sigue siendo C1 en catálogo (Encoder / aire, manguera o cilindro). **Fuera de lote** (y durante refill/purga suelta): secuencia C1.
+E050 (Encoder / aire, manguera o cilindro). **Fuera de lote** (y durante refill/purga suelta): secuencia unificada (Reset validado → Idle/Start).
 
-Con **pieza/lote en curso** (no refill): no `stop_all`. Pause. HMI pregunta; no se inventa en qué pieza del lote se quedó.
+Con **pieza/lote en curso** (no refill): Pause. HMI pregunta si requiere Materialist.
 
-1. **¿Material insuficiente?**  
-   - **Omitir** → Reset soft → Pause. Resume continúa **la misma pieza**. Sin review, sin vaciar.  
-   - **Sí** → **¿Terminar proceso?**  
-     - **Omitir** → igual que Omitir anterior.  
-     - **Sí** → Reset soft → Resume → terminar la pieza (`FLOW_STEPS`) → **Revisar** OK → **¿Vaciar material?**  
-       - **Sí:** purga **sin corte** (ASDA park → feed → Retry / 100 mm / Continuar → ASDA 0).  
-       - **Omitir:** no vacía.  
-2. Tras salir del modo: **Pause**. Si quedan piezas → **Resume**. Si el lote ya cerró → Idle / **Start**. No hay “Continuar ciclo”.
+1. **No Materialist** → recuperación unificada del lote (Reset → Resume → pieza → review → purga).  
+2. **Sí Materialist** → se libera solo el latch E050 para entrar a Materialist; HOME de esa ruta; esperar Materialist OFF; continuar lote.
 
-Stop solo si el operador pulsa Stop. Soft-Res: no PLC / no All Off. No añadir pasos a FLOW_STEPS.
+**Purga / Refill con E050:** el operador puede vaciar manguera **con el latch E050 aún activo**. No libera el latch. Start y Resume siguen bloqueados.  
+La purga no alimenta sola: tras park espera Retry (55 mm) o Long feed (100 mm).  
+Si el lote está en Pause por E050, Purge es comando de operador: suelta el hilo del lote (mismo efecto que Stop) y corre la purga suelta. No es Stop automático por el EXXX.
+
+Stop del lote solo si el operador pulsa Stop **o** Purge (caso E050 anterior). No añadir pasos a FLOW_STEPS.
 
 ---
 
@@ -225,11 +209,13 @@ Stop solo si el operador pulsa Stop. Soft-Res: no PLC / no All Off. No añadir p
 
 El láser es el **tope de feed** (L y R): no alimentar más allá de su referencia. ON → **FEED_OK**, sin otro movimiento (p. ej. OM 53 + láser ON → ya está). OM > **58 mm** → ya pasó → LengthNG. OM ≤ 0 → NG. Láser OFF tras approach → **LASER_SEEK** hasta flanco ON / E004/E005. No hay corrección ciega a 55 mm: ese movimiento pasaba la referencia si el halt llegaba tarde.
 
-**Start y tras error (HMI):** antes de mandar Feed (1ª pieza al Start, misma pieza tras error, o siguiente tras Continuar ciclo), Main **valida la referencia** (GET `/api/status` una vez; si falla, caché TCP). Si el láser de todos los `feedSides` está ON, **omite el feed**. Prefetch/handoff ya listo no revalida. No es sondeo de ciclo.
+**Start y tras error (HMI):** antes de mandar Feed (1ª pieza al Start, misma pieza tras error, o siguiente tras Continuar ciclo), Main **valida la referencia** (GET `/api/status` una vez; si falla, caché TCP). Si el láser de todos los `feedSides` está ON, **omite el feed**. Feed ya hecho post-HOME (handoff) no revalida. No es sondeo de ciclo.
+
+**Feed entre piezas:** no hay prefetch en paralelo con depósito/despeje/HOME. Tras HOME, Main confirma ASDA en 0 (caché Reached, ±0.5 mm; si no, MOVE_ZERO) y entonces Feed de la siguiente. Tfeed sigue en el paso 3. Última pieza: sin feed post-HOME.
 
 Si el láser está **OFF al iniciar** el feed (hunt / 1ª carga): no hay approach rápido a 44–55 mm. **LASER_SEEK** avanza a trozos cortos (~1.5 mm, ~25 mm/s) hasta flanco ON. Al ON: CW Halt + **congelar destino = posición actual** (el Halt solo no cancela el perfil largo). GPIO crudo, sin debounce HMI de 150 ms. Tras halt → **FEED_OK** sin ventana PHYS OM (50–58).
 
-Láser ya ON al iniciar (prefetch / cuerpo de manguera): approach normal, sin halt por nivel (evitar parar en 0). Al terminar, si sigue ON, no hay seek. Purga (`skipValidate`) no usa el tope láser. El offset de comando (`offL`/`offR`) aplica en purga, no infla el approach de ciclo.
+Láser ya ON al iniciar (cuerpo de manguera / remanente): approach normal, sin halt por nivel (evitar parar en 0). Al terminar, si sigue ON, no hay seek. Purga (`skipValidate`) no usa el tope láser. El offset de comando (`offL`/`offR`) aplica en purga, no infla el approach de ciclo.
 
 Si el seek no ve el láser a tiempo → E004/E005. El seek puede sacar el encoder de rango; eso no es LengthNG.
 
@@ -243,11 +229,13 @@ Jerarquía en Velocity + Sensor:
 
 | Señal | Rol |
 |-------|-----|
-| LR-X GPIO crudo (`feedLaserMaterialPresentRaw`) | Tope físico. ON → Halt/Quick Stop inmediato. Sin avance posterior. |
-| OM | Estimación de progreso (transición fast→slow) y watchdog de sobrepaso. **No** es destino. |
+| LR-X GPIO crudo (`feedLaserMaterialPresentRaw`) | Tope físico. ON → **primer** frame CAN = CW Halt (`0x010F`, HaltOpt=2 / rampa `0x6085` ya primada). Sin SDO ni lectura OM antes del Halt. Sin avance posterior. |
+| OM | Estimación de progreso (transición fast→slow) y watchdog de sobrepaso. **No** es destino. Se lee **después** del Halt. |
 | Encoder del servo | Realimentación CiA402 Profile Velocity (`0x6060=3`, `0x60FF`). |
 
-No se detiene en OM = 55 mm ni se corrige después del flanco LR-X. Watchdogs: OM ≥ `velocityMaxTravelMm` (E004/E005), timeout (E031), OM sin incremento (E028). Tras el ciclo se restaura Profile Position (`0x6060=1`) en ese lado.
+Láser **OFF al start** (remanente post-corte / 1ª carga): hunt a `velocitySlowPct`, no FAST. El flanco suele llegar a pocos mm; FAST a 100 % se pasaba la referencia. L y R: un Halt de cada lado en el mismo tick **antes** de burst / `0x60FF=0`. `TVel=0` solo después del Halt (si va antes, el servo entra en rampa `0x6084` y se pasa).
+
+No se detiene en OM = 55 mm ni se corrige después del flanco LR-X. Watchdogs: OM ≥ `velocityMaxTravelMm` (E004/E005), timeout (E031), OM sin incremento (E028). En **cualquier** watchdog o fallo de Velocity + Sensor: Halt + `0x60FF=0` y esperar velocidad real ~0 (`0x606C`) **antes** de notificar EXXX y restaurar Profile Position (`0x6060=1`). No cambiar a PP con el servo aún en movimiento.
 
 ## 5. Andon / torre
 
@@ -298,7 +286,7 @@ Docs derivados (`errores_por_modulo.md`, etc.) no sustituyen la norma ni el Exce
 ### Regla M1 — Dónde se define el contrato
 
 Opcodes/enums de cada módulo en su `*States.h` (o equivalente HMI).  
-Política C1/C2/C3 y flip-flop de error en Main/HMI.
+Latch EXXX, Reset validado y recuperación de lote en Main/HMI.
 
 ### Regla M2 — Sin ruido de depuración
 
@@ -308,7 +296,7 @@ No dejar comentarios de debug / restos de prueba en archivos salvo que se requie
 ### Regla M3 — Cambios normativos
 
 Todo cambio de arquitectura (comunicación, clases, secuencias de salida, alcance de detalle) se refleja **aquí** primero.  
-Un PR de error nuevo: Excel → enum/opcode → HMI → clase coherente. Sin eso, no es oficial.
+Un PR de error nuevo: Excel → enum/opcode → HMI → mismo EXXX en HTML local. Sin eso, no es oficial.
 
 ### Regla M4 — Norma ↔ archivos alineados
 
@@ -317,7 +305,7 @@ Cada norma vigente debe reflejarse en los **archivos necesarios**, no solo en es
 | Tipo de norma | Debe quedar alineado en |
 |---------------|-------------------------|
 | Contrato opcode / estado / EXXX | Excel (`Doc/TCM - D.xlsx`) + `*States.h` / HMI + HTML local del módulo si aplica |
-| Política C1/C2/C3 y Set/Res | HMI/Main (`error_policy`, ciclo, catálogo) |
+| Latch EXXX y Set/Res | HMI/Main (`error_policy`, ciclo, catálogo) |
 | GPIO / I-O | `Doc/gpio_list_updated.md` (+ Excel I-O) y firmware del módulo |
 | Comportamiento de esclavo | `.ino` / headers del módulo afectado |
 | Communication Core (M5) | `.cursor/rules/tcm-communication.mdc` + resumen en `.cursor/rules/tcm-arquitectura.mdc` |
@@ -398,11 +386,11 @@ Prohibido aprovechar correcciones de rutina, Motion, PreFeeder, PLC, encoder, fe
 | Quién manda el lote / política | Main / HMI |
 | Cómo se avisa sin detalle | Opcode de estado |
 | Cómo se dice qué falló | EXXX (mismo en Main y HTML local del módulo) |
-| Quién aplica C1/C2/C3 | Solo Main |
-| Cómo se activa/limpia | Flip-flop Set / Res (Reset HMI o Res observacional si módulo OK) |
-| PLC válvulas | Pulso ON/OFF / All Off / Reset PLC; Reset HMI hard → Reset PLC; Home máquina → All Off; no desde Stop/Pause/soft C2/C3 |
-| Cómo se sale de un fallo | Secuencia fija C1 / C2 / C3; E050+lote: Pause → preguntar → Reset → Resume |
-| Pause / Error máquina | PreFeeder Idle (`In process OFF`); Resume/Busy rearma y espera Buffer Full (como Start); C1/Stop → Stop `0x2B` |
+| Quién aplica la recuperación | Solo Main |
+| Cómo se activa/limpia | Flip-flop Set / Res (Reset HMI validado; no observacional) |
+| PLC válvulas | Pulso ON/OFF / All Off / Reset PLC; Reset HMI de EXXX PLC → Reset PLC; Home máquina → All Off; no desde Stop/Pause |
+| Cómo se sale de un fallo | Secuencia unificada (Reset valida → Idle o Resume); E050+lote: Pause → preguntar Materialist; E050: Purge permitido con latch activo |
+| Pause / Error máquina | PreFeeder Idle (`In process OFF`); Resume/Busy/Continuar ciclo rearma y espera Buffer Full (como Start); Stop operador → Stop `0x2B` |
 | De dónde salen códigos | Excel + GPIO doc |
 | Debug | Solo si se pide |
 | Norma nueva/cambiada | Reflejar en todos los archivos necesarios (M4) |

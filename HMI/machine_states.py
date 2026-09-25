@@ -23,7 +23,7 @@ MACH_MATERIALIST = 0x49 # Materialist · Yellow + Buzzer
 MACH_RETURN = MACH_PAUSE  # alias histórico ReturnStop
 
 # Andon propio: TX only (E064) — pin FRL → torreta + aviso HMI
-ANDON_ERR_PRESSURE = 0x50 · PressureError
+ANDON_ERR_PRESSURE = 0x50  # PressureError
 
 # --- Cycle (HMI) — EXXX E008–E014 ---
 CYC_ERR_SERVO_IDLE_TIMEOUT = 0x52

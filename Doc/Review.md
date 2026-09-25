@@ -4,15 +4,15 @@
 
 | Segmento | ¿Cuenta en CT? | Ejemplos |
 |----------|----------------|----------|
-| Preparación | **No** | `prepareBeforeCut`, ASDA→0, PreFeeder In process ON, espera Buffer Full (Start y Resume) |
+| Preparación | **No** | `prepareBeforeCut`, ASDA→0, PreFeeder In process ON, espera Buffer Full (Start, Resume y Continuar ciclo) |
 | Holgura pre-pieza | **No** | El ciclo no fuerza Tfeed; holgura la recupera el helper PF |
-| Secuencia productiva | **Sí** | Holder ON (1ª) → Tfeed (piezas 2…N si `pfTriggerEnabled`; 1ª, C2 y OFF omiten) → feed → pinzas → lineal → corte → depósito → WIP/HOME → asentar |
+| Secuencia productiva | **Sí** | Holder ON (1ª) → Tfeed (piezas 2…N si `pfTriggerEnabled`; 1ª, C2 y OFF omiten) → feed → pinzas → lineal → corte → depósito → WIP/HOME → feed siguiente (si ASDA=0) → asentar |
 | Holgura post-pieza | **No** | El ciclo no manda Tfeed extra; holgura la recupera el helper PF |
 | Pause | **No** | excluido del reloj |
 | Fin de lote | **No** | Finish tools, espera PF settled, In process OFF |
 
 **Reloj:**
-1. **Start** = tras Buffer Full confirmado (y holgura pre-pieza si aplica), justo antes de Holder/feed. **Resume** = misma espera Buffer Full (fuera de CT) antes de continuar.
+1. **Start** = tras Buffer Full confirmado (y holgura pre-pieza si aplica), justo antes de Holder/feed. **Resume** = misma espera Buffer Full (fuera de CT) antes de continuar. **Continuar ciclo** (tras recovery) = misma espera Buffer Full antes de la siguiente pieza.
 2. **Freeze** = al entrar a `post_piece` (después de asentar/HOME) — **no espera Finish/settled**.
 3. **Log** `Pieza OK · Xs` = solo si la pieza cierra bien (después de holgura post).
 4. **CT lote** = wall 1ª→última freeze − Pause; N piezas en serie se suman.
@@ -20,7 +20,7 @@
 
 Ejemplo lote 1 pz: wall Start→Idle puede ser ~10 s; **CT ≈ tiempo Holder…asentar**.
 
-**Watchdog de pieza** (`pieceWatchTimeoutS`, default 12 s): corta E008/E009 si la pieza se atasca. La 1ª lleva feed (~5–6 s). El `prefetch_join` espera el feed de la **siguiente** y **no** usa este tope (sí `feedWaitTimeoutS`).
+**Watchdog de pieza** (`pieceWatchTimeoutS`, default 12 s): corta E008/E009 si la pieza se atasca. La 1ª lleva feed (~5–6 s). El feed post-HOME de la **siguiente** **no** usa este tope (sí `feedWaitTimeoutS`).
 
 ---
 
@@ -71,6 +71,8 @@ WIP Delivery (continuo/match-pieza): … (blower=Xs ≡ |L|)
 WIP Delivery MOVE continuo → HOME=0.0 mm …
 WIP Delivery blower ON @ HOME en vuelo hold=Xs (≡ |L|; PLC apaga)
 WIP Delivery move ok @ HOME=0.0 mm (continuo)
+ASDA en 0 confirmado (pos=… mm) — feed permitido
+Feed post-HOME: omitido (última pieza)     # si hay más: Tfeed + Feed start/OK
 Delay · Delay asentar: …
 Pieza 1/1 OK · 7.0s
 ```
