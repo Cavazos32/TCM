@@ -235,6 +235,20 @@ Si el seek no ve el láser a tiempo → E004/E005. El seek puede sacar el encode
 
 **E028** solo si el encoder **live** no incrementó tras el feed. Settle tardío con live ya en ~55 (p. ej. halt por láser) no es E028: se usa la lectura live oficial.
 
+### Feed — modo Velocity + Sensor (experimental, Motion)
+
+Modo **opcional** para comparar contra Position + Sensor. **No cambia producción:** el default NVS es Position + Sensor (`FEED_MODE_STEPS_SENSOR`). Purga/refill (`skipValidate`) sigue siempre en Profile Position.
+
+Jerarquía en Velocity + Sensor:
+
+| Señal | Rol |
+|-------|-----|
+| LR-X GPIO crudo (`feedLaserMaterialPresentRaw`) | Tope físico. ON → Halt/Quick Stop inmediato. Sin avance posterior. |
+| OM | Estimación de progreso (transición fast→slow) y watchdog de sobrepaso. **No** es destino. |
+| Encoder del servo | Realimentación CiA402 Profile Velocity (`0x6060=3`, `0x60FF`). |
+
+No se detiene en OM = 55 mm ni se corrige después del flanco LR-X. Watchdogs: OM ≥ `velocityMaxTravelMm` (E004/E005), timeout (E031), OM sin incremento (E028). Tras el ciclo se restaura Profile Position (`0x6060=1`) en ese lado.
+
 ## 5. Andon / torre
 
 ### Regla T1

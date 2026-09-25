@@ -31,7 +31,7 @@ float feedOmOfficialFromRaw(float mmAbs);
 // Hunt (láser OFF al start): sin approach rápido; creep a trozos + freeze al ON.
 // Prefetch (láser ya ON): approach normal, sin halt por nivel.
 bool feedLaserMaterialPresent(bool sideR);
-// Pin crudo (sin debounce HMI) — halt en seek/corrección.
+// Pin crudo (sin debounce HMI) — halt en seek/corrección/Velocity.
 bool feedLaserMaterialPresentRaw(bool sideR);
 
 // —— CAN servos ——
@@ -64,6 +64,12 @@ extern volatile bool feedSkipEncoderConfirm;
 extern volatile float feedApproachPct;
 extern volatile float feedMoveSpeedPct;
 extern volatile uint32_t feedLaserSeekMs;
+extern volatile FeedMode feedControlMode;
+extern volatile float feedVelFastPct;
+extern volatile float feedVelSlowPct;
+extern volatile float feedVelTransitionPct;
+extern volatile float feedVelMaxTravelMm;
+extern volatile uint32_t feedVelTimeoutMs;
 extern FeedTestReq feedTestReq;
 extern bool feedCalibrationTest;
 extern char feedFaultReason[FEED_FAULT_REASON_MAX];
@@ -101,6 +107,13 @@ float clampFeedCalCountsPerMm(float spm);
 float clampFeedApproachPct(float pct);
 float clampFeedMoveSpeedPct(float pct);
 uint32_t clampFeedLaserSeekMs(uint32_t ms);
+FeedMode clampFeedControlMode(int mode);
+float clampFeedVelFastPct(float pct);
+float clampFeedVelSlowPct(float pct);
+float clampFeedVelTransitionPct(float pct);
+float clampFeedVelMaxTravelMm(float mm);
+uint32_t clampFeedVelTimeoutMs(uint32_t ms);
+const char* feedControlModeName(FeedMode mode);
 String feedStatusJson();
 
 bool feedQueueTest(const FeedTestReq& req, String& err);

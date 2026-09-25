@@ -44,7 +44,16 @@ Abrir en Arduino IDE: `Motion/Motion_Master/Motion_Master.ino`
 |------|-------------|
 | `/` | UI ASDA + OM |
 | `/feed` | UI alimentación servos |
-| `/api/feed/status` | Estado CAN + feed |
+| `/api/feed/status` | Estado CAN + feed (incluye `feedMode` / `velocityStage`) |
+
+### Modos de feed (producción vs experimental)
+
+| Modo | NVS `feedMode` | Uso |
+|------|----------------|-----|
+| Position + Sensor | `2` (default) | Profile Position + LASER_SEEK. Producción. |
+| Velocity + Sensor | `3` | Profile Velocity (`0x6060=3`) + tope LR-X crudo. Experimental. |
+
+Purga/refill no cambia de modo. Parámetros Velocity en NVS: `vFastPct`, `vSlowPct`, `vTransPct`, `vMaxMm`, `vToMs`.
 
 ## TCP maestro ASDA (`:8767`)
 

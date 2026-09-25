@@ -1710,7 +1710,7 @@ bool feedLaserMaterialPresent(bool sideR)
 
 bool feedLaserMaterialPresentRaw(bool sideR)
 {
-  // Lectura inmediata del pin (sin debounce 150 ms) — solo para halt en seek/corr.
+  // Lectura inmediata del pin (sin debounce 150 ms) — halt en seek/corr/Velocity.
   const uint8_t pin = sideR ? PIN_LRX_LASER_R : PIN_LRX_LASER_L;
   return digitalRead(pin) == LOW;  // NPN/OC + pull-up: LOW = material ON
 }

@@ -334,6 +334,33 @@
       padding: .55rem .85rem;
       font-size: .82rem;
     }
+    .feed-mode-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .45rem;
+      align-items: center;
+      margin: 0 0 .55rem;
+    }
+    .feed-mode-row .lbl {
+      font-size: .72rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      margin-right: .25rem;
+    }
+    .feed-mode-btn {
+      border: 1px solid var(--line);
+      background: #151b21;
+      color: var(--muted);
+      border-radius: 8px;
+      padding: .4rem .7rem;
+      font-weight: 700;
+      font-size: .78rem;
+      cursor: pointer;
+    }
+    .feed-mode-btn.active { background: var(--accent); color: #04201c; border-color: var(--accent); }
+    .feed-vel-row { display: flex; flex-wrap: wrap; gap: .5rem; align-items: flex-end; margin-bottom: .45rem; }
+    .feed-vel-row label { flex: 0 0 7.2rem; margin: 0; font-size: .68rem; }
     .feed-viz-label {
       font-size: .68rem;
       color: var(--muted);
@@ -655,7 +682,7 @@
         <div class="feed-test-head">
           <div>
             <h2>Test feed · L / R</h2>
-            <p class="hint">Target + Vel (mm/s) + Dec (ms). Acc fijo 50 ms.</p>
+            <p class="hint">Position + Sensor (producción) o Velocity + Sensor (LR-X = tope). Acc fijo 50 ms.</p>
           </div>
           <div class="feed-side-switch" role="tablist" aria-label="Vista perfil">
             <button type="button" class="feed-side-btn active" id="feedSwL" data-side="L">L</button>
@@ -678,10 +705,25 @@
             <button type="button" class="btn" id="btnTestR">Test R</button>
           </div>
         </div>
-        <div class="feed-shared-row">
+        <div class="feed-mode-row">
+          <span class="lbl">Feed Control Mode</span>
+          <button type="button" class="feed-mode-btn active" id="feedModePos" data-mode="2">Position + Sensor</button>
+          <button type="button" class="feed-mode-btn" id="feedModeVel" data-mode="3">Velocity + Sensor</button>
+        </div>
+        <div class="feed-shared-row" id="feedPosParams">
           <label>Approach % <input type="number" id="approachPct" min="50" max="95" step="1" value="80" style="width:5rem"></label>
           <span class="feed-stats" id="approachMmHint">→ 44.0 mm de 55</span>
           <label>Comp. vel % <input type="number" id="moveSpeedPct" min="10" max="100" step="1" value="50" style="width:5rem"></label>
+        </div>
+        <div class="feed-vel-row" id="feedVelParams" style="display:none">
+          <label>Fast Velocity % <input type="number" id="velFastPct" min="10" max="100" step="1" value="100"></label>
+          <label>Slow Velocity % <input type="number" id="velSlowPct" min="5" max="100" step="1" value="30"></label>
+          <label>Transition % <input type="number" id="velTransPct" min="10" max="95" step="1" value="70"></label>
+          <span class="feed-stats" id="velTransHint">→ 38.5 mm OM</span>
+          <label>Max Travel mm <input type="number" id="velMaxMm" min="56" max="120" step="0.5" value="65"></label>
+          <label>Timeout ms <input type="number" id="velTimeoutMs" min="1000" max="30000" step="100" value="8000"></label>
+        </div>
+        <div class="feed-shared-row">
           <button type="button" class="btn2" id="btnFeedSave">Guardar config</button>
           <button type="button" class="btn2" id="btnFeedReset">Reset Feed + OM</button>
           <button type="button" class="btn2" id="btnZeroL">Set0 L</button>
@@ -1205,6 +1247,27 @@
       m.className = 'feed-msg show ' + (cls || '');
     }
 
+    function feedSelectedModeId() {
+      const vel = $('feedModeVel');
+      return (vel && vel.classList.contains('active')) ? 3 : 2;
+    }
+
+    function feedSetModeUi(modeId) {
+      const vel = Number(modeId) === 3;
+      if ($('feedModePos')) $('feedModePos').classList.toggle('active', !vel);
+      if ($('feedModeVel')) $('feedModeVel').classList.toggle('active', vel);
+      if ($('feedPosParams')) $('feedPosParams').style.display = vel ? 'none' : '';
+      if ($('feedVelParams')) $('feedVelParams').style.display = vel ? '' : 'none';
+    }
+
+    function feedUpdateVelHint() {
+      const el = $('velTransPct');
+      if (!el || !$('velTransHint')) return;
+      const pct = Number(el.value);
+      if (!isFinite(pct)) return;
+      $('velTransHint').textContent = '→ ' + (55 * pct / 100).toFixed(1) + ' mm OM';
+    }
+
     function feedCfgQuery() {
       return 'solidMm=' + encodeURIComponent($('solidL').value)
         + '&solidMmR=' + encodeURIComponent($('solidR').value)
@@ -1213,7 +1276,13 @@
         + '&decRampMsL=' + encodeURIComponent($('decMsL').value)
         + '&decRampMsR=' + encodeURIComponent($('decMsR').value)
         + '&approachPct=' + encodeURIComponent(($('approachPct') && $('approachPct').value) || '80')
-        + '&moveSpeedPct=' + encodeURIComponent(($('moveSpeedPct') && $('moveSpeedPct').value) || '50');
+        + '&moveSpeedPct=' + encodeURIComponent(($('moveSpeedPct') && $('moveSpeedPct').value) || '50')
+        + '&feedMode=' + encodeURIComponent(feedSelectedModeId())
+        + '&velocityFastPct=' + encodeURIComponent(($('velFastPct') && $('velFastPct').value) || '100')
+        + '&velocitySlowPct=' + encodeURIComponent(($('velSlowPct') && $('velSlowPct').value) || '30')
+        + '&velocityTransitionPct=' + encodeURIComponent(($('velTransPct') && $('velTransPct').value) || '70')
+        + '&velocityMaxTravelMm=' + encodeURIComponent(($('velMaxMm') && $('velMaxMm').value) || '65')
+        + '&velocityTimeoutMs=' + encodeURIComponent(($('velTimeoutMs') && $('velTimeoutMs').value) || '8000');
     }
 
     function feedApplyCfg(d) {
@@ -1226,10 +1295,18 @@
       if (d.decRampMsR != null) $('decMsR').value = d.decRampMsR;
       if (d.approachPct != null && $('approachPct')) $('approachPct').value = d.approachPct;
       if (d.moveSpeedPct != null && $('moveSpeedPct')) $('moveSpeedPct').value = d.moveSpeedPct;
+      if (d.feedModeId != null) feedSetModeUi(d.feedModeId);
+      else if (d.feedMode === 'velocity_sensor') feedSetModeUi(3);
+      if (d.velocityFastPct != null && $('velFastPct')) $('velFastPct').value = d.velocityFastPct;
+      if (d.velocitySlowPct != null && $('velSlowPct')) $('velSlowPct').value = d.velocitySlowPct;
+      if (d.velocityTransitionPct != null && $('velTransPct')) $('velTransPct').value = d.velocityTransitionPct;
+      if (d.velocityMaxTravelMm != null && $('velMaxMm')) $('velMaxMm').value = d.velocityMaxTravelMm;
+      if (d.velocityTimeoutMs != null && $('velTimeoutMs')) $('velTimeoutMs').value = d.velocityTimeoutMs;
       if ($('approachMmHint')) {
         const ap = d.approachMm != null ? d.approachMm : (55 * Number(($('approachPct') || { value: 80 }).value) / 100);
         $('approachMmHint').textContent = '→ ' + Number(ap).toFixed(1) + ' mm de 55';
       }
+      feedUpdateVelHint();
       feedPlans.planL = d.planL;
       feedPlans.planR = d.planR;
       feedPlans.vL = parseFloat(d.velocityMmSL);
@@ -1302,8 +1379,13 @@
         if (s.canInitialized && s.servoCanReady) { txt = 'CAN OK'; cls = 'ok'; }
         else if (s.canInitialized) { txt = 'TWAI OK · servos OFF'; cls = 'bad'; }
         if (s.canBitrateKbps) txt += ' · ' + s.canBitrateKbps + 'k';
+        let extra = '';
+        if (s.feedMode) extra += '<span class="can-chip">' + s.feedMode + '</span>';
+        const st = (s.L && s.L.velocityStage) || (s.R && s.R.velocityStage) || '';
+        if (st) extra += '<span class="can-chip">' + st + '</span>';
         $('canChip').innerHTML = '<span class="can-chip ' + cls + '">' + txt + '</span>'
-          + (s.feedActive ? '<span class="can-chip">Feed…</span>' : '');
+          + (s.feedActive ? '<span class="can-chip">Feed…</span>' : '')
+          + extra;
       }).catch(() => {});
     }
 
@@ -1329,7 +1411,13 @@
         + '&decRampMsL=' + encodeURIComponent($('decMsL').value)
         + '&decRampMsR=' + encodeURIComponent($('decMsR').value)
         + '&approachPct=' + encodeURIComponent(($('approachPct') && $('approachPct').value) || '80')
-        + '&moveSpeedPct=' + encodeURIComponent(($('moveSpeedPct') && $('moveSpeedPct').value) || '50');
+        + '&moveSpeedPct=' + encodeURIComponent(($('moveSpeedPct') && $('moveSpeedPct').value) || '50')
+        + '&feedMode=' + encodeURIComponent(feedSelectedModeId())
+        + '&velocityFastPct=' + encodeURIComponent(($('velFastPct') && $('velFastPct').value) || '100')
+        + '&velocitySlowPct=' + encodeURIComponent(($('velSlowPct') && $('velSlowPct').value) || '30')
+        + '&velocityTransitionPct=' + encodeURIComponent(($('velTransPct') && $('velTransPct').value) || '70')
+        + '&velocityMaxTravelMm=' + encodeURIComponent(($('velMaxMm') && $('velMaxMm').value) || '65')
+        + '&velocityTimeoutMs=' + encodeURIComponent(($('velTimeoutMs') && $('velTimeoutMs').value) || '8000');
       fetch(q).then(r => r.json()).then(d => {
         if (!d.ok) { feedShowMsg(d.error || 'Fallo', 'bad'); return; }
         feedShowMsg('Moviendo servos ' + side + '…', 'wait');
@@ -1413,11 +1501,15 @@
         fetch('/setFeedOffset?offsetMmB=' + encodeURIComponent($('offR').value))
           .then(() => feedShowMsg('Offset R OK', 'ok'));
       };
-      ['solidL', 'solidR', 'velL', 'velR', 'decMsL', 'decMsR', 'approachPct', 'moveSpeedPct'].forEach(id => {
+      ['solidL', 'solidR', 'velL', 'velR', 'decMsL', 'decMsR', 'approachPct', 'moveSpeedPct',
+       'velFastPct', 'velSlowPct', 'velTransPct', 'velMaxMm', 'velTimeoutMs'].forEach(id => {
         const el = $(id);
         if (el) el.addEventListener('change', () => feedRefreshProfile(false));
       });
       if ($('approachPct')) $('approachPct').addEventListener('input', feedUpdateApproachHint);
+      if ($('velTransPct')) $('velTransPct').addEventListener('input', feedUpdateVelHint);
+      if ($('feedModePos')) $('feedModePos').onclick = () => { feedSetModeUi(2); feedRefreshProfile(false); };
+      if ($('feedModeVel')) $('feedModeVel').onclick = () => { feedSetModeUi(3); feedRefreshProfile(false); };
       $('feedSwL').onclick = () => feedSetViewSide('L');
       $('feedSwR').onclick = () => feedSetViewSide('R');
     }

@@ -391,6 +391,8 @@ void canHalt() { canHaltSide(false); canHaltSide(true); }
 
 // Halt + congelar perfil en la posición actual (el CW Halt solo no basta:
 // el destino largo sigue activo y el servo se pasa de la referencia).
+static void canWriteTargetAbs(bool doL, bool doR, int32_t absL, int32_t absR);
+
 static void feedLaserFreezeAtActual(bool sideR)
 {
   const uint8_t node = sideR ? SERVO_NODE_R : SERVO_NODE_L;
@@ -498,6 +500,101 @@ static void feedCanSetVelAccSide(bool sideR, uint32_t velPp)
   canWriteU32OneNode(sideR, SERVO_OD_PROFILE_DECEL, d, "Dec");
 }
 
+static uint32_t feedSideNominalPp(bool sideR);
+
+static void canWriteI8OneNode(bool sideR, uint16_t index, int8_t val, const char* desc)
+{
+  const uint32_t canId = sideR ? SERVO_CAN_TX_R : SERVO_CAN_TX_L;
+  byte data[8] = {
+    0x2F, (byte)(index & 0xFF), (byte)((index >> 8) & 0xFF), 0x00,
+    (byte)val, 0x00, 0x00, 0x00
+  };
+  sendCANMessage(canId, 8, data, String(desc) + (sideR ? " R" : " L"), false);
+}
+
+static void canWriteI32OneNode(bool sideR, uint16_t index, int32_t val, const char* desc)
+{
+  canWriteU32OneNode(sideR, index, (uint32_t)val, desc);
+}
+
+static void canControlWordOne(bool sideR, uint16_t cw, const char* desc)
+{
+  canControlWordSides(!sideR, sideR, cw, desc);
+}
+
+static int32_t feedVelocityPctToTarget(bool sideR, float pct)
+{
+  if (pct <= 0.0f) return 0;
+  const uint32_t nom = feedSideNominalPp(sideR);
+  float pp = (float)nom * (pct / 100.0f);
+  if (pp < 1.0f) pp = 1.0f;
+  if (pp > (float)FEED_SERVO_BASE_PP_MAX) pp = (float)FEED_SERVO_BASE_PP_MAX;
+  const int32_t mag = (int32_t)(pp + 0.5f);
+  const int32_t sign = sideR ? (int32_t)SERVO_CMD_SIGN_R : (int32_t)SERVO_CMD_SIGN_L;
+  return sign * mag;
+}
+
+// Profile Velocity (0x6060=3). No delay(): solo SDO del lado activo.
+static bool feedVelocityConfigure(bool sideR)
+{
+  if (!canInitialized) return false;
+  sendCanHaltImmediate(sideR);
+  canWriteI8OneNode(sideR, SERVO_OD_MODE_OF_OPERATION, (int8_t)SERVO_MODE_PV, "Mode PV");
+  feedCanSetVelAccSide(sideR, feedSideNominalPp(sideR));
+  feedCanPrimeHaltDecelSide(sideR);
+  canWriteI32OneNode(sideR, SERVO_OD_TARGET_VELOCITY, 0, "TVel0");
+  canControlWordOne(sideR, SERVO_CW_HALT_HOLD, "PV halt");
+  return true;
+}
+
+static bool feedVelocityStart(bool sideR, float velocityPct)
+{
+  if (!canInitialized) return false;
+  const int32_t tv = feedVelocityPctToTarget(sideR, velocityPct);
+  canWriteI32OneNode(sideR, SERVO_OD_TARGET_VELOCITY, tv, "TVel");
+  canControlWordOne(sideR, SERVO_CW_ENABLE_OP, "PV run");
+  return tv != 0;
+}
+
+static bool feedVelocityChange(bool sideR, float velocityPct)
+{
+  if (!canInitialized) return false;
+  const int32_t tv = feedVelocityPctToTarget(sideR, velocityPct);
+  canWriteI32OneNode(sideR, SERVO_OD_TARGET_VELOCITY, tv, "TVel");
+  return true;
+}
+
+static bool feedVelocityStop(bool sideR)
+{
+  if (!canInitialized) return false;
+  feedCanPrimeHaltDecelSide(sideR);
+  for (uint8_t i = 0; i < FEED_LASER_HALT_BURST; i++)
+    sendCanHaltImmediate(sideR);
+  return true;
+}
+
+static bool feedVelocityIsStopped(bool sideR, uint32_t now, uint32_t haltIssuedMs)
+{
+  if (haltIssuedMs == 0) return false;
+  if (now < haltIssuedMs + FEED_HALT_SETTLE_MS) return false;
+  if ((now - haltIssuedMs) >= FEED_VEL_STOP_FAILSAFE_MS) return true;
+  const uint8_t node = sideR ? SERVO_NODE_R : SERVO_NODE_L;
+  uint16_t sw = 0;
+  if (!canReadStatusWord(node, sw, CAN_STATUS_POLL_MS))
+    return false;
+  return (sw & SERVO_SW_TARGET_REACHED) != 0;
+}
+
+static bool feedVelocityRestorePp(bool sideR)
+{
+  if (!canInitialized) return false;
+  sendCanHaltImmediate(sideR);
+  canWriteI32OneNode(sideR, SERVO_OD_TARGET_VELOCITY, 0, "TVel0");
+  canWriteI8OneNode(sideR, SERVO_OD_MODE_OF_OPERATION, (int8_t)SERVO_MODE_PP, "Mode PP");
+  canControlWordOne(sideR, SERVO_CW_HALT_HOLD, "PP halt");
+  return true;
+}
+
 void servoCanInitMutex()
 {
   if (!canMutex) canMutex = xSemaphoreCreateMutex();
@@ -540,6 +637,17 @@ struct FeedSideRt {
   uint8_t omReadMiss = 0;
   bool dirChecked = false;
   int32_t moveSteps = 0;
+  // Velocity + Sensor (ciclo de producción; purga no entra aquí)
+  bool velModeActive = false;
+  bool velStopLatched = false;
+  float velTransitionMm = 0.0f;
+  float omLiveMm = -1.0f;
+  float omAtTransition = -1.0f;
+  float omAtLaser = -1.0f;
+  uint32_t velStartedMs = 0;
+  uint32_t velHaltMs = 0;
+  uint32_t encWatchDeadlineMs = 0;
+  bool velEncoderSeen = false;
 };
 
 static FeedSideRt feedSides[2];
@@ -563,6 +671,12 @@ volatile bool feedSkipEncoderConfirm = false;
 volatile float feedApproachPct = FEED_APPROACH_PCT_DEFAULT;
 volatile float feedMoveSpeedPct = FEED_MOVE_SPEED_PCT_DEFAULT;
 volatile uint32_t feedLaserSeekMs = FEED_LASER_SEEK_MS_DEFAULT;
+volatile FeedMode feedControlMode = FEED_MODE_STEPS_SENSOR;
+volatile float feedVelFastPct = FEED_VEL_FAST_PCT_DEFAULT;
+volatile float feedVelSlowPct = FEED_VEL_SLOW_PCT_DEFAULT;
+volatile float feedVelTransitionPct = FEED_VEL_TRANS_PCT_DEFAULT;
+volatile float feedVelMaxTravelMm = FEED_VEL_MAX_TRAVEL_MM_DEFAULT;
+volatile uint32_t feedVelTimeoutMs = FEED_VEL_TIMEOUT_MS_DEFAULT;
 FeedTestReq feedTestReq = {};  // legacy HTTP both-sides; TCP usa feedSides[].pending
 
 bool feedCalibrationTest = false;
@@ -588,6 +702,32 @@ float clampFeedApproachPct(float pct) { return clampVal(pct, FEED_APPROACH_PCT_M
 float clampFeedMoveSpeedPct(float pct) { return clampVal(pct, FEED_MOVE_SPEED_PCT_MIN, FEED_MOVE_SPEED_PCT_MAX); }
 uint32_t clampFeedLaserSeekMs(uint32_t ms) {
   return clampVal(ms, (uint32_t)FEED_LASER_SEEK_MS_MIN, (uint32_t)FEED_LASER_SEEK_MS_MAX);
+}
+FeedMode clampFeedControlMode(int mode) {
+  if (mode == (int)FEED_MODE_VELOCITY_SENSOR) return FEED_MODE_VELOCITY_SENSOR;
+  return FEED_MODE_STEPS_SENSOR;
+}
+float clampFeedVelFastPct(float pct) {
+  return clampVal(pct, FEED_VEL_FAST_PCT_MIN, FEED_VEL_FAST_PCT_MAX);
+}
+float clampFeedVelSlowPct(float pct) {
+  return clampVal(pct, FEED_VEL_SLOW_PCT_MIN, FEED_VEL_SLOW_PCT_MAX);
+}
+float clampFeedVelTransitionPct(float pct) {
+  return clampVal(pct, FEED_VEL_TRANS_PCT_MIN, FEED_VEL_TRANS_PCT_MAX);
+}
+float clampFeedVelMaxTravelMm(float mm) {
+  return clampVal(mm, FEED_VEL_MAX_TRAVEL_MM_MIN, FEED_VEL_MAX_TRAVEL_MM_MAX);
+}
+uint32_t clampFeedVelTimeoutMs(uint32_t ms) {
+  return clampVal(ms, (uint32_t)FEED_VEL_TIMEOUT_MS_MIN, (uint32_t)FEED_VEL_TIMEOUT_MS_MAX);
+}
+const char* feedControlModeName(FeedMode mode) {
+  switch (mode) {
+    case FEED_MODE_VELOCITY_SENSOR: return "velocity_sensor";
+    case FEED_MODE_BYPASS: return "bypass";
+    default: return "position_sensor";
+  }
 }
 
 static float feedCalibratedCountsPerMm(bool sideR) { return sideR ? feedCalCountsPerMmR : feedCalCountsPerMmL; }
@@ -746,9 +886,26 @@ static const char* feedSidePhaseName(FeedSidePhase p)
     case FSP_VALIDATE_FINAL: return "VALIDATE_FINAL";
     case FSP_LASER_SEEK: return "LASER_SEEK";
     case FSP_LASER_SEEK_HALT: return "LASER_SEEK_HALT";
+    case FSP_VEL_PREPARE: return "VEL_PREPARE";
+    case FSP_VEL_FAST: return "VEL_FAST";
+    case FSP_VEL_SLOW: return "VEL_SLOW";
+    case FSP_VEL_STOPPING: return "VEL_STOPPING";
+    case FSP_VEL_SETTLE: return "VEL_SETTLE";
     case FSP_DONE_OK: return "DONE_OK";
     case FSP_DONE_NG: return "DONE_NG";
     default: return "IDLE";
+  }
+}
+
+static const char* feedVelocityStageName(FeedSidePhase p)
+{
+  switch (p) {
+    case FSP_VEL_PREPARE: return "prepare";
+    case FSP_VEL_FAST: return "fast";
+    case FSP_VEL_SLOW: return "slow";
+    case FSP_VEL_STOPPING: return "stopping";
+    case FSP_VEL_SETTLE: return "settle";
+    default: return "";
   }
 }
 
@@ -863,6 +1020,16 @@ static void feedSideClearDiag(FeedSideRt& s)
   s.omReadMiss = 0;
   s.dirChecked = false;
   s.moveSteps = 0;
+  s.velModeActive = false;
+  s.velStopLatched = false;
+  s.velTransitionMm = 0.0f;
+  s.omLiveMm = -1.0f;
+  s.omAtTransition = -1.0f;
+  s.omAtLaser = -1.0f;
+  s.velStartedMs = 0;
+  s.velHaltMs = 0;
+  s.encWatchDeadlineMs = 0;
+  s.velEncoderSeen = false;
 }
 
 // Globals = "último lado que terminó" (HTTP/overview). Fuente de verdad = feedSides[].
@@ -876,10 +1043,24 @@ static void feedPublishLegacyDiag(const FeedSideRt& s, FeedValResult result)
   feedOmLengthMet = (result == FVR_OK);
 }
 
+static void feedSideLogVelocityMetrology(bool sideR, const FeedSideRt& s)
+{
+  const uint32_t dur = (s.velStartedMs != 0) ? (millis() - s.velStartedMs) : 0u;
+  Serial.printf("FEED %c VELOCITY METROLOGY mode=%s dur=%lums omTrans=%.2f omLaser=%.2f omFinal=%.2f\n",
+                sideR ? 'R' : 'L', feedControlModeName(FEED_MODE_VELOCITY_SENSOR),
+                (unsigned long)dur, (double)s.omAtTransition, (double)s.omAtLaser,
+                (double)s.finalOmMm);
+}
+
 static void feedSideFinish(bool sideR, FeedValResult result, uint8_t errByte, const char* reason)
 {
   FeedSideRt& s = feedSideAt(sideR);
   const uint32_t gen = s.gen;
+  if (s.velModeActive) {
+    feedVelocityRestorePp(sideR);
+    s.velModeActive = false;
+    feedSideLogVelocityMetrology(sideR, s);
+  }
   s.result = result;
   s.errByte = errByte;
   s.skipValidate = false;
@@ -1046,11 +1227,119 @@ static void feedSideStartApproach(bool sideR)
   s.phase = FSP_HALT_SETTLE;
 }
 
+static float feedSideReadOmLiveMm(bool sideR, FeedSideRt& s)
+{
+  float om = 0.0f;
+  if (feedOmReadLiveOfficialMmSide(sideR, &om)) {
+    s.omLiveMm = om;
+    return om;
+  }
+  return s.omLiveMm;
+}
+
+static void feedSideVelocityHaltNow(bool sideR, uint32_t now, const char* why)
+{
+  FeedSideRt& s = feedSideAt(sideR);
+  if (s.velStopLatched) return;
+  s.velStopLatched = true;
+  s.omAtLaser = feedSideReadOmLiveMm(sideR, s);
+  feedVelocityStop(sideR);
+  s.velHaltMs = now;
+  Serial.printf("FEED %c %s\n", sideR ? 'R' : 'L', why ? why : "QUICK STOP");
+}
+
+static void feedSideStartVelocity(bool sideR)
+{
+  FeedSideRt& s = feedSideAt(sideR);
+  feedSideClearDiag(s);
+  s.targetMm = FEED_TARGET_FIXED_MM;
+  s.approachMm = 0.0f;
+  s.velTransitionMm = FEED_TARGET_FIXED_MM * (feedVelTransitionPct / 100.0f);
+  s.gen = feedGenCounter++;
+  if (s.gen == 0) s.gen = feedGenCounter++;
+  motionTcpClearFeedSidePending(sideR);
+  s.opStartMs = millis();
+  s.active = true;
+  s.pending = false;
+  s.moveStartMs = 0;
+  s.absDueMs = 0;
+  s.velModeActive = true;
+
+  Serial.printf("FEED %c VELOCITY START\n", sideR ? 'R' : 'L');
+
+  if (feedLaserMaterialPresentRaw(sideR)) {
+    s.laserState = true;
+    s.velModeActive = false;
+    Serial.printf("FEED %c VELOCITY skip: LR-X already ON\n", sideR ? 'R' : 'L');
+    feedSideFinish(sideR, FVR_OK, 0, "FEED_OK_SENSOR_REF");
+    return;
+  }
+
+  sendCanHaltImmediate(sideR);
+  s.settleUntilMs = millis() + FEED_HALT_SETTLE_MS;
+  s.phase = FSP_VEL_PREPARE;
+}
+
+static void feedSideStartPending(bool sideR)
+{
+  const FeedSideRt& s = feedSideAt(sideR);
+  if (!s.skipValidate && feedControlMode == FEED_MODE_VELOCITY_SENSOR)
+    feedSideStartVelocity(sideR);
+  else
+    feedSideStartApproach(sideR);
+}
+
+static bool feedSideVelocityWatchdogs(bool sideR, uint32_t now, float om)
+{
+  FeedSideRt& s = feedSideAt(sideR);
+  const uint8_t laserErr = sideR ? MOT_ERR_LASER_R : MOT_ERR_LASER_L;
+
+  if (s.velStartedMs != 0 && (now - s.velStartedMs) > feedVelTimeoutMs) {
+    feedSideVelocityHaltNow(sideR, now, "VELOCITY FEED TIMEOUT");
+    feedSideFinish(sideR, FVR_NG, MOT_ERR_FEED_TIMEOUT, "FEED: timeout");
+    return true;
+  }
+
+  if (om >= feedVelMaxTravelMm) {
+    Serial.printf("OM=%.1f LR-X=OFF\n", (double)om);
+    Serial.println("VELOCITY FEED MAX TRAVEL");
+    feedSideVelocityHaltNow(sideR, now, "VELOCITY FEED MAX TRAVEL");
+    feedSideFinish(sideR, FVR_NG, laserErr, "VELOCITY FEED MAX TRAVEL");
+    return true;
+  }
+
+  if (!s.velEncoderSeen && s.encWatchDeadlineMs != 0 && now >= s.encWatchDeadlineMs) {
+    if (om >= FEED_OM_DIR_CHECK_MM) {
+      s.velEncoderSeen = true;
+    } else if (!feedSkipEncoderConfirm) {
+      feedSideVelocityHaltNow(sideR, now, "VELOCITY FEED NO OM");
+      feedSideFinish(sideR, FVR_NG, MOT_ERR_ENCODER_NO_PULSES, "FEED: sin incremento OM");
+      return true;
+    }
+  }
+
+#if FEED_OM_REQUIRE_NEGATIVE
+  if (!s.dirChecked && om >= FEED_OM_DIR_CHECK_MM) {
+    float live = 0.0f;
+    if (feedOmReadLiveMmSide(sideR, &live) && fabsf(live) >= FEED_OM_DIR_CHECK_MM) {
+      s.dirChecked = true;
+      const bool wrongDir = sideR ? (live < 0.0f) : (live > 0.0f);
+      if (wrongDir) {
+        feedSideVelocityHaltNow(sideR, now, "VELOCITY FEED DIR");
+        feedSideFinish(sideR, FVR_NG, MOT_ERR_FEED_DIR_CW, "FEED: sentido horario");
+        return true;
+      }
+    }
+  }
+#endif
+  return false;
+}
+
 static void feedSideService(bool sideR, uint32_t now)
 {
   FeedSideRt& s = feedSideAt(sideR);
   if (s.pending && !s.active) {
-    feedSideStartApproach(sideR);
+    feedSideStartPending(sideR);
     return;
   }
   if (!s.active) return;
@@ -1282,6 +1571,93 @@ static void feedSideService(bool sideR, uint32_t now)
       }
       break;
 
+    case FSP_VEL_PREPARE:
+      if (now < s.settleUntilMs) break;
+      if (feedLaserMaterialPresentRaw(sideR)) {
+        s.laserState = true;
+        s.velModeActive = false;
+        Serial.printf("FEED %c VELOCITY skip: LR-X already ON\n", sideR ? 'R' : 'L');
+        feedSideFinish(sideR, FVR_OK, 0, "FEED_OK_SENSOR_REF");
+        break;
+      }
+      feedOmResetSide(sideR, false);
+      Serial.printf("OM Set0\n");
+      if (!feedVelocityConfigure(sideR) || !feedVelocityStart(sideR, feedVelFastPct)) {
+        feedSideFinish(sideR, FVR_NG, MOT_ERR_FEED_CAN_NO_RESP, "FEED: CAN PV");
+        break;
+      }
+      s.velStartedMs = now;
+      s.encWatchDeadlineMs = now + FEED_VEL_ENC_WATCH_MS;
+      s.velStopLatched = false;
+      Serial.printf("FAST %.0f%% transition=%.1fmm\n",
+                    (double)feedVelFastPct, (double)s.velTransitionMm);
+      s.phase = FSP_VEL_FAST;
+      break;
+
+    case FSP_VEL_FAST:
+    case FSP_VEL_SLOW:
+      {
+        if (s.velStopLatched) {
+          s.phase = FSP_VEL_STOPPING;
+          break;
+        }
+        s.laserState = feedLaserMaterialPresentRaw(sideR);
+        if (s.laserState) {
+          feedSideVelocityHaltNow(sideR, now, "LR-X ON → QUICK STOP");
+          s.phase = FSP_VEL_STOPPING;
+          break;
+        }
+        const float om = feedSideReadOmLiveMm(sideR, s);
+        if (feedSideVelocityWatchdogs(sideR, now, om))
+          break;
+        if (s.phase == FSP_VEL_FAST && om >= s.velTransitionMm && s.velTransitionMm > 0.0f) {
+          s.omAtTransition = om;
+          if (!s.velStopLatched) {
+            feedVelocityChange(sideR, feedVelSlowPct);
+            Serial.printf("OM=%.1f → SLOW %.0f%%\n",
+                          (double)om, (double)feedVelSlowPct);
+            s.phase = FSP_VEL_SLOW;
+          }
+        }
+      }
+      break;
+
+    case FSP_VEL_STOPPING:
+      if (s.velHaltMs == 0) s.velHaltMs = now;
+      if (s.lastTrPollMs != 0 && (now - s.lastTrPollMs) < FEED_SS_TR_POLL_MS
+          && (now - s.velHaltMs) < FEED_VEL_STOP_FAILSAFE_MS)
+        break;
+      s.lastTrPollMs = now;
+      if (feedVelocityIsStopped(sideR, now, s.velHaltMs)) {
+        Serial.println("SERVO STOPPED");
+        s.settleUntilMs = now + FEED_OM_HALT_SETTLE_MS;
+        s.omReadMiss = 0;
+        s.phase = FSP_VEL_SETTLE;
+      }
+      break;
+
+    case FSP_VEL_SETTLE:
+      if (now < s.settleUntilMs) break;
+      {
+        float om = 0.0f;
+        if (!feedOmReadOfficialMmSide(sideR, &om)) {
+          if (feedOmReadLiveOfficialMmSide(sideR, &om)) {
+            Serial.printf("FEED %c OM live %.2f (settle pending)\n",
+                          sideR ? 'R' : 'L', (double)om);
+          } else if (++s.omReadMiss < FEED_OM_READ_RETRY_MAX) {
+            s.settleUntilMs = now + FEED_OM_READ_RETRY_DELAY_MS;
+            break;
+          }
+        }
+        s.finalOmMm = om;
+        s.omLiveMm = om;
+        feedOmLastOfficialMm = om;
+        Serial.printf("OM final=%.1f\n", (double)om);
+        Serial.printf("FEED %c OK SENSOR_REF\n", sideR ? 'R' : 'L');
+        feedSideFinish(sideR, FVR_OK, 0, "FEED_OK_SENSOR_REF");
+      }
+      break;
+
     case FSP_CORRECTION:
       {
         const int32_t steps = feedMmToCmdStepsSigned(s.correctionMm, sideR);
@@ -1329,6 +1705,12 @@ void feedLoadConfig()
   feedApproachPct = clampFeedApproachPct(feedPrefs.getFloat("apPct", FEED_APPROACH_PCT_DEFAULT));
   feedMoveSpeedPct = clampFeedMoveSpeedPct(feedPrefs.getFloat("mvPct", FEED_MOVE_SPEED_PCT_DEFAULT));
   feedLaserSeekMs = clampFeedLaserSeekMs(feedPrefs.getUInt("seekMs", FEED_LASER_SEEK_MS_DEFAULT));
+  feedControlMode = clampFeedControlMode(feedPrefs.getInt("feedMode", (int)FEED_MODE_STEPS_SENSOR));
+  feedVelFastPct = clampFeedVelFastPct(feedPrefs.getFloat("vFastPct", FEED_VEL_FAST_PCT_DEFAULT));
+  feedVelSlowPct = clampFeedVelSlowPct(feedPrefs.getFloat("vSlowPct", FEED_VEL_SLOW_PCT_DEFAULT));
+  feedVelTransitionPct = clampFeedVelTransitionPct(feedPrefs.getFloat("vTransPct", FEED_VEL_TRANS_PCT_DEFAULT));
+  feedVelMaxTravelMm = clampFeedVelMaxTravelMm(feedPrefs.getFloat("vMaxMm", FEED_VEL_MAX_TRAVEL_MM_DEFAULT));
+  feedVelTimeoutMs = clampFeedVelTimeoutMs(feedPrefs.getUInt("vToMs", FEED_VEL_TIMEOUT_MS_DEFAULT));
   feedPrefs.end();
 }
 
@@ -1349,6 +1731,12 @@ void feedSaveConfig()
   feedPrefs.putFloat("apPct", feedApproachPct);
   feedPrefs.putFloat("mvPct", feedMoveSpeedPct);
   feedPrefs.putUInt("seekMs", feedLaserSeekMs);
+  feedPrefs.putInt("feedMode", (int)feedControlMode);
+  feedPrefs.putFloat("vFastPct", feedVelFastPct);
+  feedPrefs.putFloat("vSlowPct", feedVelSlowPct);
+  feedPrefs.putFloat("vTransPct", feedVelTransitionPct);
+  feedPrefs.putFloat("vMaxMm", feedVelMaxTravelMm);
+  feedPrefs.putUInt("vToMs", feedVelTimeoutMs);
   feedPrefs.end();
 }
 
@@ -1360,10 +1748,16 @@ static void feedPollLaserHaltSide(bool sideR, uint32_t now)
   const bool watch = (s.phase == FSP_WAIT_SERVO || s.phase == FSP_WAIT_SERVO_CORR)
       && s.haltOnLaserRise;
   const bool seek = (s.phase == FSP_LASER_SEEK);
-  if (!watch && !seek) return;
+  const bool vel = (s.phase == FSP_VEL_FAST || s.phase == FSP_VEL_SLOW);
+  if (!watch && !seek && !vel) return;
   if (!feedLaserMaterialPresentRaw(sideR)) return;
   s.laserState = true;
   s.haltOnLaserRise = false;
+  if (vel) {
+    feedSideVelocityHaltNow(sideR, now, "LR-X ON → QUICK STOP");
+    s.phase = FSP_VEL_STOPPING;
+    return;
+  }
   feedLaserHaltNow(sideR);
   if (seek) {
     s.settleUntilMs = now + FEED_HALT_SETTLE_MS;
@@ -1437,6 +1831,11 @@ static void feedSideAppendJson(String& j, bool sideR)
   j += ",\"laser\":"; j += s.laserState ? "true" : "false";
   j += ",\"correctionCount\":" + String((unsigned)s.correctionCount);
   j += ",\"laserSeekDone\":"; j += s.laserSeekDone ? "true" : "false";
+  j += ",\"velocityStage\":\""; j += feedVelocityStageName(s.phase); j += "\"";
+  j += ",\"transitionMm\":" + String(s.velTransitionMm, 1);
+  j += ",\"omLiveMm\":" + String(s.omLiveMm, 2);
+  j += ",\"omAtTransition\":" + String(s.omAtTransition, 2);
+  j += ",\"omAtLaser\":" + String(s.omAtLaser, 2);
   j += ",\"result\":\""; j += feedValResultName(s.result); j += "\"";
   j += ",\"errByte\":" + String((unsigned)s.errByte);
   j += ",\"fault\":\""; j += String(s.fault); j += "\"";
@@ -1466,6 +1865,13 @@ String feedStatusJson()
   j += ",\"approachPct\":" + String(feedApproachPct, 1);
   j += ",\"moveSpeedPct\":" + String(feedMoveSpeedPct, 1);
   j += ",\"laserSeekMs\":" + String((unsigned long)feedLaserSeekMs);
+  j += ",\"feedMode\":\""; j += feedControlModeName(feedControlMode); j += "\"";
+  j += ",\"feedModeId\":" + String((unsigned)feedControlMode);
+  j += ",\"velocityFastPct\":" + String(feedVelFastPct, 0);
+  j += ",\"velocitySlowPct\":" + String(feedVelSlowPct, 0);
+  j += ",\"velocityTransitionPct\":" + String(feedVelTransitionPct, 0);
+  j += ",\"velocityMaxTravelMm\":" + String(feedVelMaxTravelMm, 1);
+  j += ",\"velocityTimeoutMs\":" + String((unsigned long)feedVelTimeoutMs);
   j += ",\"targetMmL\":" + String(feedTargetMmL, 1);
   j += ",\"targetMmR\":" + String(feedTargetMmR, 1);
   j += ",\"skipEnc\":"; j += feedSkipEncoderConfirm ? "true" : "false";
@@ -1527,8 +1933,13 @@ bool feedResetRuntime()
 {
   feedTestReq = {};
   for (int i = 0; i < 2; i++) {
-    if (feedSides[i].active)
+    if (feedSides[i].active) {
+      if (feedSides[i].velModeActive)
+        feedVelocityStop(i == 1);
       canHaltSide(i == 1);
+      if (feedSides[i].velModeActive)
+        feedVelocityRestorePp(i == 1);
+    }
   }
   delay(FEED_HALT_SETTLE_MS);
   feedSides[0] = FeedSideRt{};
@@ -1606,6 +2017,18 @@ static void handleGetFeedTestConfig()
   if (server.hasArg("moveSpeedPct")) mvPct = clampFeedMoveSpeedPct(server.arg("moveSpeedPct").toFloat());
   uint32_t seekMs = feedLaserSeekMs;
   if (server.hasArg("laserSeekMs")) seekMs = clampFeedLaserSeekMs((uint32_t)server.arg("laserSeekMs").toInt());
+  FeedMode mode = feedControlMode;
+  if (server.hasArg("feedMode")) mode = clampFeedControlMode(server.arg("feedMode").toInt());
+  float vFast = feedVelFastPct;
+  float vSlow = feedVelSlowPct;
+  float vTrans = feedVelTransitionPct;
+  float vMaxMm = feedVelMaxTravelMm;
+  uint32_t vTo = feedVelTimeoutMs;
+  if (server.hasArg("velocityFastPct")) vFast = clampFeedVelFastPct(server.arg("velocityFastPct").toFloat());
+  if (server.hasArg("velocitySlowPct")) vSlow = clampFeedVelSlowPct(server.arg("velocitySlowPct").toFloat());
+  if (server.hasArg("velocityTransitionPct")) vTrans = clampFeedVelTransitionPct(server.arg("velocityTransitionPct").toFloat());
+  if (server.hasArg("velocityMaxTravelMm")) vMaxMm = clampFeedVelMaxTravelMm(server.arg("velocityMaxTravelMm").toFloat());
+  if (server.hasArg("velocityTimeoutMs")) vTo = clampFeedVelTimeoutMs((uint32_t)server.arg("velocityTimeoutMs").toInt());
 
   FeedProfilePlan planL = feedProfilePlan(tMmL, vMmL, false, decRampMsL);
   FeedProfilePlan planR = feedProfilePlan(tMmR, vMmR, true, decRampMsR);
@@ -1623,6 +2046,14 @@ static void handleGetFeedTestConfig()
   response += ",\"approachPct\":" + String(apPct, 1);
   response += ",\"moveSpeedPct\":" + String(mvPct, 1);
   response += ",\"laserSeekMs\":" + String((unsigned long)seekMs);
+  response += ",\"feedMode\":\""; response += feedControlModeName(mode); response += "\"";
+  response += ",\"feedModeId\":" + String((unsigned)mode);
+  response += ",\"velocityFastPct\":" + String(vFast, 0);
+  response += ",\"velocitySlowPct\":" + String(vSlow, 0);
+  response += ",\"velocityTransitionPct\":" + String(vTrans, 0);
+  response += ",\"velocityMaxTravelMm\":" + String(vMaxMm, 1);
+  response += ",\"velocityTimeoutMs\":" + String((unsigned long)vTo);
+  response += ",\"velocityTransitionMm\":" + String(FEED_TARGET_FIXED_MM * vTrans / 100.0f, 1);
   response += ",\"laserSeekMsMin\":" + String((unsigned)FEED_LASER_SEEK_MS_MIN);
   response += ",\"laserSeekMsMax\":" + String((unsigned)FEED_LASER_SEEK_MS_MAX);
   response += ",\"targetFixedMm\":" + String(FEED_TARGET_FIXED_MM, 1);
@@ -1652,6 +2083,18 @@ static void handleSetFeedTestConfig()
     feedMoveSpeedPct = clampFeedMoveSpeedPct(server.arg("moveSpeedPct").toFloat());
   if (server.hasArg("laserSeekMs"))
     feedLaserSeekMs = clampFeedLaserSeekMs((uint32_t)server.arg("laserSeekMs").toInt());
+  if (server.hasArg("feedMode"))
+    feedControlMode = clampFeedControlMode(server.arg("feedMode").toInt());
+  if (server.hasArg("velocityFastPct"))
+    feedVelFastPct = clampFeedVelFastPct(server.arg("velocityFastPct").toFloat());
+  if (server.hasArg("velocitySlowPct"))
+    feedVelSlowPct = clampFeedVelSlowPct(server.arg("velocitySlowPct").toFloat());
+  if (server.hasArg("velocityTransitionPct"))
+    feedVelTransitionPct = clampFeedVelTransitionPct(server.arg("velocityTransitionPct").toFloat());
+  if (server.hasArg("velocityMaxTravelMm"))
+    feedVelMaxTravelMm = clampFeedVelMaxTravelMm(server.arg("velocityMaxTravelMm").toFloat());
+  if (server.hasArg("velocityTimeoutMs"))
+    feedVelTimeoutMs = clampFeedVelTimeoutMs((uint32_t)server.arg("velocityTimeoutMs").toInt());
   {
     uint16_t decRampMsL = feedDecRampMsL;
     uint16_t decRampMsR = feedDecRampMsR;
@@ -1738,6 +2181,18 @@ static void handleFeedTestSensor()
     feedMoveSpeedPct = clampFeedMoveSpeedPct(server.arg("moveSpeedPct").toFloat());
   if (server.hasArg("laserSeekMs"))
     feedLaserSeekMs = clampFeedLaserSeekMs((uint32_t)server.arg("laserSeekMs").toInt());
+  if (server.hasArg("feedMode"))
+    feedControlMode = clampFeedControlMode(server.arg("feedMode").toInt());
+  if (server.hasArg("velocityFastPct"))
+    feedVelFastPct = clampFeedVelFastPct(server.arg("velocityFastPct").toFloat());
+  if (server.hasArg("velocitySlowPct"))
+    feedVelSlowPct = clampFeedVelSlowPct(server.arg("velocitySlowPct").toFloat());
+  if (server.hasArg("velocityTransitionPct"))
+    feedVelTransitionPct = clampFeedVelTransitionPct(server.arg("velocityTransitionPct").toFloat());
+  if (server.hasArg("velocityMaxTravelMm"))
+    feedVelMaxTravelMm = clampFeedVelMaxTravelMm(server.arg("velocityMaxTravelMm").toFloat());
+  if (server.hasArg("velocityTimeoutMs"))
+    feedVelTimeoutMs = clampFeedVelTimeoutMs((uint32_t)server.arg("velocityTimeoutMs").toInt());
   {
     uint16_t decRampMsL = feedDecRampMsL;
     uint16_t decRampMsR = feedDecRampMsR;

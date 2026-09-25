@@ -34,15 +34,22 @@
 #define SERVO_OD_STATUS_WORD        0x6041u
 #define SERVO_OD_MODE_OF_OPERATION  0x6060u
 #define SERVO_OD_POSITION_ACTUAL    0x6064u
+#define SERVO_OD_VELOCITY_ACTUAL    0x606Cu
 #define SERVO_OD_TARGET_POSITION    0x607Au
 #define SERVO_OD_MAX_PROFILE_VEL    0x607Fu
 #define SERVO_OD_PROFILE_VELOCITY   0x6081u
 #define SERVO_OD_PROFILE_ACCEL      0x6083u
 #define SERVO_OD_PROFILE_DECEL      0x6084u
 #define SERVO_OD_QUICK_STOP_DECEL   0x6085u
+#define SERVO_OD_TARGET_VELOCITY    0x60FFu
 #define SERVO_OD_HALT_OPTION        0x605Du
 
+#define SERVO_MODE_PP               1
+#define SERVO_MODE_PV               3
+
 // ====================== CiA402 control / status word ======================
+#define SERVO_CW_ENABLE_OP          0x000Fu
+#define SERVO_CW_QUICK_STOP         0x000Bu
 #define SERVO_CW_HALT_HOLD          0x010Fu
 #define SERVO_CW_RESET_HALT         0x012Fu
 #define SERVO_CW_NEW_ABS_HALT       0x013Fu
@@ -147,6 +154,25 @@
 #define FEED_VELOCITY_PP_DEFAULT    FEED_SERVO_BASE_PP_DEFAULT
 #define FEED_PREFS_NS               "motion_feed"
 
+// Velocity + Sensor (experimental). Default de producción = Position + Sensor.
+#define FEED_VEL_FAST_PCT_DEFAULT   100.0f
+#define FEED_VEL_SLOW_PCT_DEFAULT   30.0f
+#define FEED_VEL_TRANS_PCT_DEFAULT  70.0f
+#define FEED_VEL_MAX_TRAVEL_MM_DEFAULT 65.0f
+#define FEED_VEL_TIMEOUT_MS_DEFAULT 8000u
+#define FEED_VEL_FAST_PCT_MIN       10.0f
+#define FEED_VEL_FAST_PCT_MAX       100.0f
+#define FEED_VEL_SLOW_PCT_MIN       5.0f
+#define FEED_VEL_SLOW_PCT_MAX       100.0f
+#define FEED_VEL_TRANS_PCT_MIN      10.0f
+#define FEED_VEL_TRANS_PCT_MAX      95.0f
+#define FEED_VEL_MAX_TRAVEL_MM_MIN  56.0f
+#define FEED_VEL_MAX_TRAVEL_MM_MAX  120.0f
+#define FEED_VEL_TIMEOUT_MS_MIN     1000u
+#define FEED_VEL_TIMEOUT_MS_MAX     30000u
+#define FEED_VEL_ENC_WATCH_MS       500u
+#define FEED_VEL_STOP_FAILSAFE_MS   250u
+
 // ====================== Feed runtime timing ======================
 #define FEED_FAULT_REASON_MAX       96
 #define FEED_CAN_RETRY_MS           15000
@@ -166,7 +192,8 @@
 // ====================== Tipos feed ======================
 enum FeedMode : uint8_t {
   FEED_MODE_BYPASS = 0,
-  FEED_MODE_STEPS_SENSOR = 2
+  FEED_MODE_STEPS_SENSOR = 2,     // producción: Position + Sensor
+  FEED_MODE_VELOCITY_SENSOR = 3   // experimental: Velocity + Sensor (LR-X = tope)
 };
 
 // FSM por lado (L y R independientes)
@@ -183,6 +210,11 @@ enum FeedSidePhase : uint8_t {
   FSP_VALIDATE_FINAL,
   FSP_LASER_SEEK,       // creep a trozos hasta láser ON o timeout
   FSP_LASER_SEEK_HALT,  // halt por flanco ON; settle corto → SETTLE_FINAL
+  FSP_VEL_PREPARE,      // PV: halt + Set0 + 0x6060=3
+  FSP_VEL_FAST,         // PV: 0x60FF fast; OM solo estima transición
+  FSP_VEL_SLOW,         // PV: 0x60FF slow; tope = LR-X crudo
+  FSP_VEL_STOPPING,     // Halt / QS; espera servo parado
+  FSP_VEL_SETTLE,       // OM final + restaurar PP
   FSP_DONE_OK,
   FSP_DONE_NG
 };

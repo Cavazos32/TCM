@@ -1260,12 +1260,25 @@ canvas{width:100%;max-width:640px;height:160px;background:#151b21;border:1px sol
 
   <section>
     <h2>Test feed · L / R</h2>
-    <p style="color:var(--muted);font-size:.82rem;margin:0 0 .75rem">Target fijo 55 mm · L y R: láser ON = tope (no corregir ni pasar) · Approach % · Comp. vel % · Seek solo si láser OFF.</p>
-    <div class="feed-side-row">
+    <p style="color:var(--muted);font-size:.82rem;margin:0 0 .75rem">Target fijo 55 mm · Position + Sensor (producción) o Velocity + Sensor (LR-X = tope). Purga/refill sigue en Position.</p>
+    <div class="feed-side-row" id="feedModeRow">
+      <span class="feed-side-tag">Modo</span>
+      <button type="button" class="btn btn-accent" id="feedModePos">Position + Sensor</button>
+      <button type="button" class="btn" id="feedModeVel">Velocity + Sensor</button>
+    </div>
+    <div class="feed-side-row" id="feedPosParams">
       <label>Approach %<input type="number" id="approachPct" min="50" max="95" step="1" value="80"></label>
       <span class="stats" id="approachMmHint">→ 44.0 mm</span>
       <label>Comp. vel %<input type="number" id="moveSpeedPct" min="10" max="100" step="1" value="50"></label>
       <label>Seek láser (ms)<input type="number" id="laserSeekMs" min="200" max="5000" step="50" value="1000"></label>
+    </div>
+    <div class="feed-side-row" id="feedVelParams" style="display:none">
+      <label>Fast Velocity %<input type="number" id="velFastPct" min="10" max="100" step="1" value="100"></label>
+      <label>Slow Velocity %<input type="number" id="velSlowPct" min="5" max="100" step="1" value="30"></label>
+      <label>Transition %<input type="number" id="velTransPct" min="10" max="95" step="1" value="70"></label>
+      <span class="stats" id="velTransHint">→ 38.5 mm OM</span>
+      <label>Max Travel mm<input type="number" id="velMaxMm" min="56" max="120" step="0.5" value="65"></label>
+      <label>Timeout ms<input type="number" id="velTimeoutMs" min="1000" max="30000" step="100" value="8000"></label>
     </div>
     <div class="feed-side-row">
       <span class="feed-side-tag">L</span>
@@ -1316,6 +1329,19 @@ canvas{width:100%;max-width:640px;height:160px;background:#151b21;border:1px sol
 <script>
 function $(id){return document.getElementById(id)}
 function showMsg(t,cls){var m=$('msg');m.textContent=t;m.className='msg show '+(cls||'');}
+function selectedModeId(){return $('feedModeVel').classList.contains('btn-accent')?3:2;}
+function setModeUi(modeId){
+  var vel=Number(modeId)===3;
+  $('feedModePos').className=vel?'btn':'btn btn-accent';
+  $('feedModeVel').className=vel?'btn btn-accent':'btn';
+  $('feedPosParams').style.display=vel?'none':'';
+  $('feedVelParams').style.display=vel?'':'none';
+}
+function updateVelHint(){
+  var pct=Number($('velTransPct').value);
+  if(!isFinite(pct))return;
+  $('velTransHint').textContent='→ '+(55*pct/100).toFixed(1)+' mm OM';
+}
 function cfgQuery(){
   return 'solidMm='+encodeURIComponent($('solidL').value)
     +'&solidMmR='+encodeURIComponent($('solidR').value)
@@ -1325,7 +1351,13 @@ function cfgQuery(){
     +'&decRampMsR='+encodeURIComponent($('decMsR').value)
     +'&approachPct='+encodeURIComponent($('approachPct').value)
     +'&moveSpeedPct='+encodeURIComponent($('moveSpeedPct').value)
-    +'&laserSeekMs='+encodeURIComponent($('laserSeekMs').value);
+    +'&laserSeekMs='+encodeURIComponent($('laserSeekMs').value)
+    +'&feedMode='+encodeURIComponent(selectedModeId())
+    +'&velocityFastPct='+encodeURIComponent($('velFastPct').value)
+    +'&velocitySlowPct='+encodeURIComponent($('velSlowPct').value)
+    +'&velocityTransitionPct='+encodeURIComponent($('velTransPct').value)
+    +'&velocityMaxTravelMm='+encodeURIComponent($('velMaxMm').value)
+    +'&velocityTimeoutMs='+encodeURIComponent($('velTimeoutMs').value);
 }
 function applyFeedCfg(d){
   if(!d)return;
@@ -1338,6 +1370,14 @@ function applyFeedCfg(d){
   if(d.approachPct!=null)$('approachPct').value=d.approachPct;
   if(d.moveSpeedPct!=null)$('moveSpeedPct').value=d.moveSpeedPct;
   if(d.laserSeekMs!=null)$('laserSeekMs').value=d.laserSeekMs;
+  if(d.feedModeId!=null)setModeUi(d.feedModeId);
+  else if(d.feedMode==='velocity_sensor')setModeUi(3);
+  if(d.velocityFastPct!=null)$('velFastPct').value=d.velocityFastPct;
+  if(d.velocitySlowPct!=null)$('velSlowPct').value=d.velocitySlowPct;
+  if(d.velocityTransitionPct!=null)$('velTransPct').value=d.velocityTransitionPct;
+  if(d.velocityMaxTravelMm!=null)$('velMaxMm').value=d.velocityMaxTravelMm;
+  if(d.velocityTimeoutMs!=null)$('velTimeoutMs').value=d.velocityTimeoutMs;
+  updateVelHint();
   if(d.laserSeekMsMin!=null)$('laserSeekMs').min=d.laserSeekMsMin;
   if(d.laserSeekMsMax!=null)$('laserSeekMs').max=d.laserSeekMsMax;
   var apMm=d.approachMm!=null?d.approachMm:(55*Number($('approachPct').value)/100);
@@ -1382,8 +1422,12 @@ function pollCan(){
     else if(s.canInitialized){ txt='TWAI OK · servos OFF'; cls='bad'; }
     else { txt='CAN FAIL'; cls='bad'; }
     if(s.canBitrateKbps) txt+=' · '+s.canBitrateKbps+'k';
+    var extra='';
+    if(s.feedMode) extra+='<span class="chip">'+s.feedMode+'</span>';
+    var st=(s.L&&s.L.velocityStage)||(s.R&&s.R.velocityStage)||'';
+    if(st) extra+='<span class="chip">'+st+'</span>';
     el.innerHTML='<span class="chip '+cls+'">'+txt+'</span>'
-      +(s.feedActive?'<span class="chip">Feed…</span>':'');
+      +(s.feedActive?'<span class="chip">Feed…</span>':'')+extra;
     if(s.feedActive)return setTimeout(pollCan,400);
   }).catch(function(){});
 }
@@ -1409,7 +1453,13 @@ function runTest(side){
     +'&decRampMsR='+encodeURIComponent($('decMsR').value)
     +'&approachPct='+encodeURIComponent($('approachPct').value)
     +'&moveSpeedPct='+encodeURIComponent($('moveSpeedPct').value)
-    +'&laserSeekMs='+encodeURIComponent($('laserSeekMs').value);
+    +'&laserSeekMs='+encodeURIComponent($('laserSeekMs').value)
+    +'&feedMode='+encodeURIComponent(selectedModeId())
+    +'&velocityFastPct='+encodeURIComponent($('velFastPct').value)
+    +'&velocitySlowPct='+encodeURIComponent($('velSlowPct').value)
+    +'&velocityTransitionPct='+encodeURIComponent($('velTransPct').value)
+    +'&velocityMaxTravelMm='+encodeURIComponent($('velMaxMm').value)
+    +'&velocityTimeoutMs='+encodeURIComponent($('velTimeoutMs').value);
   fetch(q).then(r=>r.json()).then(function(d){
     if(!d.ok){showMsg(d.error||'Fallo','bad');return;}
     showMsg('Moviendo servos '+side+'…','wait');
@@ -1465,10 +1515,14 @@ function loadCal(){
     $('scaleR').textContent='spm R: '+d.countsPerMmR.toFixed(2);
   });
 }
-['solidL','solidR','velL','velR','decMsL','decMsR','approachPct','moveSpeedPct','laserSeekMs'].forEach(function(id){
+['solidL','solidR','velL','velR','decMsL','decMsR','approachPct','moveSpeedPct','laserSeekMs',
+ 'velFastPct','velSlowPct','velTransPct','velMaxMm','velTimeoutMs'].forEach(function(id){
   $(id).addEventListener('change',function(){refreshProfile(false);});
 });
 $('approachPct').addEventListener('input',updateApproachHint);
+$('velTransPct').addEventListener('input',updateVelHint);
+$('feedModePos').onclick=function(){setModeUi(2);refreshProfile(false);};
+$('feedModeVel').onclick=function(){setModeUi(3);refreshProfile(false);};
 refreshProfile(true);loadCal();pollCan();
 </script>
 </body>
