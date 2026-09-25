@@ -1552,30 +1552,25 @@ class HmiState:
         module = (latch.module or "").lower()
         active_lot = self._cycle.is_active()
 
-        # The error handler already put the active lot into the common hold.
-        # Do not abort the CycleRunner here; RESET only validates the source.
-        # RESET de máquina siempre rearma el PreFeeder. Si el PF es la fuente
-        # del EXXX, su Reset debe ser confirmado; para otros errores un fallo de
-        # Reset del PF no borra el error ajeno ni cambia su diagnóstico.
-        pf_reset_ok = True
-        if self._pf_client.connected:
-            pf_reset_ok = bool(self._pf_client.cmd_reset())
-            if pf_reset_ok:
-                with self._lock:
-                    self._pf["status"] = {
-                        "text": "Reset enviado L+R (0x02C)",
-                        "kind": "ok",
-                    }
-        elif "pre" in module or "feeder" in module:
-            pf_reset_ok = False
-
+        # RESET de máquina rearma los módulos necesarios. Si el error pertenece
+        # a un módulo, su reset debe aceptar el comando; los módulos sanos no se
+        # convierten en ERROR.
         module_reset_ok = True
         if "motion" in module:
             module_reset_ok = bool(self._client.cmd_reset_errors())
         elif "plc" in module:
             module_reset_ok = bool(self._plc_reset_reflect_off(log_label="Reset PLC"))
         elif "pre" in module or "feeder" in module:
-            module_reset_ok = pf_reset_ok
+            if self._pf_client.connected:
+                module_reset_ok = bool(self._pf_client.cmd_reset())
+                if module_reset_ok:
+                    with self._lock:
+                        self._pf["status"] = {
+                            "text": "Reset enviado L+R (0x02C)",
+                            "kind": "ok",
+                        }
+            else:
+                module_reset_ok = False
 
         if not module_reset_ok:
             self._set_banner(ui, "error")
