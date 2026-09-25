@@ -129,7 +129,7 @@ from prefeeder import (
     TX_PF_RETURN,
     TX_PF_STOP,
 )
-from error_catalog import CLASS_C1, CLASS_C2, CLASS_C3, format_ui, lookup
+from error_catalog import format_ui, lookup
 from error_policy import ErrorPolicy
 from andon import AndonClient, DEFAULT_HOST as ANDON_HOST, DEFAULT_PORT as ANDON_PORT
 from machine_states import MACH_BUSY, MACH_ERROR, MACH_IDLE, MACH_PAUSE, MACH_RESET
@@ -139,8 +139,7 @@ MODELS_PATH = HMI_ROOT / "config" / "models.json"
 MAX_LOG_LINES = 400
 # No latchear E065–E067 en microcortes WiFi; solo si el enlace sigue caído.
 LINK_DOWN_CONFIRM_SEC = 8.0
-# Tras Set EXXX: no Res observacional inmediato (esclavo puede ir Idle→Error).
-AUTO_RES_MIN_AGE_SEC = 2.0
+# Error latch is cleared only by explicit RESET after source validation.
 # Arranque ASDA: el MCU puede estar arriba antes que la fuente del drive.
 # Sonda = ack del propio Servo ON (0x04): si el ASDA no está alimentado, el
 # write Modbus falla y Motion contesta ok:false. Se reintenta sin tope hasta
@@ -235,8 +234,6 @@ _PF_CLEAR_LATCH_STATES = frozenset(
     {TX_PF_INIT, TX_PF_IDLE, TX_PF_BUSY, TX_PF_RETURN}
 )
 
-# Prioridad de clase al elegir el EXXX primario PF (C1 gana).
-_PF_CLASS_RANK = {CLASS_C1: 0, CLASS_C2: 1, CLASS_C3: 2}
 
 
 def _ts() -> str:
