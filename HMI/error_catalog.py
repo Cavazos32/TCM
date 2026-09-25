@@ -12,12 +12,9 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-# C1 = stop all · C2 = pause · C3 = finish current step then stop
-CLASS_C1 = "C1"
-CLASS_C2 = "C2"
-CLASS_C3 = "C3"
-
-# code, module, byte, enum, description, class
+# Legacy classification kept only as catalog metadata for compatibility.
+# It must not select machine recovery behavior.
+# code, module, byte, enum, description, legacy_class
 _ROWS: tuple[tuple[str, str, int, str, str, str], ...] = (
     # --- Motion (detalle) ---
     ("E001", "Motion", 0x11, "MOT_ERR_ENCODER_R", "Encoder R; no cambio de valor", CLASS_C3),
