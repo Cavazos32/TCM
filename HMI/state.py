@@ -2595,6 +2595,10 @@ class HmiState:
             return False
         if src not in ("motion", "plc", "prefeeder", "pre-feeder", "pf"):
             return False
+        # Nunca liberar EXXX solo porque llegó un Reset/estado OK transitorio.
+        # La condición fuente debe estar sana en el estado actual del módulo.
+        if not self._latch_source_is_healthy():
+            return False
         old = self._error_policy.clear()
         self._cycle.clear_fault_mirror()
         ui = old.ui_text or old.code or source
