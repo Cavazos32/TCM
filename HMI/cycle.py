@@ -1359,8 +1359,7 @@ class CycleRunner:
                 return
         self._fault = format_ui(slug_or_code, fallback=slug_or_code)
         if err_class:
-            self._fault_class = err_class
-        self._set_state(TX_ERROR, self._fault)
+            self._set_state(TX_ERROR, self._fault)
 
     def apply_error_policy(
         self,
@@ -1393,7 +1392,6 @@ class CycleRunner:
     def apply_e050_policy(
         self,
         ui: str,
-        err_class: str,
         recovery: str = "retry_process",
     ) -> dict[str, Any]:
         """E050 durante lote: primero pregunta si requiere Materialist."""
