@@ -1482,7 +1482,6 @@ class HmiState:
                     "text": f"{log_label} — estados OFF (0x01E)",
                     "kind": "ok",
                 }
-                self._clear_latch_for_module("plc")
         return bool(ok)
 
     def cmd_machine_home(self) -> dict:
@@ -1569,7 +1568,6 @@ class HmiState:
                 module_reset_ok = bool(self._pf_client.cmd_reset())
                 if module_reset_ok:
                     with self._lock:
-                        self._clear_latch_for_module("prefeeder", auto=False)
                         self._pf["status"] = {
                             "text": "Reset enviado L+R (0x02C)",
                             "kind": "ok",
@@ -1909,7 +1907,6 @@ class HmiState:
                     "text": "Errores limpiados (0x016)",
                     "kind": "ok",
                 }
-                self._clear_latch_for_module("motion")
             self._notify()
         if ok and action in ("on", "off"):
             with self._lock:
