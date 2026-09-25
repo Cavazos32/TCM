@@ -1543,146 +1543,107 @@ class HmiState:
         }
 
     def cmd_error_reset(self, confirm: bool = False, do_home: bool = False) -> dict:
-        """
-        Res del flip-flop: limpia latch + reset Motion/PF + ciclo Idle.
-        Hard Reset también manda Reset PLC (0x1E) y refleja OFF en UI.
-        Soft-Res C2/C3 no toca PLC ni All Off.
-        C1: requiere confirm=True (o ya confirmado) y opcional do_home.
-        Hard Reset + do_home/needs_home: ASDA CMD_MOVE_ZERO (posición 0).
-        C2/C3 con ciclo activo: soft-Res (no aborta lote, sin move-zero) → Pause → Resume.
+        """Machine RESET: reset affected modules, validate the real fault, never HOME.
+
+        RESET only releases the HMI latch when the source condition is confirmed
+        clear. An active lot remains in recovery/paused state; the operator must
+        press Resume after a successful reset.
         """
         latch = self._error_policy.latch
-        if latch.active and latch.needs_confirm:
-            if confirm:
-                self._error_policy.confirm()
-            can, err = self._error_policy.can_reset()
-            if not can:
-                return {
-                    "ok": False,
-                    "error": err,
-                    "needsConfirm": True,
-                    "errorLatch": self._error_policy.snapshot(),
-                }
-
-        needs_home = latch.active and latch.needs_home
-        recovery = latch.recovery or str(
-            self._cycle.snapshot().get("recovery") or ""
-        )
-        ui = latch.ui_text
-        cycle_snap = self._cycle.snapshot()
-        soft_c2_c3 = self._cycle.is_active() and (
-            (
-                latch.active
-                and recovery in ("restart_from_0", "retry_process")
-            )
-            or bool(cycle_snap.get("paused"))
-            or bool(cycle_snap.get("c3Pending"))
-            or cycle_snap.get("recovery")
-            in ("restart_from_0", "retry_process")
-        )
-
-        if soft_c2_c3:
-            # C2/C3: no matar el lote — Reset módulos + soft clear.
-            self._client.cmd_reset_errors()
-            if self._pf_client.connected:
-                self._pf_client.cmd_reset()
-            old = self._error_policy.clear()
-            soft = self._cycle.clear_error_for_resume(recovery)
-            finishing = bool(soft.get("finishingPiece"))
-            # Status Motion puede seguir en kind=error tras soft-Res.
-            if old.active and "motion" in (old.module or "").lower():
-                self._set_motion_status("Errores limpiados (0x016)", "ok")
+        if not latch.active:
+            self._cycle.request_reset()
             self._broadcast_machine_state(MACH_RESET)
-            if finishing and not soft.get("paused"):
-                self._broadcast_machine_state(MACH_BUSY)
-                self._banner = {
-                    "text": "Errores reseteados — terminando pieza",
-                    "kind": "ok",
-                }
-            else:
-                self._broadcast_machine_state(MACH_PAUSE)
-                self._banner = {
-                    "text": "Errores reseteados — Resume para terminar la pieza",
-                    "kind": "ok",
-                }
-            if ui:
-                _append_log(self._main_log, f"Reset (soft C2/C3) · {ui}")
+            self._broadcast_machine_state(MACH_IDLE)
+            self._banner = {"text": "Listo.", "kind": "ok"}
             self._notify()
-            return {
-                "ok": True,
-                "cycle": soft,
-                "cleared": old.snapshot() if old.active else None,
-                "homeOk": None,
-                "recovery": recovery,
-                "soft": True,
-                "resumeEnabled": bool(soft.get("paused")),
-            }
+            return {"ok": True, "cleared": None, "homeOk": None}
 
-        # Si el ciclo sigue active (p.ej. atrapado en Stage2 tras Stop visual),
-        # abortar waits antes de pedir Reset Idle.
-        if self._cycle.is_active():
+        ui = latch.ui_text
+        module = (latch.module or "").lower()
+        active_lot = self._cycle.is_active()
+
+        # Stop the current sequence without changing the independent HOME control.
+        if active_lot and not self._cycle.snapshot().get("paused"):
             self._cycle.request_stop()
 
-        # Reset módulos (Res) + Reset PLC hard (0x1E). Soft C2/C3 no llega aquí.
-        self._client.cmd_reset_errors()
-        if self._pf_client.connected:
-            self._pf_client.cmd_reset()
-            self._manual_pf(lambda: self._pf_client.cmd_materialist(False))
-        with self._lock:
-            self._pf_materialist = False
-            self._pf_materialist_force_off = True
-            for sk in ("L", "R"):
-                runtime = self._pf.setdefault("sides", {}).setdefault(sk, {})
-                runtime["idleMode"] = False
-        plc_reset_ok = self._plc_reset_reflect_off(log_label="Reset máquina → PLC")
+        # Send reset to modules that have a concrete reset command.
+        module_reset_ok = True
+        if "motion" in module:
+            module_reset_ok = bool(self._client.cmd_reset_errors())
+        elif "plc" in module:
+            module_reset_ok = bool(self._plc_reset_reflect_off(log_label="Reset PLC"))
+        elif "pre" in module or "feeder" in module:
+            if self._pf_client.connected:
+                module_reset_ok = bool(self._pf_client.cmd_reset())
+                if module_reset_ok:
+                    with self._lock:
+                        self._clear_latch_for_module("prefeeder", auto=False)
+                        self._pf["status"] = {
+                            "text": "Reset enviado L+R (0x02C)",
+                            "kind": "ok",
+                        }
+            else:
+                module_reset_ok = False
+        else:
+            # Cycle/Main/Andon errors have no independent hardware Reset.
+            module_reset_ok = True
 
-        old = self._error_policy.clear()
-        with self._lock:
-            # Indicador Exhaust baja con Res; si GPIO sigue activo, status lo re-Set.
-            self._motion["safetyExhaust"] = False
-            if old.active and "motion" in (old.module or "").lower():
-                self._motion["status"] = {
-                    "text": "Errores limpiados (0x016)",
-                    "kind": "ok",
-                }
-        cycle_res = self._cycle.request_reset()
-        if not cycle_res.get("ok", False):
-            err = str(cycle_res.get("error") or "Reset de ciclo rechazado")
-            self._banner = {"text": err, "kind": "error"}
-            _append_log(self._main_log, f"Reset ciclo falló · {err}")
+        if not module_reset_ok:
+            self._set_banner(ui, "error")
+            self._broadcast_machine_state(MACH_ERROR)
             self._notify()
             return {
                 "ok": False,
-                "error": err,
-                "cycle": cycle_res,
-                "cleared": old.snapshot() if old.active else None,
-                "recovery": recovery,
-                "plcResetOk": plc_reset_ok,
+                "error": f"Reset no confirmado para {ui}",
+                "cleared": None,
+                "homeOk": None,
             }
 
-        self._broadcast_machine_state(MACH_RESET)
-        self._broadcast_machine_state(MACH_IDLE)
+        # Refresh the relevant module state before deciding whether the fault is gone.
+        if "pre" in module or "feeder" in module:
+            try:
+                self._pf_client.cmd_status()
+            except Exception:
+                pass
 
-        # Homing general = ASDA CMD_MOVE_ZERO (0x07 → posición 0), no torque home 0x01.
-        home_ok = None
-        if do_home or needs_home:
-            home_ok = self.cmd_motion_move_zero()
-            _append_log(
-                self._main_log,
-                f"ASDA → 0 · {'OK' if home_ok else 'FALLÓ'}",
-            )
+        healthy = self._latch_source_is_healthy()
+        if not healthy:
+            # Keep the latch and ERROR. No Idle/Resume window.
+            self._set_banner(ui, "error")
+            self._broadcast_machine_state(MACH_ERROR)
+            self._notify()
+            return {
+                "ok": False,
+                "error": f"{ui} sigue activo",
+                "persisted": True,
+                "cleared": None,
+                "homeOk": None,
+            }
 
-        self._banner = {"text": "Errores reseteados", "kind": "ok"}
-        if ui:
-            _append_log(self._main_log, f"Reset · {ui}")
+        old = self._error_policy.clear()
+        self._cycle.clear_fault_mirror()
+
+        # Reset does not HOME. The normal state depends on whether a lot is alive.
+        if active_lot:
+            self._cycle.request_pause()
+            self._broadcast_machine_state(MACH_RESET)
+            self._broadcast_machine_state(MACH_PAUSE)
+            self._banner = {
+                "text": "Error reseteado — Resume para continuar",
+                "kind": "ok",
+            }
+        else:
+            self._cycle.request_reset()
+            self._broadcast_machine_state(MACH_RESET)
+            self._broadcast_machine_state(MACH_IDLE)
+            self._banner = {"text": "Errores reseteados", "kind": "ok"}
+
         self._notify()
         return {
             "ok": True,
-            "cycle": cycle_res,
-            "cleared": old.snapshot() if old.active else None,
-            "homeOk": home_ok,
-            "recovery": recovery,
-            "plcResetOk": plc_reset_ok,
+            "cleared": old.snapshot(),
+            "homeOk": None,
+            "resumeEnabled": bool(active_lot),
         }
 
     def _broadcast_machine_state(self, byte: int) -> None:
