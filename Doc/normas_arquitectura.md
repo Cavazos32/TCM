@@ -169,7 +169,7 @@ ERROR → latch EXXX → mostrar EXXX → detener secuencia
   → módulos no afectados conservan su estado
   → PF In process OFF
   → esperar RESET
-  → Reset módulo + validar condición real
+  → Reset PF 0x2C (si hay enlace) + Reset módulo fuente + validar condición real
        ├─ sigue activa → conservar EXXX + ERROR (Start/Resume bloqueados)
        └─ desapareció → liberar latch
             ├─ lote activo → Pause → esperar RESUME
@@ -180,7 +180,7 @@ ERROR → latch EXXX → mostrar EXXX → detener secuencia
 2. Se detiene la secuencia. **No** se pinta ERROR en todos los esclavos.  
 3. Pause / Error máquina → PreFeeder Idle (`In process OFF`). No es Stop `0x2B`.  
 4. Corregir causa física si aplica.  
-5. **Reset HMI:** Reset del módulo fuente → validar condición. Si sigue, no se libera el latch. **No Home. No Start automático.**  
+5. **Reset HMI:** Reset del módulo fuente → validar condición. **Siempre** Reset PF `0x2C` si hay enlace (igual que Start siempre manda `0x2A`). Si sigue, no se libera el latch. **No Home. No Start automático.** Reset PLC `0x1E` solo si el EXXX latcheado es del PLC.  
 6. **Sin lote:** Idle. Esperar Start.  
 7. **Con lote activo:** Pause. **Resume** (solo si el latch ya no está) → Start/Init PF → Buffer Full → terminar la pieza → review OK → purga (refill existente; no alimentar sola: espera Retry o Long feed; no mover ASDA si ya está en park) → Continuar ciclo → Buffer Full (igual que Start/Resume) → siguiente pieza.
 
@@ -242,7 +242,8 @@ No se detiene en OM = 55 mm ni se corrige después del flanco LR-X. Watchdogs: O
 ### Regla T1
 
 Andon refleja **estado de máquina** (`0x40`–`0x49`), no el listado EXXX.  
-Un sensor propio de Andon (p. ej. presión) puede reportar EXXX a Main; la torre sigue lo que Main mande como estado.
+Un sensor propio de Andon (p. ej. presión) puede reportar EXXX a Main; la torre sigue lo que Main mande como estado.  
+El fallo de presión (`0x50` / E064) **no** bloquea RX de `0x40`–`0x49` ni comandos manuales de debug.
 
 Mapeo torre (estado máquina → luces / buzzer):
 
@@ -391,6 +392,7 @@ Prohibido aprovechar correcciones de rutina, Motion, PreFeeder, PLC, encoder, fe
 | PLC válvulas | Pulso ON/OFF / All Off / Reset PLC; Reset HMI de EXXX PLC → Reset PLC; Home máquina → All Off; no desde Stop/Pause |
 | Cómo se sale de un fallo | Secuencia unificada (Reset valida → Idle o Resume); E050+lote: Pause → preguntar Materialist; E050: Purge permitido con latch activo |
 | Pause / Error máquina | PreFeeder Idle (`In process OFF`); Resume/Busy/Continuar ciclo rearma y espera Buffer Full (como Start); Stop operador → Stop `0x2B` |
+| Start / Reset HMI → PF | Start siempre manda `0x2A`; Reset HMI siempre manda `0x2C` (si hay enlace). Reset PLC `0x1E` solo si el EXXX es del PLC |
 | De dónde salen códigos | Excel + GPIO doc |
 | Debug | Solo si se pide |
 | Norma nueva/cambiada | Reflejar en todos los archivos necesarios (M4) |

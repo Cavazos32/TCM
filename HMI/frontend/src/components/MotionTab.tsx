@@ -193,7 +193,7 @@ export const MotionTab: React.FC<MotionTabProps> = ({
               }`}
             />
             <span className="text-sm font-semibold text-slate-900 dark:text-white tracking-tight">
-              {motionState.statusText || (motionState.isMoving ? t('motor_moving') : t('state_ready'))}
+              {motionState.statusText || (motionState.isMoving ? t('motor_moving') : motionState.hasError ? t('state_error') : t('state_ready'))}
             </span>
           </div>
 

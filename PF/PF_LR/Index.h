@@ -561,7 +561,7 @@ const char index_html[] PROGMEM = R"rawliteral(
           <li>Feeder en Tfeed no pausa DeReeler/servo (relleno en paralelo)</li>
           <li>Buffer Full OFF sostenido (~200 ms) → servo primero · DeReeler CW tras <span class="info-param">100</span> ms · <span class="info-param" data-info-key="autoRpm">60 RPM</span></li>
           <li>Servo GPIO 26 gira en CW e inversión → PWM <span class="info-param" data-info-key="servoPwm">800 µs</span> (ajustable · neutro 1500)</li>
-          <li>DeReeler en marcha + tensión GPIO 23 → +30 RPM continuo (mismo sentido). Al soltar → RPM nominal</li>
+          <li>DeReeler en marcha + tensión GPIO 23 → +<span class="info-param" data-info-key="tensionBoostRpm">30 RPM</span> continuo (mismo sentido). Al soltar → RPM nominal</li>
           <li>Vuelve a CW si Buffer Full sigue inactivo</li>
           <li class="info-step-note"><strong>Fallas enclavadas</strong> hasta Reset + Iniciar (se reportan al TCM por TCP)</li>
           <li>Buffer Max GPIO 21 → para todo</li>
@@ -756,9 +756,14 @@ const char index_html[] PROGMEM = R"rawliteral(
     <div class="card">
       <h2>CW - CCW Settings</h2>
       <p class="meta compact">
-        DeReeler en marcha + GPIO 23 tensión: +30 RPM continuo (mismo sentido). Al soltar → RPM de la UI.
-        Timeout tensión fijo: 10 s.
+        DeReeler en marcha + GPIO 23 tensión: incrementa RPM (mismo sentido) con el valor de esta página.
+        Al soltar → RPM nominal del DeReeler. Timeout tensión fijo: 10 s.
       </p>
+      <div class="form-group">
+        <label for="tension-boost-rpm">Boost tensión (RPM)</label>
+        <p class="field-desc">Se suma a la velocidad del DeReeler mientras GPIO 23 esté activo. 0 = sin incremento. El total no pasa de 600 RPM.</p>
+        <input type="number" id="tension-boost-rpm" min="0" max="600" step="1" value="30">
+      </div>
       <div class="form-group">
         <label for="auto-rev">Boost tensión (s)</label>
         <p class="field-desc">Reservado (NVS). El boost ya no es por tiempo: dura mientras haya tensión y el DeReeler gire.</p>
@@ -795,6 +800,7 @@ const char index_html[] PROGMEM = R"rawliteral(
     var routineInfoKeys = {
       autoRpm: { id: 'auto-rpm', suffix: ' RPM' },
       autoRev: { id: 'auto-rev', suffix: ' s' },
+      tensionBoostRpm: { id: 'tension-boost-rpm', suffix: ' RPM' },
       tensionCooldown: { id: 'tension-cooldown', suffix: ' s' },
       servoPwm: { id: 'servo-pwm', suffix: ' µs' },
       rpm2: { id: 'rpm2', suffix: ' RPM' },
@@ -839,7 +845,7 @@ const char index_html[] PROGMEM = R"rawliteral(
     var cfgDirty = false;
     var cfgFieldIds = [
       'auto-rpm', 'auto-rev', 'rpm2', 'trigger-feed-sec',
-      'tension-cooldown', 'servo-pwm', 'refill-pulse-s',
+      'tension-boost-rpm', 'tension-cooldown', 'servo-pwm', 'refill-pulse-s',
       'holgura-helper-rpm', 'holgura-helper-s', 'holgura-helper-absent-ms', 'holgura-fault-s'
     ];
     function markCfgDirty() { cfgDirty = true; }
@@ -893,6 +899,9 @@ const char index_html[] PROGMEM = R"rawliteral(
       var rev = parseFloat(document.getElementById('auto-rev').value);
       if (isNaN(rev) || rev < 0.1) rev = 2.0;
       if (rev > 60) rev = 60;
+      var boostRpm = parseFloat(document.getElementById('tension-boost-rpm').value);
+      if (isNaN(boostRpm) || boostRpm < 0) boostRpm = 30;
+      if (boostRpm > 600) boostRpm = 600;
       var cd = parseFloat(document.getElementById('tension-cooldown').value);
       if (isNaN(cd) || cd < 0) cd = 0;
       var servoPwm = parseInt(document.getElementById('servo-pwm').value, 10);
@@ -916,6 +925,7 @@ const char index_html[] PROGMEM = R"rawliteral(
       if (hFault > 30) hFault = 30;
       var autoUrl = '/api/auto?rpm=' + encodeURIComponent(rpm)
         + '&reverse=' + encodeURIComponent(rev)
+        + '&tension_boost_rpm=' + encodeURIComponent(boostRpm)
         + '&tension_cooldown=' + encodeURIComponent(cd)
         + '&servo_pwm=' + encodeURIComponent(servoPwm);
       var pulseS = parseFloat(document.getElementById('refill-pulse-s').value);
@@ -1114,6 +1124,7 @@ const char index_html[] PROGMEM = R"rawliteral(
       if (!autoInit || !cfgDirty) {
         syncCfg('auto-rpm', a.rpm);
         syncCfg('auto-rev', a.reverse_s);
+        if (a.tension_boost_rpm !== undefined) syncCfg('tension-boost-rpm', a.tension_boost_rpm);
         if (a.servo_pwm_us !== undefined) syncCfg('servo-pwm', a.servo_pwm_us);
         autoInit = true;
       }
@@ -1127,11 +1138,15 @@ const char index_html[] PROGMEM = R"rawliteral(
       if (isNaN(rpm) || rpm < 1) rpm = 60;
       var rev = parseFloat(document.getElementById('auto-rev').value);
       if (isNaN(rev) || rev < 0.1) rev = 2.0;
+      var boostRpm = parseFloat(document.getElementById('tension-boost-rpm').value);
+      if (isNaN(boostRpm) || boostRpm < 0) boostRpm = 30;
+      if (boostRpm > 600) boostRpm = 600;
       var servoPwm = parseInt(document.getElementById('servo-pwm').value, 10);
       if (isNaN(servoPwm) || servoPwm < 500) servoPwm = 500;
       if (servoPwm > 2500) servoPwm = 2500;
       var url = '/api/auto?rpm=' + encodeURIComponent(rpm)
         + '&reverse=' + encodeURIComponent(rev)
+        + '&tension_boost_rpm=' + encodeURIComponent(boostRpm)
         + '&servo_pwm=' + encodeURIComponent(servoPwm);
       if (action === 'start') url += '&enable=1';
       else if (action === 'stop') url += '&enable=0';
@@ -1203,6 +1218,8 @@ const char index_html[] PROGMEM = R"rawliteral(
         syncCfg('tension-cooldown', data.tension.cooldown_s);
         tensionInit = true;
       }
+      if (data.tension && data.tension.boost_rpm !== undefined)
+        syncCfg('tension-boost-rpm', data.tension.boost_rpm);
       if (data.error) {
         var active = data.error.active;
         var reason = 'Ninguno';

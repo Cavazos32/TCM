@@ -11,6 +11,8 @@
 //   • Presión FRL (GPIO): local — NO se recibe opcode de estado.
 //     Cambio en PIN_PRESSURE_FRL → torreta Error + TX 0x50 (E064) a HMI.
 //     0x50 es detalle EXXX (Andon → HMI); no hay RX de 0x50.
+//     El fallo de presión NO bloquea RX 0x40–0x49 ni comandos manuales:
+//     la torre sigue lo que Main mande (T1).
 // =============================================================================
 
 #ifndef ERR_CLASS_DEFINED

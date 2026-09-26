@@ -142,9 +142,20 @@ function AppMain() {
         preFeederConn={view.preFeederState.connection}
         andonConn={view.andonConn}
         hasErrors={{
-          motion: view.motionState.hasError,
-          plc: view.plcState.hasError,
-          prefeeder: view.preFeederState.hasError,
+          motion:
+            view.motionState.hasError ||
+            (!!view.machineState.errorActive &&
+              (view.machineState.faultModule || '').toLowerCase().includes('motion')),
+          plc:
+            view.plcState.hasError ||
+            (!!view.machineState.errorActive &&
+              (view.machineState.faultModule || '').toLowerCase().includes('plc')),
+          prefeeder:
+            view.preFeederState.hasError ||
+            (!!view.machineState.errorActive &&
+              /pre-?feeder|\bpf\b/.test(
+                (view.machineState.faultModule || '').toLowerCase()
+              )),
         }}
       />
 
@@ -188,10 +199,7 @@ function AppMain() {
             onPfStart={hmi.pfStart}
             onPfStop={hmi.pfStop}
             onPfReset={hmi.pfReset}
-            onPfJogL={hmi.pfTriggerL}
-            onPfJogR={hmi.pfTriggerR}
             onPfRefill={hmi.pfRefill}
-            onBusy={hmi.toggleCycleBusy}
             onMaterialist={hmi.toggleCycleMaterialist}
             showLogs={logsVisible}
             logs={logsVisible ? hmi.filterLogs('ALL') : []}
@@ -284,6 +292,7 @@ function AppMain() {
             onStop={hmi.pfStop}
             onReset={hmi.pfReset}
             onMaterialist={hmi.pfMaterialist}
+            onBusy={hmi.toggleCycleBusy}
             onTriggerR={hmi.pfTriggerR}
             onTriggerL={hmi.pfTriggerL}
             showLogs={logsVisible}
@@ -295,6 +304,9 @@ function AppMain() {
         {debugMode && currentTab === 'andon' && (
           <AndonTab
             andonState={view.andonState}
+            machineByte={view.andonState.machineByte ?? view.machineState.machineByte}
+            machineName={view.machineState.machineName}
+            buzzerMute={view.andonBuzzerMute}
             onSetOut={hmi.andonSetOut}
             onAllOff={hmi.andonAllOff}
             onResumeAuto={hmi.andonResumeAuto}

@@ -164,14 +164,10 @@ export const CycleTab: React.FC<CycleTabProps> = ({
   cycleFlow,
   onSaveConfig,
   onReloadConfig,
-  onPause,
-  onReset,
-  onMaterialist,
   onSetStepByStep,
   onStart,
   onResume,
   resumeEnabled = false,
-  onRefill,
   onRefillConfirm,
   onRefillRetry,
   onRefillLongFeed,
@@ -190,9 +186,38 @@ export const CycleTab: React.FC<CycleTabProps> = ({
     !!machineState.refillActive &&
     !!machineState.refillPrompt &&
     !!onRefillConfirm;
-  const e050Lot = !!machineState.e050Lot;
   const skipCut = !!machineState.refillSkipCut;
   const e050Ask = recoveryStage === 'e050_materialist';
+  const recoveryTitle = e050Ask
+    ? t('e050_materialist_title')
+    : recoveryStage === 'e050_materialist_wait'
+      ? t('e050_materialist_wait_title')
+      : recoveryStage === 'review_piece'
+        ? t('recovery_review_title')
+        : recoveryStage === 'continue_cycle'
+          ? t('recovery_continue_title')
+          : recoveryStage === 'after_cut'
+            ? t('refill_confirm_title_cut')
+            : recoveryStage === 'await_feed'
+              ? t('refill_confirm_title_await')
+              : t('refill_confirm_title_feed');
+  const recoveryHint = e050Ask
+    ? machineState.e050FinishPiece
+      ? `${t('e050_materialist_hint')} ${t('lot_recover_hint_e050_finish')}`
+      : t('e050_materialist_hint')
+    : recoveryStage === 'e050_materialist_wait'
+      ? t('e050_materialist_wait_hint')
+      : recoveryStage === 'review_piece'
+      ? t('recovery_review_hint')
+      : recoveryStage === 'continue_cycle'
+        ? t('recovery_continue_hint')
+        : recoveryStage === 'after_cut'
+          ? t('refill_confirm_hint_cut')
+          : recoveryStage === 'await_feed'
+            ? t('refill_confirm_hint_await')
+            : skipCut
+              ? t('refill_confirm_hint_feed_nocut')
+              : t('refill_confirm_hint_feed');
   const nextFeedLabel = skipCut
     ? t('btn_refill_confirm_continue')
     : t('btn_refill_confirm_next_cut');
@@ -201,6 +226,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
     recoveryStage === 'after_feed' ||
     recoveryStage === 'after_cut' ||
     (e050Ask && !!machineState.recoveryAwaitingConfirm) ||
+    recoveryStage === 'e050_materialist_wait' ||
     recoveryStage === 'review_piece' ||
     recoveryStage === 'continue_cycle';
 
@@ -257,7 +283,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
   }, [onSaveConfig]);
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const [filterType, setFilterType] = useState<'all' | 'action' | 'delay' | 'parallel'>('all');
+  const [filterType, setFilterType] = useState<'all' | 'delay'>('all');
   const [activeStepNum, setActiveStepNum] = useState<number | null>(null);
 
   const stepModeActive = machineState.stepByStep;
@@ -442,14 +468,19 @@ export const CycleTab: React.FC<CycleTabProps> = ({
   const showLiveCt = cycleActive || liveCtSec > 0 || lastPieceSec > 0;
 
   const filteredSteps = sequenceSteps.filter((step) => {
-    if (filterType === 'action') return step.type === 'action';
     if (filterType === 'delay') return step.type === 'delay';
-    if (filterType === 'parallel') return step.type === 'background' || step.type === 'join';
     return true;
   });
+  const compactInputCls =
+    'h-7 w-full rounded border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 px-1.5 text-xs font-mono text-slate-900 dark:text-slate-100 focus:border-teal-500 focus:outline-hidden focus:ring-1 focus:ring-teal-500';
+  const cfgGrid = 'grid grid-cols-2 sm:grid-cols-4 gap-x-3 gap-y-2';
+  const cfgLabel =
+    'mb-0.5 block truncate text-[11px] font-medium text-slate-600 dark:text-slate-400';
+  const cfgChip =
+    'h-7 rounded-md px-2 text-[11px] font-mono font-semibold border';
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-3">
       {toastMessage && (
         <div className="flex items-center gap-2 rounded-lg bg-emerald-500 text-white px-4 py-2.5 shadow-md">
           <CheckCircle2 className="h-5 w-5 shrink-0" />
@@ -457,98 +488,16 @@ export const CycleTab: React.FC<CycleTabProps> = ({
         </div>
       )}
 
-      {/* Controles de ciclo en vivo */}
-      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-3 shadow-2xs">
-        <span
-          className={`text-xs font-semibold mr-2 ${
-            machineState.fault
-              ? 'text-red-700 dark:text-red-300'
-              : 'text-slate-600 dark:text-slate-400'
-          }`}
-        >
-          {machineState.fault
-            ? machineState.fault
-            : cycleActive
-            ? `${t('cycle_step_status').replace('{step}', String(cycleStep))}${machineState.cycleStepLabel ? ` · ${machineState.cycleStepLabel}` : ''}`
-            : machineState.statusText || t('state_ready')}
-        </span>
-        {stepModeActive && (
-          <span className="rounded-md border border-teal-300 dark:border-teal-800 bg-teal-50 dark:bg-teal-950/40 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-teal-700 dark:text-teal-300">
-            {t('step_by_step_active')}
-          </span>
-        )}
-        {stepModeActive && !cycleActive && (
-          <span className="text-[10px] text-slate-500 dark:text-slate-400 max-w-md">
-            {t('step_by_step_hint')}
-          </span>
-        )}
-        {showStepNext ? (
-          <button
-            id="btn-cycle-next-step"
-            onClick={onResume}
-            className="flex items-center gap-1 rounded-lg border border-teal-300 dark:border-teal-700 bg-teal-600 hover:bg-teal-500 px-3 py-1.5 text-xs font-bold text-white"
-          >
-            <ChevronRight className="h-3.5 w-3.5" />
-            {t('btn_next_step')}
-          </button>
-        ) : (
-          <button
-            id="btn-cycle-pause"
-            onClick={onPause}
-            disabled={!machineState.pauseEnabled}
-            className="flex items-center gap-1 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-3 py-1.5 text-xs font-bold text-amber-800 dark:text-amber-200 disabled:opacity-40"
-          >
-            <Timer className="h-3.5 w-3.5" />
-            {t('btn_pause')}
-          </button>
-        )}
-        <button
-          id="btn-cycle-reset"
-          onClick={onReset}
-          className="flex items-center gap-1 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-200"
-        >
-          <RotateCcw className="h-3.5 w-3.5" />
-          {t('btn_reset_cycle')}
-          <span className="font-mono text-[10px]">0x043</span>
-        </button>
-        {onMaterialist && (
-          <button
-            id="btn-cycle-materialist"
-            onClick={onMaterialist}
-            className={`flex items-center gap-1 rounded-lg border px-3 py-1.5 text-xs font-bold ${
-              machineState.cycleMaterialist
-                ? 'border-violet-400 bg-violet-100 dark:bg-violet-950/50 text-violet-800 dark:text-violet-200'
-                : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200'
-            }`}
-          >
-            {t('btn_materialist_cycle')}
-            <span className="font-mono text-[10px]">0x049</span>
-          </button>
-        )}
-        {onRefill && (
-          <button
-            id="btn-cycle-refill"
-            type="button"
-            onClick={onRefill}
-            disabled={
-              machineState.isRunning ||
-              machineState.refillActive
-            }
-            className={`flex items-center gap-1 rounded-lg border px-3 py-1.5 text-xs font-bold ${
-              machineState.isRunning ||
-              machineState.refillActive
-                ? 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed'
-                : 'border-sky-300 dark:border-sky-800 bg-sky-50 dark:bg-sky-950/40 text-sky-800 dark:text-sky-200'
-            }`}
-          >
-            <Droplets className="h-3.5 w-3.5" />
-            {t('btn_refill')}
-          </button>
-        )}
-      </div>
-
       {showRecoveryActions && (
         <div className="flex flex-wrap items-center gap-3 rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/50 px-4 py-3 shadow-2xs">
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-bold text-amber-900 dark:text-amber-100">
+              {recoveryTitle}
+            </p>
+            <p className="text-[11px] text-amber-800/80 dark:text-amber-200/80 mt-0.5">
+              {recoveryHint}
+            </p>
+          </div>
           {(recoveryStage === 'await_feed' || recoveryStage === 'after_feed') &&
             onRefillRetry && (
             <button
@@ -765,17 +714,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                     : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
                 }`}
               >
-                Todos ({sequenceSteps.length})
-              </button>
-              <button
-                onClick={() => setFilterType('action')}
-                className={`px-2.5 py-1 rounded-md transition cursor-pointer ${
-                  filterType === 'action'
-                    ? 'bg-white dark:bg-slate-700 font-bold text-slate-900 dark:text-white shadow-2xs'
-                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
-                }`}
-              >
-                Acciones
+                {t('cycle_sequence_title')} ({sequenceSteps.length})
               </button>
               <button
                 onClick={() => setFilterType('delay')}
@@ -785,17 +724,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                     : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
                 }`}
               >
-                Delays (⏱)
-              </button>
-              <button
-                onClick={() => setFilterType('parallel')}
-                className={`px-2.5 py-1 rounded-md transition cursor-pointer ${
-                  filterType === 'parallel'
-                    ? 'bg-white dark:bg-slate-700 font-bold text-amber-600 dark:text-amber-400 shadow-2xs'
-                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
-                }`}
-              >
-                || Prefetch/Join
+                {t('cycle_step_filter_delays')}
               </button>
             </div>
 
@@ -1047,293 +976,211 @@ export const CycleTab: React.FC<CycleTabProps> = ({
         </div>
       </div>
 
-      {/* Helpers: refill params (debajo de la secuencia) */}
-      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:px-6 shadow-2xs">
-        <div className="mb-3 flex items-center gap-2">
-          <Droplets className="h-4 w-4 text-sky-600 dark:text-sky-400" />
-          <h2 className="text-sm font-bold tracking-wider uppercase text-slate-900 dark:text-slate-100">
-            {t('refill_helpers_title')}
-          </h2>
-        </div>
-        <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">
-          {t('refill_helpers_subtitle')}
-        </p>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-lg">
-          <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-              {t('cfg_refill_mm')}
-            </label>
-            <input
-              type="number"
-              min={1}
-              step={0.5}
-              value={config.refillMm ?? 55}
-              onChange={(e) => updateConfigField('refillMm', Number(e.target.value))}
-              className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 focus:border-teal-500 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
-            />
+      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-3 shadow-2xs space-y-3">
+        <div>
+          <div className="mb-1.5 flex items-center gap-1.5">
+            <Droplets className="h-3.5 w-3.5 text-sky-600 dark:text-sky-400" />
+            <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+              {t('refill_helpers_title')}
+            </h3>
           </div>
-          <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-              {t('cfg_refill_asda')}
+          <div className={cfgGrid}>
+            <label className="min-w-0">
+              <span className={cfgLabel}>{t('cfg_refill_mm')}</span>
+              <input
+                type="number"
+                min={1}
+                step={0.5}
+                value={config.refillMm ?? 55}
+                onChange={(e) => updateConfigField('refillMm', Number(e.target.value))}
+                className={compactInputCls}
+              />
             </label>
-            <input
-              type="number"
-              step={1}
-              value={config.refillAsdaMm ?? -300}
-              onChange={(e) => updateConfigField('refillAsdaMm', Number(e.target.value))}
-              className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 focus:border-teal-500 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
-            />
+            <label className="min-w-0">
+              <span className={cfgLabel}>{t('cfg_refill_asda')}</span>
+              <input
+                type="number"
+                step={1}
+                value={config.refillAsdaMm ?? -300}
+                onChange={(e) => updateConfigField('refillAsdaMm', Number(e.target.value))}
+                className={compactInputCls}
+              />
+            </label>
           </div>
         </div>
-        <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-2">
-          {t('cfg_refill_hint')}
-        </p>
-      </div>
 
-      {/* SECTIONS 2 & 3: MATERIAL HANDLING & TIMEOUTS */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-        <div className="lg:col-span-5 flex flex-col justify-between rounded-xl border border-slate-200 dark:border-slate-800/80 bg-white dark:bg-slate-900 p-4 sm:p-6 shadow-2xs">
-          <div>
-            <div className="mb-5 pb-3 border-b border-slate-100 dark:border-slate-800">
-              <div className="flex items-center gap-2">
-                <Boxes className="h-4 w-4 text-teal-600 dark:text-teal-400" />
-                <h3 className="text-sm font-bold tracking-wider uppercase text-slate-900 dark:text-slate-100">
-                  {t('material_handling_title')}
-                </h3>
-              </div>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 font-mono">
-                {t('material_handling_subtitle')}
-              </p>
-            </div>
-
-            <div className="mb-4 space-y-1.5">
-              <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-                {t('cfg_feed_sides')}
-              </label>
-              <div className="flex items-center gap-1.5">
+        <div className="border-t border-slate-100 dark:border-slate-800 pt-2.5">
+          <div className="mb-1.5 flex items-center gap-1.5">
+            <Boxes className="h-3.5 w-3.5 text-teal-600 dark:text-teal-400" />
+            <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+              {t('material_handling_title')}
+            </h3>
+          </div>
+          <div className={cfgGrid}>
+            <div className="min-w-0">
+              <span className={cfgLabel}>{t('cfg_feed_sides')}</span>
+              <div className="flex h-7 items-center gap-1">
                 {(['L', 'R', 'LR'] as const).map((side) => (
                   <button
                     key={side}
                     type="button"
                     onClick={() => handleFeedSides(side)}
-                    className={`rounded-md px-3 py-1.5 text-xs font-mono font-semibold border transition ${
+                    className={`${cfgChip} ${
                       config.feedSides === side
                         ? 'bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 border-slate-900 dark:border-white'
-                        : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700'
+                        : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700'
                     }`}
                   >
                     {side === 'LR' ? t('cfg_feed_sides_both') : side}
                   </button>
                 ))}
               </div>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                {t('cfg_feed_sides_hint')}
-              </p>
             </div>
-
-            <div className="mb-4 space-y-1.5">
-              <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-                {t('cfg_pf_trigger')}
-              </label>
-              <div className="flex items-center gap-1.5">
+            <div className="min-w-0">
+              <span className={cfgLabel}>{t('cfg_pf_trigger')}</span>
+              <div className="flex h-7 items-center gap-1">
                 {([true, false] as const).map((on) => (
                   <button
                     key={on ? 'on' : 'off'}
                     type="button"
                     onClick={() => updateConfigField('pfTriggerEnabled', on)}
-                    className={`rounded-md px-3 py-1.5 text-xs font-mono font-semibold border transition ${
+                    className={`${cfgChip} ${
                       (config.pfTriggerEnabled !== false) === on
                         ? 'bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 border-slate-900 dark:border-white'
-                        : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700'
+                        : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700'
                     }`}
                   >
                     {on ? t('cfg_pf_trigger_on') : t('cfg_pf_trigger_off')}
                   </button>
                 ))}
               </div>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                {t('cfg_pf_trigger_hint')}
-              </p>
             </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-                  {t('cfg_deposito_batch_size')}
-                </label>
-                <input
-                  type="number"
-                  min={1}
-                  value={config.depositBatchSize}
-                  onChange={(e) => updateConfigField('depositBatchSize', Number(e.target.value))}
-                  className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 focus:border-teal-500 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-                  {t('cfg_deposito_extra')}
-                </label>
-                <input
-                  type="number"
-                  step={0.1}
-                  value={config.depositExtraMm}
-                  onChange={(e) => updateConfigField('depositExtraMm', Number(e.target.value))}
-                  className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 focus:border-teal-500 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-                  {t('cfg_deposito_stack_gap')}
-                </label>
-                <input
-                  type="number"
-                  step={0.1}
-                  min={0}
-                  value={config.depositStackGapMm ?? 20}
-                  onChange={(e) =>
-                    updateConfigField('depositStackGapMm', Number(e.target.value))
-                  }
-                  className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 focus:border-teal-500 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-                  {t('cfg_deposito_max_travel')}
-                </label>
-                <input
-                  type="number"
-                  step={1}
-                  min={1}
-                  value={config.depositMaxTravelMm ?? 1500}
-                  onChange={(e) =>
-                    updateConfigField('depositMaxTravelMm', Number(e.target.value))
-                  }
-                  className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 focus:border-teal-500 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-                  {t('cfg_gripper_clearance')}
-                </label>
-                <input
-                  type="number"
-                  step={0.1}
-                  min={0}
-                  value={config.gripperClearanceMm ?? 0}
-                  onChange={(e) =>
-                    updateConfigField('gripperClearanceMm', Number(e.target.value))
-                  }
-                  className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 focus:border-teal-500 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-                  {t('cfg_cut_offset')}
-                </label>
-                <input
-                  type="number"
-                  step={0.1}
-                  value={config.cutOffsetMm ?? 0}
-                  onChange={(e) => updateConfigField('cutOffsetMm', Number(e.target.value))}
-                  className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 focus:border-teal-500 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
-                />
-                <p className="text-[10px] font-mono text-slate-500 dark:text-slate-400">
-                  {t('cfg_cut_lineal_total')}:{' '}
-                  {(Math.abs(machineState.mm) + Number(config.cutOffsetMm ?? 0)).toFixed(1)} mm
-                  {' · '}
-                  {t('cfg_cut_offset_hint')}
-                </p>
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-                  {t('cfg_wip_blower_inicio_offset')}
-                </label>
-                <input
-                  type="number"
-                  step={0.1}
-                  value={config.wipBlowerInicioOffsetMm ?? 0}
-                  onChange={(e) =>
-                    updateConfigField('wipBlowerInicioOffsetMm', Number(e.target.value))
-                  }
-                  className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 focus:border-teal-500 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
-                />
-              </div>
-            </div>
+            <label className="min-w-0">
+              <span className={cfgLabel}>{t('cfg_deposito_batch_size')}</span>
+              <input
+                type="number"
+                min={1}
+                value={config.depositBatchSize}
+                onChange={(e) => updateConfigField('depositBatchSize', Number(e.target.value))}
+                className={compactInputCls}
+              />
+            </label>
+            <label className="min-w-0">
+              <span className={cfgLabel}>{t('cfg_deposito_extra')}</span>
+              <input
+                type="number"
+                step={0.1}
+                value={config.depositExtraMm}
+                onChange={(e) => updateConfigField('depositExtraMm', Number(e.target.value))}
+                className={compactInputCls}
+              />
+            </label>
+            <label className="min-w-0">
+              <span className={cfgLabel}>{t('cfg_deposito_stack_gap')}</span>
+              <input
+                type="number"
+                step={0.1}
+                min={0}
+                value={config.depositStackGapMm ?? 20}
+                onChange={(e) => updateConfigField('depositStackGapMm', Number(e.target.value))}
+                className={compactInputCls}
+              />
+            </label>
+            <label className="min-w-0">
+              <span className={cfgLabel}>{t('cfg_deposito_max_travel')}</span>
+              <input
+                type="number"
+                step={1}
+                min={1}
+                value={config.depositMaxTravelMm ?? 1500}
+                onChange={(e) => updateConfigField('depositMaxTravelMm', Number(e.target.value))}
+                className={compactInputCls}
+              />
+            </label>
+            <label className="min-w-0">
+              <span className={cfgLabel}>{t('cfg_gripper_clearance')}</span>
+              <input
+                type="number"
+                step={0.1}
+                min={0}
+                value={config.gripperClearanceMm ?? 0}
+                onChange={(e) => updateConfigField('gripperClearanceMm', Number(e.target.value))}
+                className={compactInputCls}
+              />
+            </label>
+            <label className="min-w-0">
+              <span className={cfgLabel}>{t('cfg_cut_offset')}</span>
+              <input
+                type="number"
+                step={0.1}
+                value={config.cutOffsetMm ?? 0}
+                onChange={(e) => updateConfigField('cutOffsetMm', Number(e.target.value))}
+                className={compactInputCls}
+              />
+            </label>
+            <label className="min-w-0">
+              <span className={cfgLabel}>{t('cfg_wip_blower_inicio_offset')}</span>
+              <input
+                type="number"
+                step={0.1}
+                value={config.wipBlowerInicioOffsetMm ?? 0}
+                onChange={(e) =>
+                  updateConfigField('wipBlowerInicioOffsetMm', Number(e.target.value))
+                }
+                className={compactInputCls}
+              />
+            </label>
           </div>
         </div>
 
-        <div className="lg:col-span-7 flex flex-col justify-between rounded-xl border border-slate-200 dark:border-slate-800/80 bg-white dark:bg-slate-900 p-4 sm:p-6 shadow-2xs">
-          <div>
-            <div className="mb-5 pb-3 border-b border-slate-100 dark:border-slate-800">
-              <div className="flex items-center gap-2">
-                <ShieldAlert className="h-4 w-4 text-teal-600 dark:text-teal-400" />
-                <h3 className="text-sm font-bold tracking-wider uppercase text-slate-900 dark:text-slate-100">
-                  {t('timeouts_title')}
-                </h3>
-              </div>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 font-mono">
-                {t('timeouts_subtitle')}
-              </p>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-                  {t('cfg_timeout_piece')}
-                </label>
-                <input
-                  type="number"
-                  min={3}
-                  value={config.pieceWatchTimeoutS ?? 20}
-                  onChange={(e) => updateConfigField('pieceWatchTimeoutS', Number(e.target.value))}
-                  className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 focus:border-teal-500 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-                  {t('cfg_timeout_motion')}
-                </label>
-                <input
-                  type="number"
-                  min={1}
-                  value={config.motionWaitTimeoutS}
-                  onChange={(e) => updateConfigField('motionWaitTimeoutS', Number(e.target.value))}
-                  className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 focus:border-teal-500 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-                  {t('cfg_timeout_feed')}
-                </label>
-                <input
-                  type="number"
-                  min={1}
-                  value={config.feedWaitTimeoutS}
-                  onChange={(e) => updateConfigField('feedWaitTimeoutS', Number(e.target.value))}
-                  className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 focus:border-teal-500 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-                  {t('cfg_timeout_pf_ready')}
-                </label>
-                <input
-                  type="number"
-                  min={1}
-                  value={config.pfReadyTimeoutS}
-                  onChange={(e) => updateConfigField('pfReadyTimeoutS', Number(e.target.value))}
-                  className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 px-3 py-2 text-sm font-mono text-slate-900 dark:text-slate-100 focus:border-teal-500 focus:outline-hidden focus:ring-1 focus:ring-teal-500"
-                />
-              </div>
-            </div>
+        <div className="border-t border-slate-100 dark:border-slate-800 pt-2.5">
+          <div className="mb-1.5 flex items-center gap-1.5">
+            <ShieldAlert className="h-3.5 w-3.5 text-teal-600 dark:text-teal-400" />
+            <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+              {t('timeouts_title')}
+            </h3>
+          </div>
+          <div className={cfgGrid}>
+            <label className="min-w-0">
+              <span className={cfgLabel}>{t('cfg_timeout_piece')}</span>
+              <input
+                type="number"
+                min={3}
+                value={config.pieceWatchTimeoutS ?? 20}
+                onChange={(e) => updateConfigField('pieceWatchTimeoutS', Number(e.target.value))}
+                className={compactInputCls}
+              />
+            </label>
+            <label className="min-w-0">
+              <span className={cfgLabel}>{t('cfg_timeout_motion')}</span>
+              <input
+                type="number"
+                min={1}
+                value={config.motionWaitTimeoutS}
+                onChange={(e) => updateConfigField('motionWaitTimeoutS', Number(e.target.value))}
+                className={compactInputCls}
+              />
+            </label>
+            <label className="min-w-0">
+              <span className={cfgLabel}>{t('cfg_timeout_feed')}</span>
+              <input
+                type="number"
+                min={1}
+                value={config.feedWaitTimeoutS}
+                onChange={(e) => updateConfigField('feedWaitTimeoutS', Number(e.target.value))}
+                className={compactInputCls}
+              />
+            </label>
+            <label className="min-w-0">
+              <span className={cfgLabel}>{t('cfg_timeout_pf_ready')}</span>
+              <input
+                type="number"
+                min={1}
+                value={config.pfReadyTimeoutS}
+                onChange={(e) => updateConfigField('pfReadyTimeoutS', Number(e.target.value))}
+                className={compactInputCls}
+              />
+            </label>
           </div>
         </div>
       </div>

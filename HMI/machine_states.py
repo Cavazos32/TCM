@@ -66,3 +66,23 @@ STATE_LABELS = {
 }
 
 MACHINE_STATE_BYTES = frozenset(STATE_LABELS.keys())
+
+
+def andon_tower_outputs(byte: int) -> dict[str, bool] | None:
+    """Luces esperadas para 0x40–0x49. None = N/A (Start/Reset: no cambiar)."""
+    b = int(byte) & 0xFF
+    if b in (MACH_START, MACH_RESET):
+        return None
+    if b in (MACH_INIT, MACH_IDLE, MACH_BUSY):
+        return {"green": True, "yellow": False, "red": False, "buzzer": False}
+    if b == MACH_STOP:
+        return {"green": False, "yellow": False, "red": True, "buzzer": False}
+    if b == MACH_ERROR:
+        return {"green": False, "yellow": False, "red": True, "buzzer": True}
+    if b == MACH_PAUSE:
+        return {"green": False, "yellow": True, "red": False, "buzzer": False}
+    if b == MACH_MATERIALIST:
+        return {"green": False, "yellow": True, "red": False, "buzzer": True}
+    if b == MACH_FINISH:
+        return {"green": False, "yellow": False, "red": True, "buzzer": True}
+    return None

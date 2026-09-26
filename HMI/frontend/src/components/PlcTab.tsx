@@ -58,7 +58,7 @@ export const PlcTab: React.FC<PlcTabProps> = ({
                   : 'text-slate-900 dark:text-white'
               }`}
             >
-              {plcState.statusText || (activeValvesCount > 0
+              {plcState.statusText || (hasError ? t('state_error') : activeValvesCount > 0
                 ? `${activeValvesCount} ${t('valves_active')}`
                 : t('state_ready'))}
             </span>

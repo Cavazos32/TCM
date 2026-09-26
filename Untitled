@@ -1,0 +1,3 @@
+Ocupamos quitar las Status bar que salen en la parte inferior de la HMI principal, los errores se muestran en el status bar global superior.
+
+si hay 1 o mas errores de modulos, se muestra como "EXXX: XXXX" + "N-QTY" Errores, por lo cual conforme se vayan solucionando se van mostrando los demas que estan encolados.

@@ -7,7 +7,7 @@ import {
   Clock,
   Pause,
   Settings2,
-  AlertTriangle,
+  Layers,
   Droplets,
   Check,
   X,
@@ -15,10 +15,12 @@ import {
   Zap,
   Package,
   Activity,
+  MessageSquare,
 } from 'lucide-react';
 import { MachineState, LogEntry, MotionState, PfRefillChannel, PlcState, PreFeederState } from '../types';
 import { LogTerminal } from './LogTerminal';
 import { useApp } from '../context/AppContext';
+import { isGenericErrorText } from '../api/mappers';
 
 type FaultModuleKind = 'motion' | 'plc' | 'prefeeder' | 'other';
 
@@ -41,60 +43,6 @@ function faultModuleKind(module?: string): FaultModuleKind {
   return 'other';
 }
 
-function isFullErrorText(text: string): boolean {
-  return /^E\d{3}\b/i.test(text.trim());
-}
-
-/** Solo el código EXXX para el banner del módulo (el detalle queda en el banner de máquina). */
-function extractFaultCode(code?: string, fault?: string): string {
-  const raw = (code || '').trim();
-  if (/^E\d{3}$/i.test(raw)) return raw.toUpperCase();
-  const m = (fault || '').match(/\bE\d{3}\b/i);
-  return m ? m[0].toUpperCase() : '';
-}
-
-/** Estado corto para operador; EXXX completo solo en error. */
-function operatorModuleStatus(
-  statusText: string | undefined,
-  hasError: boolean,
-  connected: boolean,
-  t: (key: 'node_disconnected' | 'module_status_ok' | 'state_error' | 'state_ready' | 'module_status_busy' | 'module_status_materialist' | 'pf_need_reset_start') => string,
-  mode?: 'materialist' | 'busy' | null
-): string {
-  if (!connected) return t('node_disconnected');
-  if (mode === 'materialist' && !hasError) {
-    return t('module_status_materialist');
-  }
-  const raw = (statusText || '').trim();
-  if (hasError) {
-    if (/errorstate/i.test(raw) || /0x03c/i.test(raw)) {
-      return t('pf_need_reset_start');
-    }
-    return raw || t('pf_need_reset_start');
-  }
-  if (mode === 'busy') {
-    return t('module_status_busy');
-  }
-  const lower = raw.toLowerCase();
-  if (!raw || lower.includes(' ok') || /(?:^|\b)ok(?:\b|$)/i.test(raw)) {
-    return t('module_status_ok');
-  }
-  if (lower.includes('ocupado') || lower.includes('busy')) {
-    return t('module_status_busy');
-  }
-  if (lower.includes('idle') || lower.includes('listo') || lower.includes('ready')) {
-    return t('state_ready');
-  }
-  const cleaned = raw
-    .replace(/^comando\s+[\w/-]+\s+/i, '')
-    .replace(/\s*\(0x[0-9a-fA-F]+\)\s*/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  if (!cleaned || /^ok$/i.test(cleaned)) return t('module_status_ok');
-  if (isFullErrorText(cleaned)) return cleaned;
-  return cleaned;
-}
-
 interface MaquinaTabProps {
   machineState: MachineState;
   motionState: MotionState;
@@ -111,7 +59,7 @@ interface MaquinaTabProps {
   onResume: () => void;
   onPause: () => void;
   onReset: () => void;
-  onMachineHome?: () => void;
+  onMachineHome?: () => void | Promise<void>;
   onRefill?: () => void;
   onRefillConfirm?: (ok: boolean) => void;
   onRefillRetry?: () => void;
@@ -121,10 +69,7 @@ interface MaquinaTabProps {
   onPfStart?: () => void;
   onPfStop?: () => void;
   onPfReset?: () => void;
-  onPfJogL?: () => void;
-  onPfJogR?: () => void;
   onPfRefill?: (side: 'L' | 'R', channel: PfRefillChannel, on: boolean) => void;
-  onBusy?: () => void;
   onMaterialist?: () => void;
   showLogs?: boolean;
   logs: LogEntry[];
@@ -155,12 +100,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
   onRecoveryReview,
   onGotoCycle,
   onPfStart,
-  onPfStop,
-  onPfReset,
-  onPfJogL,
-  onPfJogR,
   onPfRefill,
-  onBusy,
   onMaterialist,
   showLogs = true,
   logs,
@@ -170,6 +110,16 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
   const [offsetInput, setOffsetInput] = useState(String(machineState.offsetMm ?? 0));
   const offsetDirtyRef = useRef(false);
   const offsetSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [btnFlash, setBtnFlash] = useState({ stop: false, reset: false, home: false });
+  const btnFlashTimers = useRef<Partial<Record<'stop' | 'reset', ReturnType<typeof setTimeout>>>>({});
+
+  const pulseBtn = (key: 'stop' | 'reset') => {
+    setBtnFlash((prev) => ({ ...prev, [key]: true }));
+    if (btnFlashTimers.current[key]) clearTimeout(btnFlashTimers.current[key]);
+    btnFlashTimers.current[key] = setTimeout(() => {
+      setBtnFlash((prev) => ({ ...prev, [key]: false }));
+    }, 1400);
+  };
 
   useEffect(() => {
     if (offsetDirtyRef.current) return;
@@ -179,6 +129,9 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
   useEffect(() => {
     return () => {
       if (offsetSaveTimerRef.current) clearTimeout(offsetSaveTimerRef.current);
+      Object.values(btnFlashTimers.current).forEach((id) => {
+        if (id) clearTimeout(id);
+      });
     };
   }, []);
 
@@ -203,9 +156,6 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
     persistCutOffset(raw);
   };
 
-  const offsetParsed = parseFloat(offsetInput);
-  const linealTotalMm = Math.abs(machineState.mm) + (isNaN(offsetParsed) ? 0 : offsetParsed);
-
   const target = machineState.targetPieces > 0 ? machineState.targetPieces : 1;
   const progressPercentage = Math.min(
     100,
@@ -221,7 +171,6 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
 
   const elapsedSec = machineState.cycleTimeSec ?? 0;
   const lastPieceSec = machineState.lastPieceSec ?? 0;
-  const avgPieceSec = machineState.avgPieceSec ?? 0;
   const etaSec =
     machineState.cycleActive && stepProgress > 0 && stepProgress < 100
       ? Math.round((elapsedSec / stepProgress) * (100 - stepProgress))
@@ -238,9 +187,6 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
     machineState.workBlocked
   );
   const modKind = faultModuleKind(machineState.faultModule);
-  const latchedCode = hasFault
-    ? extractFaultCode(machineState.faultCode, machineState.fault)
-    : '';
   const motionLatched = hasFault && modKind === 'motion';
   const plcLatched = hasFault && modKind === 'plc';
   const pfLatched = hasFault && modKind === 'prefeeder';
@@ -261,9 +207,22 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
       : hasFault
         ? plcState.statusText || machineState.statusText || ''
         : '');
+  const faultQueue = machineState.faultQueue || [];
+  const rawFaultUi = faultQueue[0]?.ui || faultLabel;
+  const currentFaultUi = isGenericErrorText(rawFaultUi) ? '' : rawFaultUi;
+  const extraModuleFaults =
+    (!motionLatched && motionState.hasError && motionState.connection.connected ? 1 : 0) +
+    (!plcLatched && plcState.hasError && plcState.connection.connected ? 1 : 0) +
+    (!pfLatched && preFeederState.hasError && preFeederState.connection.connected ? 1 : 0);
+  const faultCount =
+    faultQueue.length > 0
+      ? faultQueue.length
+      : hasFault
+        ? 1 + extraModuleFaults
+        : 0;
   const interlockError = !hasFault && machineState.statusKind === 'error';
   const generalStatus = hasFault
-    ? faultLabel || t('state_error')
+    ? currentFaultUi || t('state_error')
     : interlockError
       ? machineState.statusText || t('err_materialist_start')
       : machineState.isPaused
@@ -274,38 +233,42 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
 
   const btnBase =
     'flex items-center justify-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-bold transition shadow-2xs active:scale-95';
+  const btnIdle =
+    'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 active:bg-slate-800 active:text-white active:border-slate-800 dark:active:bg-slate-100 dark:active:text-slate-900';
+  const btnOn =
+    'border-slate-900 dark:border-white bg-slate-800 dark:bg-slate-100 text-white dark:text-slate-900 ring-2 ring-slate-400/80 ring-offset-1 dark:ring-offset-slate-900';
+  const btnNeed =
+    'border-amber-400 bg-amber-100 dark:bg-amber-950/60 text-amber-950 dark:text-amber-100 ring-2 ring-amber-300 ring-offset-1 animate-pulse';
+  const btnNeedGo =
+    'border-emerald-500 bg-emerald-600 hover:bg-emerald-700 text-white ring-2 ring-emerald-300 ring-offset-1 animate-pulse';
+  const btnStartIdle =
+    'border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-900/50';
+  const btnStartOn =
+    'border-emerald-500 bg-emerald-500 text-white [&_svg]:text-white ring-2 ring-emerald-300 ring-offset-1 dark:ring-offset-slate-900 shadow-md';
+  const btnStopIdle =
+    'border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-900/40';
+  const btnStopOn =
+    'border-red-500 bg-red-500 text-white [&_svg]:text-white ring-2 ring-red-300 ring-offset-1 dark:ring-offset-slate-900 shadow-md';
+  const btnResetIdle =
+    'border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/50';
+  const btnResetOn =
+    'border-amber-500 bg-amber-500 text-white [&_svg]:text-white ring-2 ring-amber-300 ring-offset-1 dark:ring-offset-slate-900 shadow-md';
+  const btnPurgeIdle =
+    'border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-950/40 text-sky-800 dark:text-sky-200 hover:bg-sky-100 dark:hover:bg-sky-900/50';
+  const btnPurgeOn =
+    'border-sky-500 bg-sky-500 text-white [&_svg]:text-white ring-2 ring-sky-300 ring-offset-1 dark:ring-offset-slate-900 shadow-md';
+  const btnHomeIdle =
+    'border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-900/50';
+  const btnHomeOn =
+    'border-emerald-500 bg-emerald-500 text-white [&_svg]:text-white ring-2 ring-emerald-300 ring-offset-1 dark:ring-offset-slate-900 shadow-md';
+  const btnMatIdle =
+    'border-violet-200 dark:border-violet-800 bg-violet-50 dark:bg-violet-950/40 text-violet-800 dark:text-violet-200 hover:bg-violet-100 dark:hover:bg-violet-900/50';
+  const btnMatOn =
+    'border-violet-500 bg-violet-500 text-white [&_svg]:text-white ring-2 ring-violet-300 ring-offset-1 dark:ring-offset-slate-900 shadow-md';
 
-  const toDisplayMm = (internalMm: number) => -internalMm;
-  const activeValvesCount = plcState.valves.filter((v) => v.active).length;
-  const plcConnected = plcState.connection.connected;
-  const plcHasError = !!plcState.hasError && plcConnected;
   const pfConnected = preFeederState.connection.connected;
   const pfHasError = !!preFeederState.hasError && pfConnected;
-  const motionBannerFault =
-    motionLatched ||
-    (!!motionState.hasError && motionState.connection.connected);
-  const plcBannerFault = plcLatched || plcHasError;
-  const pfBannerFault = pfLatched || pfHasError;
-  const moduleBannerClass = (fault: boolean) =>
-    `rounded-xl border px-4 py-2.5 shadow-2xs flex flex-wrap items-center justify-between gap-3 transition-colors ${
-      fault
-        ? 'border-red-300 dark:border-red-800 bg-red-50/70 dark:bg-red-950/30 text-slate-800 dark:text-slate-200'
-        : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200'
-    }`;
-  const moduleTagClass = (fault: boolean) =>
-    `rounded px-2 py-0.5 font-mono text-[10px] font-bold uppercase tracking-wider shrink-0 ${
-      fault
-        ? 'bg-red-100 dark:bg-red-950/60 border border-red-300 dark:border-red-800 text-red-700 dark:text-red-300'
-        : 'bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400'
-    }`;
-  const faultCodeChip =
-    latchedCode ? (
-      <span className="rounded border border-red-300 dark:border-red-800 bg-red-100 dark:bg-red-950/60 px-1.5 py-0.5 font-mono text-[11px] font-semibold text-red-700 dark:text-red-300">
-        {latchedCode}
-      </span>
-    ) : null;
   // Module Controls keeps independent PF diagnostics; machine RESET owns the global EXXX latch.
-  const pfResetDisabled = !onPfReset || !pfConnected;
   const recoveryStage =
     machineState.recoveryPrompt ||
     (machineState.recoveryAfterError || machineState.e050Lot
@@ -315,7 +278,6 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
   const showRecoveryTrack = !!recoveryStage;
   const e050Lot = !!machineState.e050Lot;
   const skipCut = !!machineState.refillSkipCut;
-  const lotHeld = machineState.cycleActive || machineState.recoveryAfterError || machineState.isPaused;
 
   const processStep: string = e050Lot
     ? recoveryStage === 'e050_materialist'
@@ -365,6 +327,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
     recoveryStage === 'after_cut' ||
     (recoveryStage === 'e050_materialist' &&
       !!machineState.recoveryAwaitingConfirm) ||
+    recoveryStage === 'e050_materialist_wait' ||
     recoveryStage === 'review_piece' ||
     recoveryStage === 'continue_cycle';
 
@@ -374,9 +337,27 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
     !!machineState.refillActive &&
     !!machineState.refillPrompt &&
     !!onRefillConfirm;
+  const recoveryTitle =
+    recoveryStage === 'e050_materialist'
+      ? t('e050_materialist_title')
+      : recoveryStage === 'e050_materialist_wait'
+        ? t('e050_materialist_wait_title')
+        : recoveryStage === 'review_piece'
+          ? t('recovery_review_title')
+          : recoveryStage === 'continue_cycle'
+            ? t('recovery_continue_title')
+            : recoveryStage === 'after_cut'
+              ? t('refill_confirm_title_cut')
+              : recoveryStage === 'working'
+                ? t('refill_confirm_title_working')
+                : recoveryStage === 'await_feed'
+                  ? t('refill_confirm_title_await')
+                  : t('refill_confirm_title_feed');
   const recoveryHint =
     recoveryStage === 'e050_materialist'
-      ? t('e050_materialist_hint')
+      ? machineState.e050FinishPiece
+        ? `${t('e050_materialist_hint')} ${t('lot_recover_hint_e050_finish')}`
+        : t('e050_materialist_hint')
       : recoveryStage === 'e050_materialist_wait'
         ? t('e050_materialist_wait_hint')
         : recoveryStage === 'review_piece'
@@ -458,120 +439,20 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
         ? t('status_in_process')
         : t('status_idle');
 
-  const moduleCard = (
-    title: string,
-    statusText: string | undefined,
-    connected: boolean,
-    hasError: boolean,
-    actions: React.ReactNode,
-    mode?: 'materialist' | 'busy' | null,
-    cardFaultCode?: string
-  ) => {
-    const showError = hasError && connected;
-    return (
-      <div
-        className={`rounded-lg border p-3 transition-colors ${
-          showError
-            ? 'border-red-300 dark:border-red-800 bg-red-50/60 dark:bg-red-950/30'
-            : 'border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-800/40'
-        }`}
-      >
-        <div className="flex items-center justify-between gap-2 mb-2">
-          <div className="flex items-center gap-2 min-w-0">
-            <span
-              className={`h-2 w-2 shrink-0 rounded-full ${
-                showError
-                  ? 'bg-red-500'
-                  : connected
-                    ? 'bg-emerald-500'
-                    : 'bg-slate-400'
-              }`}
-            />
-            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-800 dark:text-slate-200 truncate">
-              {title}
-            </h3>
-            {showError && cardFaultCode ? (
-              <span className="rounded border border-red-300 dark:border-red-800 bg-red-100 dark:bg-red-950/60 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-red-700 dark:text-red-300">
-                {cardFaultCode}
-              </span>
-            ) : null}
-          </div>
-        </div>
-        <p
-          className={`text-[11px] mb-3 line-clamp-2 min-h-[2rem] ${
-            showError
-              ? 'text-red-700 dark:text-red-300 font-medium'
-              : 'text-slate-600 dark:text-slate-400'
-          }`}
-        >
-          {showError && cardFaultCode
-            ? t('state_error')
-            : operatorModuleStatus(statusText, showError, connected, t, mode)}
-        </p>
-        <div className="flex flex-wrap items-center gap-1.5">{actions}</div>
-      </div>
-    );
-  };
-
-  const pfJogCard = (side: 'L' | 'R') => {
-    const refill = (side === 'L' ? preFeederState.refillL : preFeederState.refillR) || {
-      material: false,
-      dereeler: false,
-      servo: false,
-      feeder: false,
-    };
-    const enabled =
-      !!onPfRefill &&
-      pfInMaterialist &&
-      preFeederState.connection.connected &&
-      !machineState.cycleActive;
-    const channels: { id: PfRefillChannel; label: 'pf_refill_material' | 'pf_refill_dereeler' | 'pf_refill_servo' | 'pf_refill_feeder' }[] = [
-      { id: 'material', label: 'pf_refill_material' },
-      { id: 'dereeler', label: 'pf_refill_dereeler' },
-      { id: 'servo', label: 'pf_refill_servo' },
-      { id: 'feeder', label: 'pf_refill_feeder' },
-    ];
-    return (
-      <div
-        key={side}
-        className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-800/40 p-3 min-w-0"
-      >
-        <div className="flex items-center justify-between gap-2 mb-2">
-          <h3 className="text-xs font-bold uppercase tracking-wider text-slate-800 dark:text-slate-200">
-            {side === 'L' ? t('pf_jog_l') : t('pf_jog_r')}
-          </h3>
-        </div>
-        <p className="text-[10px] text-slate-500 dark:text-slate-400 mb-3">
-          {enabled ? t('pf_refill_hint') : t('pf_jog_need_materialist')}
-        </p>
-        <div className="grid grid-cols-2 gap-1.5">
-          {channels.map((ch) => {
-            const on = refill[ch.id];
-            return (
-              <button
-                key={ch.id}
-                id={`btn-main-pf-refill-${side.toLowerCase()}-${ch.id}`}
-                type="button"
-                onClick={() => onPfRefill?.(side, ch.id, !on)}
-                disabled={!enabled}
-                className={`${btnBase} ${
-                  on
-                    ? 'border-amber-400 bg-amber-100 dark:bg-amber-950/50 text-amber-900 dark:text-amber-200'
-                    : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50'
-                } disabled:opacity-40`}
-              >
-                <span>{t(ch.label)}</span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-    );
-  };
+  const jogEnabled =
+    !!onPfRefill && (pfInMaterialist || !!preFeederState.idleMode);
+  const jogLOn = !!preFeederState.refillL?.material;
+  const jogROn = !!preFeederState.refillR?.material;
 
   return (
     <div className="space-y-4">
-      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-2.5 text-slate-800 dark:text-slate-200 shadow-2xs flex flex-wrap items-center justify-between gap-3 transition-colors">
+      <div
+        className={`rounded-xl border px-4 py-2.5 shadow-2xs flex flex-wrap items-center justify-between gap-3 transition-colors ${
+          hasFault || interlockError
+            ? 'border-red-300 dark:border-red-800 bg-red-50/70 dark:bg-red-950/30 text-slate-800 dark:text-slate-200'
+            : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200'
+        }`}
+      >
         <div className="flex items-center gap-2.5 min-w-0">
           <div
             className={`h-2.5 w-2.5 shrink-0 rounded-full ${
@@ -583,8 +464,6 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                 ? 'bg-amber-500'
                 : machineState.cycleMaterialist
                 ? 'bg-violet-500'
-                : machineState.cycleBusy
-                ? 'bg-emerald-500'
                 : 'bg-slate-400'
             }`}
           />
@@ -596,54 +475,19 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
             }`}
             title={hasFault || interlockError ? generalStatus : undefined}
           >
-            {hasFault ? t('state_error') : generalStatus}
+            {hasFault
+              ? currentFaultUi || t('state_error')
+              : interlockError
+                ? machineState.statusText || t('err_materialist_start')
+                : t('state_ready')}
           </span>
-          {hasFault && faultLabel ? (
-            <span className="rounded border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/50 px-2 py-0.5 font-mono text-[11px] font-semibold text-red-700 dark:text-red-300 truncate max-w-[min(100%,36rem)]">
-              {faultLabel}
+          {hasFault && faultCount >= 1 ? (
+            <span className="rounded border border-red-300 dark:border-red-800 bg-red-100 dark:bg-red-950/60 px-2 py-0.5 font-mono text-[11px] font-semibold text-red-700 dark:text-red-300 shrink-0">
+              {t(faultCount === 1 ? 'status_error_qty' : 'status_errors_qty', {
+                count: faultCount,
+              })}
             </span>
           ) : null}
-          {!hasFault && machineState.lastFault ? (
-            <span
-              className="rounded border border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-800 px-2 py-0.5 font-mono text-[11px] font-semibold text-slate-700 dark:text-slate-200 truncate max-w-[min(100%,36rem)]"
-              title={machineState.lastFault}
-            >
-              {t('lot_recover_last_error')}: {machineState.lastFault}
-            </span>
-          ) : null}
-          {machineState.cycleCompleted && !hasFault && (
-            <span className="text-xs font-mono text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 px-2 py-0.5 rounded">
-              {t('cycle_complete')}
-            </span>
-          )}
-          {machineState.cycleActive && machineState.cycleStep > 0 && (
-            <span className="text-xs font-mono text-teal-700 dark:text-teal-300 bg-teal-50 dark:bg-teal-950/50 border border-teal-200 dark:border-teal-800 px-2 py-0.5 rounded">
-              {t('cycle_step_status').replace('{step}', String(machineState.cycleStep))}
-              {machineState.cycleStepLabel ? ` · ${machineState.cycleStepLabel}` : ''}
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-4 text-xs font-mono flex-wrap">
-          <div>
-            <span className="text-slate-500 dark:text-slate-400">{t('mm_rpm_label')}: </span>
-            <span className="text-slate-800 dark:text-slate-200 font-semibold">
-              {(-machineState.mm).toFixed(1)} mm @ {machineState.rpm} RPM
-            </span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span className="text-slate-500 dark:text-slate-400">{t('pieces')}: </span>
-            <span className="text-emerald-700 dark:text-emerald-300 font-semibold bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 px-2 py-0.5 rounded text-xs">
-              {machineState.piecesCount} / {machineState.targetPieces}
-            </span>
-            {machineState.cycleActive && (
-              <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400">
-                (en curso {Math.min(machineState.piecesCount + 1, machineState.targetPieces)})
-              </span>
-            )}
-            <span className="font-bold text-slate-700 dark:text-slate-300">
-              ({progressPercentage}%)
-            </span>
-          </div>
         </div>
       </div>
 
@@ -672,8 +516,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
           </div>
         </div>
 
-        <div className="mt-4 flex flex-col lg:flex-row gap-4 lg:gap-5 items-stretch">
-          <div className="flex-1 min-w-0 space-y-4">
+        <div className="mt-4 space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-start">
               <div className="space-y-1.5">
                 <label htmlFor="select-modelo" className="text-xs font-semibold text-slate-700 dark:text-slate-300 block">
@@ -720,12 +563,6 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                   />
                   <span className="absolute right-3 text-xs font-mono text-slate-400 pointer-events-none">mm</span>
                 </div>
-                <p
-                  className="text-[10px] font-mono text-slate-500 dark:text-slate-400"
-                  title={t('cfg_cut_offset_hint')}
-                >
-                  {t('cfg_cut_lineal_total')}: {linealTotalMm.toFixed(1)} mm
-                </p>
               </div>
 
               <div className="space-y-1.5">
@@ -770,37 +607,221 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                   style={{ width: `${stepProgress}%` }}
                 />
               </div>
-              {(machineState.cycleActive || elapsedSec > 0 || lastPieceSec > 0) && (
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] font-mono text-slate-600 dark:text-slate-400">
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[10px] font-mono text-slate-600 dark:text-slate-400">
+                <span>
+                  {t('pieces')}:{' '}
+                  <strong className="text-slate-800 dark:text-slate-200">
+                    {machineState.piecesCount} / {machineState.targetPieces}
+                  </strong>
+                </span>
+                <span>
+                  {t('cycle_time_remaining')}:{' '}
+                  <strong className="text-teal-700 dark:text-teal-300">
+                    {machineState.cycleActive && etaSec > 0 ? `~${fmtSec(etaSec)}` : '—'}
+                  </strong>
+                </span>
+                {(machineState.cycleActive || elapsedSec > 0) && (
                   <span title={t('cycle_time_hint')}>
                     {t('cycle_time_label')}:{' '}
-                    <strong className="text-teal-700 dark:text-teal-300">
+                    <strong className="text-slate-800 dark:text-slate-200">
                       {fmtSec(elapsedSec)}
                     </strong>
-                    {machineState.cycleActive && etaSec > 0 ? ` · ~${fmtSec(etaSec)}` : ''}
                   </span>
-                  {lastPieceSec > 0 && (
-                    <span>
-                      {t('cycle_time_piece')}:{' '}
-                      <strong className="text-slate-800 dark:text-slate-200">
-                        {lastPieceSec.toFixed(1)}s
-                      </strong>
-                    </span>
-                  )}
-                  {avgPieceSec > 0 && (machineState.targetPieces || 0) > 1 && (
-                    <span>
-                      {t('cycle_time_avg')}:{' '}
-                      <strong className="text-slate-800 dark:text-slate-200">
-                        {avgPieceSec.toFixed(1)}s
-                      </strong>
-                    </span>
-                  )}
-                </div>
-              )}
+                )}
+                {lastPieceSec > 0 && (
+                  <span>
+                    {t('cycle_time_piece')}:{' '}
+                    <strong className="text-slate-800 dark:text-slate-200">
+                      {lastPieceSec.toFixed(1)}s
+                    </strong>
+                  </span>
+                )}
+              </div>
             </div>
 
+            <div className="flex items-stretch gap-2">
+                <button
+                  id="btn-start-maquina"
+                  onClick={onStart}
+                  disabled={startDisabled}
+                  title={
+                    showErrorProcess
+                      ? processHint
+                      : machineState.cycleMaterialist
+                        ? t('err_materialist_start')
+                        : undefined
+                  }
+                  className={`${btnBase} min-w-0 flex-1 ${
+                    startDisabled
+                      ? 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed'
+                      : machineState.isRunning || processStep === 'start'
+                        ? `${btnStartOn}${processStep === 'start' && !machineState.isRunning ? ' animate-pulse' : ''}`
+                        : btnStartIdle
+                  }`}
+                >
+                  <Play className="h-3.5 w-3.5 fill-current" />
+                  <span>{t('btn_start')}</span>
+                </button>
+                <button
+                  id="btn-stop-maquina"
+                  onClick={() => {
+                    pulseBtn('stop');
+                    onStop();
+                  }}
+                  className={`${btnBase} min-w-0 flex-1 ${
+                    btnFlash.stop ? btnStopOn : btnStopIdle
+                  }`}
+                >
+                  <Square className={`h-3.5 w-3.5 fill-current ${btnFlash.stop ? '' : 'text-red-600'}`} />
+                  <span>{t('btn_stop')}</span>
+                </button>
+                <button
+                  id="btn-reset-maquina"
+                  onClick={() => {
+                    pulseBtn('reset');
+                    onReset();
+                  }}
+                  title={
+                    showMachineResetCoach
+                      ? t('lot_recover_hint_reset')
+                      : undefined
+                  }
+                  className={`${btnBase} min-w-0 flex-1 ${
+                    showMachineResetCoach || btnFlash.reset ? btnResetOn : btnResetIdle
+                  }`}
+                >
+                  <RotateCcw className="h-3.5 w-3.5" />
+                  <span>{t('btn_reset_cycle')}</span>
+                </button>
+                <button
+                  id="btn-pause-maquina"
+                  onClick={onPause}
+                  disabled={!machineState.pauseEnabled || pfProdLocked}
+                  className={`${btnBase} min-w-0 flex-1 disabled:opacity-40 disabled:cursor-not-allowed ${
+                    machineState.isPaused
+                      ? `${btnOn} text-white dark:text-slate-900`
+                      : machineState.pauseEnabled
+                        ? btnNeed
+                        : btnIdle
+                  }`}
+                >
+                  <Pause className="h-3.5 w-3.5" />
+                  <span>{t('btn_pause')}</span>
+                </button>
+                <button
+                  id="btn-reanudar-maquina"
+                  onClick={onResume}
+                  disabled={resumeDisabled}
+                  title={
+                    showMachineResumeCoach
+                      ? t('lot_recover_hint_resume')
+                      : showMachineResetCoach
+                        ? t('lot_recover_hint_reset')
+                        : undefined
+                  }
+                  className={`group ${btnBase} min-w-0 flex-1 disabled:opacity-40 disabled:cursor-not-allowed ${
+                    showMachineResumeCoach ? btnNeedGo : btnIdle
+                  }`}
+                >
+                  <RotateCcw className="h-3.5 w-3.5 group-hover:rotate-45 transition-transform" />
+                  <span>
+                    {machineState.stepByStep && machineState.isPaused
+                      ? t('btn_next_step')
+                      : t('btn_resume')}
+                  </span>
+                </button>
+
+                <div className="w-px shrink-0 self-stretch bg-slate-200 dark:bg-slate-700" />
+
+                <button
+                  id="btn-refill-maquina"
+                  type="button"
+                  onClick={onRefill}
+                  disabled={!onRefill}
+                  title={t('refill_helpers_subtitle')}
+                  className={`${btnBase} min-w-0 flex-1 ${
+                    !onRefill
+                      ? 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed'
+                      : machineState.refillActive
+                        ? btnPurgeOn
+                        : btnPurgeIdle
+                  }`}
+                >
+                  <Droplets className="h-3.5 w-3.5" />
+                  <span>{t('btn_refill')}</span>
+                </button>
+                <button
+                  id="btn-home-maquina"
+                  type="button"
+                  onClick={() => {
+                    if (!onMachineHome || btnFlash.home) return;
+                    setBtnFlash((prev) => ({ ...prev, home: true }));
+                    const started = Date.now();
+                    void Promise.resolve(onMachineHome()).finally(() => {
+                      const wait = Math.max(0, 800 - (Date.now() - started));
+                      window.setTimeout(() => {
+                        setBtnFlash((prev) => ({ ...prev, home: false }));
+                      }, wait);
+                    });
+                  }}
+                  disabled={!onMachineHome}
+                  title={t('btn_machine_home_hint')}
+                  className={`${btnBase} min-w-0 flex-1 ${
+                    !onMachineHome
+                      ? 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed'
+                      : btnFlash.home
+                        ? btnHomeOn
+                        : btnHomeIdle
+                  }`}
+                >
+                  <Home className="h-3.5 w-3.5" />
+                  <span>{t('btn_machine_home')}</span>
+                </button>
+                <button
+                  id="btn-main-pf-materialist"
+                  type="button"
+                  onClick={onMaterialist}
+                  disabled={!onMaterialist}
+                  title={
+                    machineState.cycleMaterialist
+                      ? t('pf_recover_hint_jog')
+                      : t('pf_jog_need_materialist')
+                  }
+                  className={`${btnBase} min-w-0 flex-1 ${
+                    !onMaterialist
+                      ? 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed'
+                      : machineState.cycleMaterialist
+                        ? btnMatOn
+                        : btnMatIdle
+                  }`}
+                >
+                  <Package className="h-3.5 w-3.5" />
+                  <span>{t('btn_materialist_cycle')}</span>
+                </button>
+            </div>
+
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <MessageSquare className="h-3.5 w-3.5 text-slate-500 dark:text-slate-400" />
+                <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                  {t('process_assist_title')}
+                </h3>
+              </div>
+            {!showRecoveryActions && !showManualRefill && (
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                {t('process_assist_idle')}
+              </p>
+            )}
             {showRecoveryActions && (
               <div className="flex flex-wrap items-center gap-3 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/50 px-4 py-3">
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-bold text-amber-900 dark:text-amber-100">
+                    {recoveryTitle}
+                  </p>
+                  <p className="text-[11px] text-amber-800/80 dark:text-amber-200/80 mt-0.5">
+                    {recoveryHint}
+                  </p>
+                </div>
                 {(recoveryStage === 'await_feed' || recoveryStage === 'after_feed') &&
                   onRefillRetry && (
                   <button
@@ -976,369 +997,14 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                 )}
               </div>
             )}
-          </div>
-
-          <div className="w-full lg:w-40 shrink-0 flex flex-col gap-2 border-t lg:border-t-0 lg:border-l border-slate-100 dark:border-slate-800 pt-4 lg:pt-0 lg:pl-4">
-            {showPfCoach && (
-              <div className="rounded-md border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-2 py-1.5 text-[10px] leading-snug text-amber-900 dark:text-amber-100">
-                <p className="font-bold uppercase tracking-wide">
-                  {t('status_materialist')}
-                </p>
-                <p className="mt-0.5">
-                  {resumeEnabled
-                      ? t('pf_recover_hint_jog_resume')
-                      : t('pf_recover_hint_jog')}
-                </p>
-                {false && (
-                  <p className="mt-1 font-mono text-[10px] text-amber-800 dark:text-amber-200">
-                    <span className="font-bold underline">{t('pf_recover_step_reset')}</span>
-                    {' → '}
-                    <span className="opacity-50">{t('pf_recover_step_setup')}</span>
-                    {' → '}
-                    <span className="opacity-50">
-                      {resumeEnabled ? t('pf_recover_step_resume') : t('pf_recover_step_start')}
-                    </span>
-                  </p>
-                )}
-              </div>
-            )}
-            <button
-              id="btn-start-maquina"
-              onClick={onStart}
-              disabled={startDisabled}
-              title={
-                showErrorProcess
-                    ? processHint
-                    : machineState.cycleMaterialist
-                      ? t('err_materialist_start')
-                      : undefined
-              }
-              className={`flex w-full items-center justify-center gap-1.5 rounded-lg px-3 py-2.5 text-xs font-bold tracking-wide transition-all shadow-2xs ${
-                startDisabled
-                  ? 'bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed border border-slate-200 dark:border-slate-700'
-                  : processStep === 'start'
-                    ? 'bg-emerald-600 hover:bg-emerald-700 text-white ring-2 ring-emerald-300 ring-offset-1 animate-pulse'
-                    : 'bg-emerald-600 hover:bg-emerald-700 text-white active:scale-[0.98]'
-              }`}
-            >
-              <Play className="h-3.5 w-3.5 fill-current" />
-              <span>{t('btn_start')}</span>
-            </button>
-
-            <button
-              id="btn-pause-maquina"
-              onClick={onPause}
-              disabled={!machineState.pauseEnabled || pfProdLocked}
-              className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 hover:bg-amber-100 px-3 py-2.5 text-xs font-semibold text-amber-800 dark:text-amber-200 transition shadow-2xs disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              <Pause className="h-3.5 w-3.5" />
-              <span>{t('btn_pause')}</span>
-            </button>
-
-            <button
-              id="btn-stop-maquina"
-              onClick={onStop}
-              className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/40 hover:bg-red-100 px-3 py-2.5 text-xs font-bold text-red-700 dark:text-red-300 transition active:scale-[0.98] shadow-2xs"
-            >
-              <Square className="h-3.5 w-3.5 fill-current text-red-600" />
-              <span>{t('btn_stop')}</span>
-            </button>
-
-            <button
-              id="btn-reset-maquina"
-              onClick={onReset}
-              title={
-                showMachineResetCoach
-                  ? t('lot_recover_hint_reset')
-                  : undefined
-              }
-              className={`flex w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-2.5 text-xs font-semibold transition shadow-2xs disabled:opacity-40 disabled:cursor-not-allowed ${
-                showMachineResetCoach
-                  ? 'border-amber-400 bg-amber-100 dark:bg-amber-950/60 text-amber-950 dark:text-amber-100 ring-2 ring-amber-300 ring-offset-1 animate-pulse'
-                  : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 text-slate-700 dark:text-slate-200'
-              }`}
-            >
-              <RotateCcw className="h-3.5 w-3.5 text-amber-600" />
-              <span>{t('btn_reset_cycle')}</span>
-            </button>
-
-            <button
-              id="btn-reanudar-maquina"
-              onClick={onResume}
-              disabled={resumeDisabled}
-              title={
-                showMachineResumeCoach
-                    ? t('lot_recover_hint_resume')
-                    : showMachineResetCoach
-                      ? t('lot_recover_hint_reset')
-                      : undefined
-              }
-              className={`group flex w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-2.5 text-xs font-semibold transition shadow-2xs disabled:opacity-40 disabled:cursor-not-allowed ${
-                showMachineResumeCoach
-                  ? 'border-emerald-400 bg-emerald-100 dark:bg-emerald-950/50 text-emerald-900 dark:text-emerald-100 ring-2 ring-emerald-300 ring-offset-1 animate-pulse'
-                  : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 text-slate-700 dark:text-slate-200'
-              }`}
-            >
-              <RotateCcw className="h-3.5 w-3.5 group-hover:rotate-45 transition-transform" />
-              <span>
-                {machineState.stepByStep && machineState.isPaused
-                  ? t('btn_next_step')
-                  : t('btn_resume')}
-              </span>
-            </button>
-
-            <div className="border-t border-slate-200 dark:border-slate-700 my-1" />
-
-            {onRefill && (
-              <button
-                id="btn-refill-maquina"
-                type="button"
-                onClick={onRefill}
-                disabled={machineState.isRunning || machineState.refillActive}
-                title={t('refill_helpers_subtitle')}
-                className={`flex w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-2.5 text-xs font-bold transition shadow-2xs ${
-                  machineState.isRunning || machineState.refillActive
-                    ? 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed'
-                    : 'border-sky-300 dark:border-sky-800 bg-sky-50 dark:bg-sky-950/40 text-sky-800 dark:text-sky-200 hover:bg-sky-100 dark:hover:bg-sky-900/50 active:scale-[0.98]'
-                }`}
-              >
-                <Droplets className="h-3.5 w-3.5" />
-                <span>{t('btn_refill')}</span>
-              </button>
-            )}
-
-            <button
-              id="btn-home-maquina"
-              type="button"
-              onClick={onMachineHome}
-              disabled={!onMachineHome || machineState.isRunning}
-              title={t('btn_machine_home_hint')}
-              className={`flex w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-2.5 text-xs font-bold transition shadow-2xs ${
-                !onMachineHome || machineState.isRunning
-                  ? 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed'
-                  : 'border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 active:scale-[0.98]'
-              }`}
-            >
-              <Home className="h-3.5 w-3.5" />
-              <span>{t('btn_machine_home')}</span>
-            </button>
-
-            <button
-              id="btn-main-pf-materialist"
-              type="button"
-              onClick={onMaterialist}
-              disabled={!onMaterialist || machineState.cycleActive}
-              title={
-                machineState.cycleMaterialist
-                  ? t('pf_recover_hint_jog')
-                  : t('pf_jog_need_materialist')
-              }
-              className={`flex w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-2.5 text-xs font-bold transition shadow-2xs ${
-                !onMaterialist || machineState.cycleActive
-                  ? 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed'
-                  : machineState.cycleMaterialist
-                    ? 'border-violet-400 bg-violet-100 dark:bg-violet-950/50 text-violet-900 dark:text-violet-100 ring-2 ring-violet-300/80 ring-offset-1 dark:ring-offset-slate-900'
-                    : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 active:scale-[0.98]'
-              }`}
-            >
-              <Package className="h-3.5 w-3.5" />
-              <span>{t('btn_materialist_cycle')}</span>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* Estados de módulo — debajo de Control de máquina */}
-      <div className="space-y-2">
-        <div className={moduleBannerClass(motionBannerFault)}>
-          <div className="flex items-center gap-3 min-w-0">
-            <span className={moduleTagClass(motionBannerFault)}>
-              {t('tab_motion')}
-            </span>
-            <div className="flex items-center gap-2 min-w-0">
-              <span
-                className={`h-2.5 w-2.5 rounded-full shrink-0 ${
-                  !motionState.connection.connected || motionBannerFault
-                    ? 'bg-red-500'
-                    : motionState.isMoving
-                      ? 'bg-amber-500 animate-ping'
-                      : 'bg-emerald-500'
-                }`}
-              />
-              {motionLatched ? (
-                <>
-                  <span className="text-sm font-semibold tracking-tight text-red-700 dark:text-red-300">
-                    {t('state_error')}
-                  </span>
-                  {faultCodeChip}
-                </>
-              ) : (
-                <span
-                  className={`text-sm font-semibold tracking-tight truncate ${
-                    motionBannerFault
-                      ? 'text-red-700 dark:text-red-300'
-                      : 'text-slate-900 dark:text-white'
-                  }`}
-                >
-                  {motionState.statusText || (motionState.isMoving ? t('motor_moving') : t('state_ready'))}
-                </span>
-              )}
-            </div>
-
-            <span className="text-slate-300 dark:text-slate-700 hidden sm:inline">|</span>
-
-            <div className="flex items-center gap-1.5 font-mono text-xs text-slate-600 dark:text-slate-400">
-              <span className="text-slate-400 dark:text-slate-500">{t('link_label')}:</span>
-              <span className={`font-semibold ${motionState.connection.connected ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
-                {motionState.connection.connected ? t('node_connected') : t('node_disconnected')}
-              </span>
-              <span className="text-slate-400 dark:text-slate-500 text-[11px]">
-                ({motionState.connection.ip}:{motionState.connection.port})
-              </span>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1.5 text-xs font-mono">
-              <span className="text-slate-500 dark:text-slate-400">{t('current_position')}:</span>
-              <span className="font-bold text-slate-900 dark:text-white bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-md border border-slate-200 dark:border-slate-700">
-                {toDisplayMm(motionState.currentPositionMm).toFixed(2)} mm
-              </span>
             </div>
           </div>
         </div>
-
-        <div className={moduleBannerClass(plcBannerFault)}>
-          <div className="flex items-center gap-3 min-w-0">
-            <span className={moduleTagClass(plcBannerFault)}>
-              {t('tab_plc')}
-            </span>
-            <div className="flex items-center gap-2 min-w-0">
-              <span
-                className={`h-2.5 w-2.5 rounded-full shrink-0 ${
-                  !plcConnected || plcBannerFault
-                    ? 'bg-red-500'
-                    : 'bg-emerald-500 animate-pulse'
-                }`}
-              />
-              {plcLatched ? (
-                <>
-                  <span className="text-sm font-semibold tracking-tight text-red-700 dark:text-red-300">
-                    {t('state_error')}
-                  </span>
-                  {faultCodeChip}
-                </>
-              ) : (
-                <span
-                  className={`text-sm font-semibold tracking-tight truncate ${
-                    plcBannerFault
-                      ? 'text-red-700 dark:text-red-300'
-                      : 'text-slate-900 dark:text-white'
-                  }`}
-                >
-                  {plcState.statusText || (activeValvesCount > 0
-                    ? `${activeValvesCount} ${t('valves_active')}`
-                    : t('state_ready'))}
-                </span>
-              )}
-            </div>
-
-            <span className="text-slate-300 dark:text-slate-700 hidden sm:inline">|</span>
-
-            <div className="flex items-center gap-1.5 font-mono text-xs text-slate-600 dark:text-slate-400">
-              <span className="text-slate-400 dark:text-slate-500">{t('link_label')}:</span>
-              <span className={`font-semibold ${plcConnected ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
-                {plcConnected ? t('node_connected') : t('node_disconnected')}
-              </span>
-              <span className="text-slate-400 dark:text-slate-500 text-[11px]">
-                ({plcState.connection.ip}:{plcState.connection.port})
-              </span>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1.5 text-xs font-mono">
-              <span className="text-slate-500 dark:text-slate-400">{t('valves_status')}:</span>
-              <span className="font-bold text-slate-900 dark:text-white bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded-md border border-slate-200 dark:border-slate-700">
-                {activeValvesCount} / {plcState.valves.length} ON
-              </span>
-            </div>
-          </div>
-        </div>
-
-        <div className={moduleBannerClass(pfBannerFault)}>
-          <div className="flex items-center gap-3 min-w-0">
-            <span className={moduleTagClass(pfBannerFault)}>
-              {t('tab_prefeeder')}
-            </span>
-            <div className="flex items-center gap-2 min-w-0">
-              <span
-                className={`h-2.5 w-2.5 rounded-full shrink-0 ${
-                  !pfConnected || pfBannerFault
-                    ? 'bg-red-500'
-                    : pfMode === 'materialist'
-                      ? 'bg-violet-500'
-                      : pfMode === 'busy'
-                        ? 'bg-emerald-500 animate-pulse'
-                        : 'bg-emerald-500'
-                }`}
-              />
-              {pfLatched ? (
-                <>
-                  <span className="text-sm font-semibold tracking-tight text-red-700 dark:text-red-300">
-                    {t('state_error')}
-                  </span>
-                  {faultCodeChip}
-                </>
-              ) : (
-                <span
-                  className={`text-sm font-semibold tracking-tight truncate ${
-                    pfBannerFault
-                      ? 'text-red-700 dark:text-red-300'
-                      : 'text-slate-900 dark:text-white'
-                  }`}
-                >
-                  {pfHeadline}
-                </span>
-              )}
-            </div>
-
-            <span className="text-slate-300 dark:text-slate-700 hidden sm:inline">|</span>
-
-            <div className="flex items-center gap-1.5 font-mono text-xs text-slate-600 dark:text-slate-400">
-              <span className="text-slate-400 dark:text-slate-500">{t('link_label')}:</span>
-              <span className={`font-semibold ${pfConnected ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
-                {pfConnected ? t('node_connected') : t('node_disconnected')}
-              </span>
-              <span className="text-slate-400 dark:text-slate-500 text-[11px]">
-                ({preFeederState.connection.ip}:{preFeederState.connection.port})
-              </span>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1.5 text-xs font-mono">
-              <span className="text-slate-500 dark:text-slate-400">{t('feed_status')}:</span>
-              <span
-                className={`font-bold px-2 py-0.5 rounded-md border text-xs ${
-                  pfMode === 'materialist'
-                    ? 'bg-violet-50 dark:bg-violet-950/40 text-violet-800 dark:text-violet-200 border-violet-200 dark:border-violet-800'
-                    : pfMode === 'busy'
-                      ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
-                      : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-700'
-                }`}
-              >
-                {pfFeedLabel}
-              </span>
-            </div>
-          </div>
-        </div>
-      </div>
 
       <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 shadow-2xs transition-colors">
         <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2.5 gap-2 flex-wrap">
           <div className="flex items-center gap-2">
-            <AlertTriangle
+            <Layers
               className={`h-4 w-4 ${
                 modulePanelError
                   ? 'text-red-600 dark:text-red-400'
@@ -1346,7 +1012,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               }`}
             />
             <h2 className="text-xs font-bold uppercase tracking-wider text-slate-800 dark:text-slate-200">
-              {t('module_controls')}
+              {t('tab_prefeeder')}
             </h2>
           </div>
         </div>
@@ -1364,63 +1030,93 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
           </p>
         ) : null}
 
-        <div className="mt-4 grid gap-3 grid-cols-1 lg:grid-cols-3">
-          {moduleCard(
-            t('tab_prefeeder'),
-            preFeederState.statusText,
-            preFeederState.connection.connected,
-            !!preFeederState.hasError || pfLatched,
-            <>
+        <div className="mt-4 grid gap-3 grid-cols-1">
+          <div
+            className={`rounded-lg border p-3 transition-colors ${
+              pfHasError || pfLatched
+                ? 'border-red-300 dark:border-red-800 bg-red-50/60 dark:bg-red-950/30'
+                : 'border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-800/40'
+            }`}
+          >
+            <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-2.5 text-slate-800 dark:text-slate-200 shadow-2xs flex flex-wrap items-center justify-between gap-3 transition-colors">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span
+                    className={`h-2.5 w-2.5 rounded-full shrink-0 ${
+                      !pfConnected || pfHasError || pfLatched
+                        ? 'bg-red-500'
+                        : pfMode === 'materialist'
+                          ? 'bg-violet-500'
+                          : pfMode === 'busy'
+                            ? 'bg-emerald-500 animate-pulse'
+                            : 'bg-emerald-500'
+                    }`}
+                  />
+                  <span
+                    className={`text-sm font-semibold tracking-tight truncate ${
+                      pfHasError || pfLatched
+                        ? 'text-red-700 dark:text-red-300'
+                        : 'text-slate-900 dark:text-white'
+                    }`}
+                  >
+                    {pfHeadline}
+                  </span>
+                </div>
+
+                <span className="text-slate-300 dark:text-slate-700 hidden sm:inline">|</span>
+
+                <div className="flex items-center gap-1.5 font-mono text-xs text-slate-600 dark:text-slate-400">
+                  <span className="text-slate-400 dark:text-slate-500">{t('link_label')}:</span>
+                  <span className={`font-semibold ${pfConnected ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
+                    {pfConnected ? t('node_connected') : t('node_disconnected')}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-1.5 text-xs font-mono">
+                  <span className="text-slate-500 dark:text-slate-400">{t('feed_status')}:</span>
+                  <span
+                    className={`font-bold px-2 py-0.5 rounded-md border text-xs ${
+                      pfMode === 'materialist'
+                        ? 'bg-violet-50 dark:bg-violet-950/40 text-violet-800 dark:text-violet-200 border-violet-200 dark:border-violet-800'
+                        : pfMode === 'busy'
+                          ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
+                          : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-700'
+                    }`}
+                  >
+                    {pfFeedLabel}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-3 flex flex-wrap items-center gap-1.5">
               <button
                 id="btn-main-pf-start"
                 type="button"
                 onClick={onPfStart}
                 disabled={!onPfStart || !pfConnected}
-                className={`${btnBase} ${
-                  false &&
-                  !resumeEnabled
-                    ? 'border-emerald-400 bg-emerald-100 dark:bg-emerald-950/50 text-emerald-900 dark:text-emerald-100 ring-2 ring-emerald-300 ring-offset-1'
-                    : 'border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100'
-                } disabled:opacity-40`}
+                className={`${btnBase} disabled:opacity-40 ${
+                  preFeederState.isRunning ? btnOn : btnIdle
+                }`}
               >
                 <Play className="h-3.5 w-3.5 fill-current" />
                 <span>{t('btn_start')}</span>
               </button>
               <button
-                id="btn-main-pf-stop"
-                type="button"
-                onClick={onPfStop}
-                disabled={!onPfStop}
-                className={`${btnBase} border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 hover:bg-red-100 disabled:opacity-40`}
-              >
-                <Square className="h-3.5 w-3.5 fill-current" />
-                <span>{t('btn_stop')}</span>
-              </button>
-              <button
-                id="btn-main-pf-reset"
-                type="button"
-                onClick={onPfReset}
-                disabled={pfResetDisabled}
-                title={
-                  pfHasError
-                    ? t('pf_recover_hint_reset')
-                    : undefined
-                }
-                className={`${btnBase} ${
-                  pfHasError
-                    ? 'border-amber-400 bg-amber-100 dark:bg-amber-950/60 text-amber-950 dark:text-amber-100 ring-2 ring-amber-300 ring-offset-1 animate-pulse'
-                    : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50'
-                } disabled:opacity-40`}
-              >
-                <RotateCcw className="h-3.5 w-3.5 text-amber-600" />
-                <span>{t('btn_reset')}</span>
-              </button>
-              <button
                 id="btn-main-pf-jog-l"
                 type="button"
-                onClick={onPfJogL}
-                disabled={!onPfJogL || !preFeederState.connection.connected}
-                className={`${btnBase} border-sky-200 dark:border-sky-900/60 bg-sky-50 dark:bg-sky-950/40 text-sky-800 dark:text-sky-300 hover:bg-sky-100 disabled:opacity-40`}
+                onClick={() => onPfRefill?.('L', 'material', !jogLOn)}
+                disabled={!jogEnabled}
+                title={
+                  pfInMaterialist
+                    ? t('pf_refill_material')
+                    : t('pf_jog_need_materialist')
+                }
+                className={`${btnBase} disabled:opacity-40 ${
+                  jogLOn ? btnMatOn : btnMatIdle
+                }`}
               >
                 <Zap className="h-3.5 w-3.5" />
                 <span>{t('btn_jog')} L</span>
@@ -1428,33 +1124,22 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               <button
                 id="btn-main-pf-jog-r"
                 type="button"
-                onClick={onPfJogR}
-                disabled={!onPfJogR || !preFeederState.connection.connected}
-                className={`${btnBase} border-violet-200 dark:border-violet-900/60 bg-violet-50 dark:bg-violet-950/40 text-violet-800 dark:text-violet-300 hover:bg-violet-100 disabled:opacity-40`}
+                onClick={() => onPfRefill?.('R', 'material', !jogROn)}
+                disabled={!jogEnabled}
+                title={
+                  pfInMaterialist
+                    ? t('pf_refill_material')
+                    : t('pf_jog_need_materialist')
+                }
+                className={`${btnBase} disabled:opacity-40 ${
+                  jogROn ? btnMatOn : btnMatIdle
+                }`}
               >
                 <Zap className="h-3.5 w-3.5" />
                 <span>{t('btn_jog')} R</span>
               </button>
-              <button
-                id="btn-main-pf-busy"
-                type="button"
-                onClick={onBusy}
-                disabled={!onBusy || machineState.cycleActive || pfProdLocked}
-                className={`${btnBase} ${
-                  machineState.cycleBusy
-                    ? 'border-emerald-400 bg-emerald-100 dark:bg-emerald-950/50 text-emerald-900 dark:text-emerald-200'
-                    : 'border-emerald-200 dark:border-emerald-900/60 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-100'
-                } disabled:opacity-40`}
-              >
-                <Activity className="h-3.5 w-3.5" />
-                <span>{t('btn_busy_cycle')}</span>
-              </button>
-            </>,
-            pfMode,
-            pfLatched ? latchedCode : undefined
-          )}
-          {pfJogCard('L')}
-          {pfJogCard('R')}
+            </div>
+          </div>
         </div>
       </div>
 

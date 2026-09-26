@@ -98,6 +98,9 @@ export interface MachineState {
   statusText: string;
   /** Banner de máquina (info/ok/warn/error). Error de interlock no es EXXX. */
   statusKind?: 'info' | 'ok' | 'warn' | 'error';
+  /** Estado máquina 0x40–0x49 (Andon). */
+  machineByte?: number;
+  machineName?: string;
   isRunning: boolean;
   isPaused: boolean;
   cycleActive: boolean;
@@ -140,6 +143,8 @@ export interface MachineState {
   workBlocked?: boolean;
   /** Status del módulo del EXXX (Motion/PLC/PreFeeder). */
   faultModuleStatus?: string;
+  /** Cola de EXXX activos (el primero es el que se muestra). */
+  faultQueue?: { code: string; ui: string }[];
 }
 
 export interface MotionState {
@@ -206,4 +211,6 @@ export interface AndonState {
   red: boolean;
   buzzer: boolean;
   manual: boolean;
+  machineByte?: number;
+  pressure?: boolean;
 }

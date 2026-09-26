@@ -3,9 +3,8 @@ import {
   Play,
   Square,
   RotateCcw,
-  Package,
   Layers,
-  Zap,
+  Activity,
 } from 'lucide-react';
 import { PreFeederState, LogEntry, PreFeederSensor } from '../types';
 import { LogTerminal } from './LogTerminal';
@@ -19,6 +18,7 @@ interface PreFeederTabProps {
   onStop: () => void;
   onReset: () => void;
   onMaterialist: () => void;
+  onBusy?: () => void;
   onTriggerR: () => void;
   onTriggerL: () => void;
   showLogs?: boolean;
@@ -33,9 +33,7 @@ export const PreFeederTab: React.FC<PreFeederTabProps> = ({
   onStart,
   onStop,
   onReset,
-  onMaterialist,
-  onTriggerR,
-  onTriggerL,
+  onBusy,
   showLogs = true,
   logs,
   onClearLogs,
@@ -221,81 +219,19 @@ export const PreFeederTab: React.FC<PreFeederTabProps> = ({
         </button>
 
         <button
-          id="btn-materialist-prefeeder"
-          onClick={onMaterialist}
-          className={`group flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-bold transition active:scale-95 shadow-2xs cursor-pointer border ${
-            cycleMaterialist
-              ? 'border-amber-400 bg-amber-100 dark:bg-amber-950/50 text-amber-900 dark:text-amber-200'
+          id="btn-busy-prefeeder"
+          type="button"
+          onClick={onBusy}
+          disabled={!onBusy}
+          className={`group flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-bold transition active:scale-95 shadow-2xs border ${
+            cycleBusy
+              ? 'border-emerald-500 bg-emerald-500 text-white [&_svg]:text-white'
               : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200'
           }`}
         >
-          <Package className="h-3.5 w-3.5 text-slate-600 dark:text-slate-400" />
-          <span>{t('btn_materialist')}</span>
-          <span className="rounded bg-slate-100 dark:bg-slate-700 px-1 py-0.2 font-mono text-[10px] text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-600">
-            0x03F
-          </span>
+          <Activity className="h-3.5 w-3.5" />
+          <span>{t('btn_busy_cycle')}</span>
         </button>
-      </div>
-
-      {/* Simular trigger del ciclo */}
-      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-3 shadow-2xs">
-        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-          <p className="text-xs font-semibold uppercase tracking-wider text-slate-600 dark:text-slate-400">
-            {t('trigger_sim_hint')}
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            id="btn-trigger-l-prefeeder"
-            onClick={onTriggerL}
-            disabled={!connected}
-            className={`group flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-bold transition active:scale-95 shadow-2xs border ${
-              connected
-                ? 'border-sky-200 dark:border-sky-900/60 bg-sky-50 dark:bg-sky-950/40 hover:bg-sky-100 dark:hover:bg-sky-950/70 text-sky-800 dark:text-sky-300'
-                : 'bg-slate-100 dark:bg-slate-800 text-slate-400 border-slate-200 dark:border-slate-700 cursor-not-allowed'
-            }`}
-          >
-            <Zap className="h-3.5 w-3.5" />
-            <span>{t('btn_trigger_l')}</span>
-            <span className="rounded bg-sky-100 dark:bg-sky-900/60 px-1 font-mono text-[10px] text-sky-800 dark:text-sky-200 border border-sky-200 dark:border-sky-800">
-              0x51
-            </span>
-          </button>
-
-          <button
-            id="btn-trigger-r-prefeeder"
-            onClick={onTriggerR}
-            disabled={!connected}
-            className={`group flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-bold transition active:scale-95 shadow-2xs border ${
-              connected
-                ? 'border-violet-200 dark:border-violet-900/60 bg-violet-50 dark:bg-violet-950/40 hover:bg-violet-100 dark:hover:bg-violet-950/70 text-violet-800 dark:text-violet-300'
-                : 'bg-slate-100 dark:bg-slate-800 text-slate-400 border-slate-200 dark:border-slate-700 cursor-not-allowed'
-            }`}
-          >
-            <Zap className="h-3.5 w-3.5" />
-            <span>{t('btn_trigger_r')}</span>
-            <span className="rounded bg-violet-100 dark:bg-violet-900/60 px-1 font-mono text-[10px] text-violet-800 dark:text-violet-200 border border-violet-200 dark:border-violet-800">
-              0x4C
-            </span>
-          </button>
-
-          <button
-            id="btn-trigger-both-prefeeder"
-            onClick={() => {
-              onTriggerL();
-              onTriggerR();
-            }}
-            disabled={!connected}
-            className={`group flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-bold transition active:scale-95 shadow-2xs border ${
-              connected
-                ? 'border-emerald-200 dark:border-emerald-900/60 bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-950/70 text-emerald-800 dark:text-emerald-300'
-                : 'bg-slate-100 dark:bg-slate-800 text-slate-400 border-slate-200 dark:border-slate-700 cursor-not-allowed'
-            }`}
-          >
-            <Zap className="h-3.5 w-3.5 fill-current" />
-            <span>{t('btn_trigger_both')}</span>
-          </button>
-        </div>
       </div>
 
       {/* Dual Column Cards: Lado L & Lado R */}

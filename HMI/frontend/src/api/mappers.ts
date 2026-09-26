@@ -141,17 +141,18 @@ export function mapMachineState(
   const modKey = faultModule.toLowerCase();
   let faultModuleStatus = '';
   if (modKey.includes('motion')) {
-    faultModuleStatus = snap.motion.status?.text ?? '';
+    faultModuleStatus = cleanVisibleStatusText(snap.motion.status?.text);
   } else if (modKey.includes('plc')) {
-    faultModuleStatus = snap.plc.status?.text ?? '';
+    faultModuleStatus = cleanVisibleStatusText(snap.plc.status?.text);
   } else if (modKey.includes('pre') || modKey.includes('feeder')) {
-    faultModuleStatus = pfVisibleStatusText(snap.prefeeder.status?.text);
+    faultModuleStatus = cleanVisibleStatusText(snap.prefeeder.status?.text);
   }
 
   // Estado general de máquina: no mezclar EXXX (va al panel de recovery).
+  const bannerText = cleanVisibleStatusText(snap.banner.text);
   const generalStatus = errorActive
-    ? cycle.name || snap.banner.text
-    : snap.banner.text;
+    ? cycle.name || bannerText
+    : bannerText;
 
   return {
     model: model?.name ?? '—',
@@ -160,6 +161,8 @@ export function mapMachineState(
     rpm: snap.rpm,
     statusText: generalStatus,
     statusKind: errorActive ? 'error' : snap.banner.kind,
+    machineByte: typeof cycle.byte === 'number' ? cycle.byte : undefined,
+    machineName: cycle.name || '',
     isRunning: cycle.active && !cycle.paused,
     isPaused: cycle.paused,
     cycleActive: cycle.active,
@@ -225,6 +228,9 @@ export function mapMachineState(
     faultModule: faultModule || undefined,
     faultDescription: errorActive ? snap.error?.description : undefined,
     faultModuleStatus: faultModuleStatus || undefined,
+    faultQueue: (snap.error?.queue || [])
+      .filter((e) => e?.ui)
+      .map((e) => ({ code: e.code || '', ui: e.ui })),
   };
 }
 
@@ -236,10 +242,11 @@ function parseEncoder(val: string): number | null {
 
 export function mapMotionState(snap: BackendSnapshot): MotionState {
   const m = snap.motion;
-  const statusText = m.status?.text ?? '';
+  const rawStatus = m.status?.text ?? '';
+  const statusText = cleanVisibleStatusText(rawStatus);
   const isMoving =
-    statusText.toLowerCase().includes('ocupado') ||
-    statusText.toLowerCase().includes('busy');
+    rawStatus.toLowerCase().includes('ocupado') ||
+    rawStatus.toLowerCase().includes('busy');
 
   return {
     connection: {
@@ -289,7 +296,7 @@ export function mapPlcState(snap: BackendSnapshot): PlcState {
       ip: snap.plcLink.host,
       port: snap.plcLink.port,
     },
-    statusText: snap.plc.status?.text ?? '',
+    statusText: cleanVisibleStatusText(snap.plc.status?.text),
     hasError: snap.plc.status?.kind === 'error',
     blowerSec: Number(snap.plc.blowerSec ?? 2),
     valves,
@@ -334,20 +341,32 @@ function mapPfRefill(side?: { refillMaterial?: boolean; refillDereeler?: boolean
   };
 }
 
-export function isPfGenericErrorText(text: string | undefined): boolean {
-  const s = (text || '').toLowerCase();
-  return s.includes('errorstate') || s.includes('0x03c');
+export function isGenericErrorText(text: string | undefined): boolean {
+  if (!text) return false;
+  const s = text.toLowerCase();
+  return (
+    s.includes('errorstate') ||
+    s.includes('en falla') ||
+    s.includes('0x03c') ||
+    s.includes('0x0c') ||
+    s.includes('0x027') ||
+    s.includes('0x27') ||
+    s.includes('0x46')
+  );
 }
 
-export function pfVisibleStatusText(text: string | undefined): string {
-  if (isPfGenericErrorText(text)) return '';
+export function cleanVisibleStatusText(text: string | undefined): string {
+  if (isGenericErrorText(text)) return '';
   return (text || '').trim();
 }
+
+export const isPfGenericErrorText = isGenericErrorText;
+export const pfVisibleStatusText = cleanVisibleStatusText;
 
 export function mapPreFeederState(snap: BackendSnapshot): PreFeederState {
   const pf = snap.prefeeder;
   const rawStatus = pf.status?.text ?? '';
-  const statusText = pfVisibleStatusText(rawStatus);
+  const statusText = cleanVisibleStatusText(rawStatus);
   const running =
     rawStatus.toLowerCase().includes('ocupado') ||
     rawStatus.toLowerCase().includes('busy');
@@ -388,6 +407,8 @@ export function mapAndonState(snap: BackendSnapshot): AndonState {
     red: !!a?.red,
     buzzer: !!a?.buzzer,
     manual: !!a?.manual,
+    machineByte: typeof a?.byte === 'number' ? a.byte : undefined,
+    pressure: !!a?.pressure,
   };
 }
 

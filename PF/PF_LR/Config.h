@@ -4,7 +4,7 @@
 
 // ====================== LADO L / R ======================
 // Comentada = L | descomentada = R
-//#define PREFEEDER_SIDE_RIGHT
+#define PREFEEDER_SIDE_RIGHT
 
 #ifndef PREFEEDER_SIDE_RIGHT
 #define PREFEEDER_SIDE_TAG  "L"
@@ -93,7 +93,9 @@ constexpr float TENSION_COOLDOWN_DEFAULT = 0.0f;
 constexpr float TENSION_COOLDOWN_MIN     = 0.0f;
 constexpr float TENSION_COOLDOWN_MAX     = 60.0f;
 constexpr float TENSION_FAULT_SEC        = 10.0f;
-constexpr float TENSION_BOOST_RPM_OFFSET = 30.0f;
+constexpr float TENSION_BOOST_RPM_DEFAULT = 30.0f;
+constexpr float TENSION_BOOST_RPM_MIN     = 0.0f;
+constexpr float TENSION_BOOST_RPM_MAX     = MOTOR_RPM_MAX;
 
 // ====================== BUFFER / HOLGURA ======================
 // Legacy UI/JSON: el monitor ya no enclava FAULT_BUFFER_TIMEOUT.

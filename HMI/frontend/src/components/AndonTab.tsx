@@ -12,6 +12,9 @@ import { useApp } from '../context/AppContext';
 
 interface AndonTabProps {
   andonState: AndonState;
+  machineByte?: number;
+  machineName?: string;
+  buzzerMute?: boolean;
   onSetOut: (out: 'green' | 'yellow' | 'red' | 'buzzer', on: boolean) => void;
   onAllOff: () => void;
   onResumeAuto: () => void;
@@ -76,6 +79,9 @@ const PRESETS: {
 
 export const AndonTab: React.FC<AndonTabProps> = ({
   andonState,
+  machineByte,
+  machineName,
+  buzzerMute = false,
   onSetOut,
   onAllOff,
   onResumeAuto,
@@ -86,8 +92,10 @@ export const AndonTab: React.FC<AndonTabProps> = ({
 }) => {
   const { t } = useApp();
   const s = andonState;
-
-  const activeCount = [s.green, s.yellow, s.red, s.buzzer].filter(Boolean).length;
+  const currentByte = machineByte ?? 0;
+  const wantsBuzzer = currentByte === 0x46 || currentByte === 0x47 || currentByte === 0x49;
+  const buzzerShown = buzzerMute ? false : s.buzzer;
+  const activeCount = [s.green, s.yellow, s.red, buzzerShown].filter(Boolean).length;
 
   return (
     <div className="space-y-4">
@@ -99,12 +107,44 @@ export const AndonTab: React.FC<AndonTabProps> = ({
             }`}
           />
           <span className="text-sm font-semibold text-slate-900 dark:text-white">
-            {s.manual ? t('andon_mode_manual') : t('andon_mode_auto')}
+            {!s.connection.connected
+              ? t('andon_no_link')
+              : s.manual
+                ? t('andon_mode_manual')
+                : t('andon_follows_machine')}
           </span>
           <span className="text-slate-300 dark:text-slate-700">|</span>
           <span className="font-mono text-xs text-slate-600 dark:text-slate-400">
-            {s.connection.ip}:{s.connection.port}
+            {t('andon_current_state')}:{' '}
+            <strong className="text-slate-800 dark:text-slate-200">
+              {machineName || '—'}
+              {currentByte
+                ? ` · 0x${currentByte.toString(16).toUpperCase().padStart(2, '0')}`
+                : ''}
+            </strong>
           </span>
+          {s.pressure && (
+            <>
+              <span className="text-slate-300 dark:text-slate-700">|</span>
+              <span
+                className="rounded border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/40 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-red-800 dark:text-red-200"
+                title={t('andon_pressure_fault_hint')}
+              >
+                {t('andon_pressure_fault')}
+              </span>
+            </>
+          )}
+          {buzzerMute && (
+            <>
+              <span className="text-slate-300 dark:text-slate-700">|</span>
+              <span
+                className="rounded border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-800 dark:text-amber-200"
+                title={t('andon_buzzer_muted_hint')}
+              >
+                {t('andon_buzzer_muted')}
+              </span>
+            </>
+          )}
         </div>
         <div className="flex items-center gap-2 text-xs font-mono">
           <span className="text-slate-500">{t('andon_active_outputs')}:</span>
@@ -144,7 +184,7 @@ export const AndonTab: React.FC<AndonTabProps> = ({
 
         <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {OUTPUTS.map(({ id, labelKey, dotClass, activeClass }) => {
-            const active = s[id];
+            const active = id === 'buzzer' ? buzzerShown : s[id];
             return (
               <div
                 key={id}
@@ -156,7 +196,18 @@ export const AndonTab: React.FC<AndonTabProps> = ({
                     {t(labelKey)}
                   </span>
                   {id === 'buzzer' && (
-                    <Volume2 className="h-3.5 w-3.5 text-slate-400 ml-auto" />
+                    <Volume2
+                      className={`h-3.5 w-3.5 ml-auto ${
+                        buzzerMute
+                          ? 'text-amber-500'
+                          : 'text-slate-400'
+                      }`}
+                    />
+                  )}
+                  {id === 'buzzer' && buzzerMute && wantsBuzzer && (
+                    <span className="text-[10px] font-bold text-amber-700 dark:text-amber-300">
+                      {t('andon_buzzer_muted')}
+                    </span>
                   )}
                 </div>
                 <div className="grid grid-cols-2 gap-2">
@@ -208,7 +259,11 @@ export const AndonTab: React.FC<AndonTabProps> = ({
               type="button"
               id={`btn-andon-preset-${byte}`}
               onClick={() => onMachineState(byte)}
-              className="flex items-center justify-between rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2.5 text-left hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+              className={`flex items-center justify-between rounded-lg border px-3 py-2.5 text-left transition ${
+                currentByte === byte
+                  ? 'border-indigo-400 dark:border-indigo-600 bg-indigo-50 dark:bg-indigo-950/40 ring-1 ring-indigo-300 dark:ring-indigo-800'
+                  : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 hover:bg-slate-100 dark:hover:bg-slate-800'
+              }`}
             >
               <span className="text-xs font-bold text-slate-800 dark:text-slate-200">
                 {t(labelKey)}

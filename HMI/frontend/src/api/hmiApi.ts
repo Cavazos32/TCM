@@ -38,7 +38,7 @@ export function setMmRpm(mm: number, rpm: number) {
 }
 
 export function startCycle(qty?: number) {
-  return post('/api/start', qty != null ? { qty } : {});
+  return post<{ ok: boolean; error?: string }>('/api/start', qty != null ? { qty } : {});
 }
 
 export function stopMachine() {

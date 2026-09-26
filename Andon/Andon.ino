@@ -81,18 +81,20 @@ void andonTowerAllOff()
 static void andonTxStatus()
 {
   if (!tcpLinkOk()) return;
-  char buf[220];
+  char buf[280];
   snprintf(buf, sizeof(buf),
            "{\"ver\":%u,\"type\":\"status\",\"actuator\":\"andon\","
            "\"green\":%s,\"yellow\":%s,\"red\":%s,\"buzzer\":%s,"
-           "\"manual\":%s,\"mute\":%s}",
+           "\"manual\":%s,\"mute\":%s,\"byte\":%u,\"pressure\":%s}",
            (unsigned)ANDON_PROTO_VER,
            stGreen ? "true" : "false",
            stYellow ? "true" : "false",
            stRed ? "true" : "false",
            (stBuzzerWant && !buzzerMuted) ? "true" : "false",
            manualOverride ? "true" : "false",
-           buzzerMuted ? "true" : "false");
+           buzzerMuted ? "true" : "false",
+           (unsigned)lastMachineByte,
+           pressureFaultLatched ? "true" : "false");
   tcpTx(String(buf));
 }
 
@@ -186,8 +188,8 @@ static void andonApplyStaticTower(uint8_t byteCode)
 void andonApplyMachineByte(uint8_t byteCode)
 {
   if (!andonIsMachineByte(byteCode)) return;
-  if (pressureFaultLatched) return;
   if (andonIsNaByte(byteCode)) return;
+  // T1: presión reporta 0x50 a Main; no se bloquea el RX de estado/manual.
 
   manualOverride = false;
   andonFinishSeqStop(false);
@@ -223,7 +225,6 @@ void andonSetBuzzerMute(bool mute)
 
 static void andonManualSetOut(const String& outName, bool wantOn)
 {
-  if (pressureFaultLatched) return;
   andonFinishSeqStop(false);
   manualOverride = true;
   String n = outName;
@@ -238,7 +239,6 @@ static void andonManualSetOut(const String& outName, bool wantOn)
 
 static void andonManualAllOff()
 {
-  if (pressureFaultLatched) return;
   andonFinishSeqStop(false);
   manualOverride = true;
   andonTowerAllOff();
@@ -247,7 +247,6 @@ static void andonManualAllOff()
 
 static void andonResumeAuto()
 {
-  if (pressureFaultLatched) return;
   manualOverride = false;
   andonApplyMachineByte(lastMachineByte);
 }

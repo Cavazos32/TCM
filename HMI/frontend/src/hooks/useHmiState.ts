@@ -55,6 +55,8 @@ const DEFAULT_MACHINE: MachineState = {
   mm: -45,
   rpm: 1200,
   statusText: 'Conectando…',
+  machineByte: 0x44,
+  machineName: '',
   isRunning: false,
   isPaused: false,
   cycleActive: false,
@@ -128,6 +130,8 @@ export function useHmiState() {
       red: false,
       buzzer: false,
       manual: false,
+      machineByte: 0x44,
+      pressure: false,
     },
     andonConn: { connected: false, ip: '10.10.32.61', port: 8769 },
     andonBuzzerMute: false,
@@ -154,6 +158,8 @@ export function useHmiState() {
   const valveLockRef = useRef<Record<string, boolean>>({});
   const [valveBusy, setValveBusy] = useState<Record<string, boolean>>({});
   const pfPulseSRef = useRef<{ L: number; R: number }>({ L: 1, R: 1 });
+  const pfJogHoldOffRef = useRef<Record<'L' | 'R', boolean>>({ L: false, R: false });
+  const pfJogSeqRef = useRef<Record<'L' | 'R', number>>({ L: 0, R: 0 });
 
   const applySnapshot = useCallback((snap: BackendSnapshot) => {
     const prevFlow = snapRef.current?.cycle.flow;
@@ -182,6 +188,21 @@ export function useHmiState() {
     const pfState = mapPreFeederState(snap);
     pfPulseSRef.current.L = pfState.refillL.pulseS || 1;
     pfPulseSRef.current.R = pfState.refillR.pulseS || 1;
+    (['L', 'R'] as const).forEach((side) => {
+      const key = side === 'L' ? 'refillL' : 'refillR';
+      if (!pfJogHoldOffRef.current[side]) return;
+      if (!pfState[key].material) {
+        pfJogHoldOffRef.current[side] = false;
+        return;
+      }
+      pfState[key] = {
+        ...pfState[key],
+        material: false,
+        dereeler: false,
+        servo: false,
+        feeder: false,
+      };
+    });
     // Sincronizar lectura ON/OFF desde servidor solo si la válvula no está bloqueada.
     for (const v of plc.valves) {
       if (!valveLockRef.current[v.id]) {
@@ -721,6 +742,8 @@ export function useHmiState() {
   );
 
   const pfRefill = useCallback((side: 'L' | 'R', channel: PfRefillChannel, on: boolean) => {
+    const seq = (pfJogSeqRef.current[side] = (pfJogSeqRef.current[side] || 0) + 1);
+    pfJogHoldOffRef.current[side] = !on;
     pfRefillClearTimers(side, channel);
     pfRefillPaint(side, channel, on);
     const pulseS = pfPulseSRef.current[side] || 1;
@@ -737,7 +760,9 @@ export function useHmiState() {
       }
     }
     api.prefeederAction('refill', { side, channel, on }).then((res) => {
+      if (pfJogSeqRef.current[side] !== seq) return;
       if (res.ok === false && res.error) {
+        pfJogHoldOffRef.current[side] = false;
         pfRefillClearTimers(side, channel);
         pfRefillPaint(side, channel, false);
         window.alert(res.error);

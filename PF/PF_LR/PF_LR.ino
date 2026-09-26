@@ -111,6 +111,7 @@ bool      autoEnabled    = true;
 AutoState autoState      = AUTO_OFF;
 float     autoRpm        = AUTO_RPM_DEFAULT;
 float     autoReverseSec = AUTO_REVERSE_DEFAULT;
+float     tensionBoostRpm = TENSION_BOOST_RPM_DEFAULT;
 float     tensionCooldownSec = TENSION_COOLDOWN_DEFAULT;
 uint32_t  servoLeadStartMs = 0;
 uint32_t  tensionLastRoutineMs = 0;
@@ -155,6 +156,7 @@ static void saveSettings()
   prefs.putFloat("h_help_s", (float)holguraHelperSec);
   prefs.putUInt("h_help_ms", (uint32_t)holguraHelperAbsentMs);
   prefs.putFloat("h_fault_s", (float)holguraFaultSec);
+  prefs.putFloat("tens_boost", tensionBoostRpm);
   prefs.putFloat("tens_cd", tensionCooldownSec);
   prefs.putUInt("servo_pwm", (uint32_t)servoActivePwmUs);
   prefs.putUInt("refill_ms", refillPulseMs);
@@ -175,6 +177,7 @@ static void loadSettings()
   holguraHelperSec = prefs.getFloat("h_help_s", M2_HOLGURA_HELPER_SEC_DEFAULT);
   holguraHelperAbsentMs = prefs.getUInt("h_help_ms", M2_HOLGURA_HELPER_ABSENT_MS);
   holguraFaultSec = prefs.getFloat("h_fault_s", M2_HOLGURA_FAULT_SEC);
+  tensionBoostRpm = prefs.getFloat("tens_boost", TENSION_BOOST_RPM_DEFAULT);
   tensionCooldownSec = prefs.getFloat("tens_cd", TENSION_COOLDOWN_DEFAULT);
   servoActivePwmUs = (uint16_t)prefs.getUInt("servo_pwm", (uint32_t)SERVO_PWM_ACTIVE_US);
   refillPulseMs = prefs.getUInt("refill_ms", REFILL_PULSE_MS_DEFAULT);
@@ -203,6 +206,7 @@ static void loadSettings()
   if (holguraHelperAbsentMs > M2_HOLGURA_HELPER_ABSENT_MS_MAX)
     holguraHelperAbsentMs = M2_HOLGURA_HELPER_ABSENT_MS_MAX;
   holguraFaultSec = constrain(holguraFaultSec, M2_HOLGURA_FAULT_SEC_MIN, M2_HOLGURA_FAULT_SEC_MAX);
+  tensionBoostRpm = constrain(tensionBoostRpm, TENSION_BOOST_RPM_MIN, TENSION_BOOST_RPM_MAX);
   tensionCooldownSec = constrain(tensionCooldownSec, TENSION_COOLDOWN_MIN, TENSION_COOLDOWN_MAX);
   servoActivePwmUs = constrain(servoActivePwmUs, SERVO_PWM_MIN_US, SERVO_PWM_MAX_US);
 }
@@ -699,13 +703,13 @@ static bool motorRun(float signedRpm)
 // RPM UI + boost; no cambia sentido (solo velocidad).
 static float autoRpmTensionBoost()
 {
-  float rpm = autoRpm + TENSION_BOOST_RPM_OFFSET;
+  float rpm = autoRpm + tensionBoostRpm;
   if (rpm > MOTOR_RPM_MAX) rpm = MOTOR_RPM_MAX;
   if (rpm < MOTOR_RPM_MIN) rpm = MOTOR_RPM_MIN;
   return rpm;
 }
 
-// DeReeler ya en marcha: tensión estable → +30 RPM continuo; si suelta → nominal.
+// DeReeler ya en marcha: tensión estable → +boost RPM continuo; si suelta → nominal.
 static float autoDereelerTargetRpm()
 {
   return tensionReverseStable ? autoRpmTensionBoost() : autoRpm;
@@ -1984,6 +1988,8 @@ static void appendAutoObject(String& json)
   json += servoRunning ? "true" : "false";
   json += ",\"servo_pin\":";
   jsonAppendUInt(json, PIN_SERVO_PWM);
+  json += ",\"tension_boost_rpm\":";
+  jsonAppendFloat(json, tensionBoostRpm, 1);
   json += ",\"tension_cooldown_s\":";
   jsonAppendFloat(json, tensionCooldownSec, 1);
   json += ",\"tension_fault_s\":";
@@ -2075,6 +2081,8 @@ void handleStatus()
   json += tensionRoutineBlocked() ? "true" : "false";
   json += ",\"cooldown_s\":";
   jsonAppendFloat(json, tensionCooldownSec, 1);
+  json += ",\"boost_rpm\":";
+  jsonAppendFloat(json, tensionBoostRpm, 1);
   json += ",\"fault_s\":";
   jsonAppendFloat(json, TENSION_FAULT_SEC, 1);
   json += "},\"cylinder\":{\"raw\":";
@@ -2280,6 +2288,13 @@ void handleAuto()
     if (v < AUTO_REVERSE_MIN) v = AUTO_REVERSE_MIN;
     if (v > AUTO_REVERSE_MAX) v = AUTO_REVERSE_MAX;
     autoReverseSec = v;
+  }
+  if (server.hasArg("tension_boost_rpm"))
+  {
+    float v = server.arg("tension_boost_rpm").toFloat();
+    if (v < TENSION_BOOST_RPM_MIN) v = TENSION_BOOST_RPM_MIN;
+    if (v > TENSION_BOOST_RPM_MAX) v = TENSION_BOOST_RPM_MAX;
+    tensionBoostRpm = v;
   }
   // dereeler_lead_ms / tension_fault / buffer_refill_fault: fijos en firmware
   if (server.hasArg("tension_cooldown"))
@@ -2589,6 +2604,8 @@ static String peerStatusJson(const char* type)
   jsonAppendFloat(j, autoReverseSec, 1);
   j += ",\"motor2Rpm\":";
   jsonAppendFloat(j, motor2RpmSetting, 1);
+  j += ",\"tensionBoostRpm\":";
+  jsonAppendFloat(j, tensionBoostRpm, 1);
   j += ",\"tensionCooldownS\":";
   jsonAppendFloat(j, tensionCooldownSec, 1);
   j += ",\"tensionFaultS\":";
@@ -3279,8 +3296,8 @@ void setup()
   loadSettings();
   if (!motor2BufferActiveHigh)
     Serial.println("AVISO M2: holgura en LOW; contrato actual: HIGH=OK / LOW=helper (active HIGH).");
-  Serial.printf("NVS: auto %s, %.0f RPM, rev %.1fs, tensión espera %.1fs, error tensión %.1fs, buffer refill %.1fs, servo %u us, M2 feed %.0f RPM\n",
-                autoEnabled ? "ON" : "OFF", autoRpm, autoReverseSec, tensionCooldownSec,
+  Serial.printf("NVS: auto %s, %.0f RPM, boost tensión +%.0f RPM, rev %.1fs, tensión espera %.1fs, error tensión %.1fs, buffer refill %.1fs, servo %u us, M2 feed %.0f RPM\n",
+                autoEnabled ? "ON" : "OFF", autoRpm, tensionBoostRpm, autoReverseSec, tensionCooldownSec,
                 TENSION_FAULT_SEC, BUFFER_REFILL_FAULT_SEC, servoActivePwmUs, (float)motor2RpmSetting);
 
   // Red ANTES de motores/RMT: HTTP/TCP deben quedar listos aunque el driver falle.

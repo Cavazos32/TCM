@@ -28,6 +28,7 @@ Al cerrar el cambio: indicar qué archivos se alinearon.
 - Opcode = contrato (Excel / Opcodes). No inventar bytes sueltos.
 - PLC válvulas: pulso ON/OFF (KEEP); no enclavado en GPIO ESP. Excepción: Blower (nivel + durationSec del comando). Pause y Error pueden mandar **solo Blower OFF** (cancelar timer).
 - Reset PLC `0x1E`: control PLC **o** Reset HMI si el EXXX es del PLC; tras Reset estados lógicos OFF (HMI refleja). All Off solo bajo demanda (UI / ciclo / Home máquina).
+- Start HMI siempre manda Start PF `0x2A` si hay enlace. Reset HMI siempre manda Reset PF `0x2C` si hay enlace (no solo cuando el EXXX latcheado es del PF).
 - Stop y Pause **no** mandan válvulas KEEP ni Reset PLC. Home máquina: ASDA→0 + encoders Set0 + All Off.
 - Pause (`0x48`) / Error (`0x46`) máquina: PreFeeder Idle (`In process OFF`). Resume/Busy/Continuar ciclo rearma In process y espera Buffer Full (igual que Start). Stop de operador sí manda Stop `0x2B` (no In process OFF).
 - Andon: solo estado máquina `0x40–0x49` (no EXXX); TCP `:8769`; mute buzzer desde HMI Debug.

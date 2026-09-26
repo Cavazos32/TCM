@@ -132,7 +132,15 @@ from prefeeder import (
 from error_catalog import format_ui, lookup
 from error_policy import ErrorPolicy
 from andon import AndonClient, DEFAULT_HOST as ANDON_HOST, DEFAULT_PORT as ANDON_PORT
-from machine_states import MACH_BUSY, MACH_ERROR, MACH_IDLE, MACH_PAUSE, MACH_RESET
+from machine_states import (
+    MACH_BUSY,
+    MACH_ERROR,
+    MACH_IDLE,
+    MACH_PAUSE,
+    MACH_RESET,
+    STATE_LABELS,
+    andon_tower_outputs,
+)
 from latency_debug import mark as lat_mark
 
 MODELS_PATH = HMI_ROOT / "config" / "models.json"
@@ -162,7 +170,7 @@ STATE_TEXT = {
     0x09: "Inicializando módulo Motion (0x009)",
     TX_IDLE: "Motion en espera (0x010)",
     TX_BUSY: "Motion ocupado (0x011)",
-    TX_ERROR: "Motion — ErrorState (0x0C)",
+    TX_ERROR: "Motion en falla (0x0C)",
     TX_STOP_STATE: "Motion detenido (0x0D)",
     TX_RETURN: "Motion — retorno tras stop (0x0E)",
 }
@@ -171,7 +179,7 @@ PLC_STATE_TEXT = {
     TX_PLC_INIT: "Inicializando módulo PLC (0x024)",
     TX_PLC_IDLE: "PLC en espera (0x025)",
     TX_PLC_BUSY: "PLC ocupado — válvulas activas (0x026)",
-    TX_PLC_ERROR: "PLC — ErrorState (0x027)",
+    TX_PLC_ERROR: "PLC en falla (0x027)",
     TX_PLC_STOP: "PLC detenido (0x028)",
     TX_PLC_RETURN: "PLC — retorno tras stop (0x029)",
 }
@@ -181,7 +189,7 @@ PF_STATE_TEXT = {
     TX_PF_IDLE: "PreFeeder en espera (0x03A)",
     TX_PF_BUSY: "PreFeeder ocupado (0x03B)",
     # 0x3C no se pinta al técnico; la tarjeta usa el EXXX (ver _pf_paint_detail_status).
-    TX_PF_ERROR: "PreFeeder — ErrorState (0x03C)",
+    TX_PF_ERROR: "PreFeeder en falla (0x03C)",
     TX_PF_STOP: "PreFeeder detenido (0x03D)",
     TX_PF_RETURN: "PreFeeder — retorno tras stop (0x03E)",
 }
@@ -303,6 +311,8 @@ class HmiState:
             "red": False,
             "buzzer": False,
             "manual": False,
+            "byte": MACH_IDLE,
+            "pressure": False,
         }
         self._andon_log: deque[str] = deque(maxlen=MAX_LOG_LINES)
         self._pf = {
@@ -402,6 +412,9 @@ class HmiState:
         self._pf_materialist_force_off = False
         # JOG refill: gen por (lado, canal) para invalidar timers al cancelar/relanzar.
         self._pf_refill_timer_gen: dict[tuple[str, str], int] = {}
+        self._pf_refill_lock = threading.Lock()
+        # Tras OFF anticipado: no reponer ON desde status/Master hasta que el esclavo confirme OFF.
+        self._pf_refill_ignore_on_until: dict[str, float] = {}
 
         self._error_policy = ErrorPolicy()
         self._cycle = CycleRunner(self)
@@ -509,7 +522,7 @@ class HmiState:
                 "mm": self._mm,
                 "rpm": self._rpm,
                 "banner": dict(self._banner),
-                "error": self._error_policy.snapshot(),
+                "error": self._error_snapshot(),
                 "progress": progress,
                 "resumeEnabled": resume,
                 "cycle": cycle_snap,
@@ -543,6 +556,8 @@ class HmiState:
                     "red": self._andon["red"],
                     "buzzer": self._andon["buzzer"],
                     "manual": self._andon["manual"],
+                    "byte": self._andon.get("byte"),
+                    "pressure": self._andon.get("pressure", False),
                 },
                 "motion": dict(self._motion),
                 "plc": {
@@ -1537,9 +1552,33 @@ class HmiState:
             "allOff": all_off_ok,
         }
 
+    def _pf_send_reset(self) -> bool:
+        """Reset PF 0x2C L+R. Misma puerta que Start: exige enlace."""
+        if not self._manual_pf(lambda: self._pf_client.cmd_reset()):
+            return False
+        with self._lock:
+            self._pf_clear_fault_cache()
+            self._pf["status"] = {
+                "text": "Reset enviado L+R (0x02C)",
+                "kind": "ok",
+            }
+        return True
+
     def cmd_error_reset(self, confirm: bool = False, do_home: bool = False) -> dict:
         """Machine RESET: reset source, validate source, never HOME."""
         latch = self._error_policy.latch
+
+        # Reset HMI siempre manda Reset PF (0x2C) si hay enlace — igual que Start manda 0x2A.
+        if self._pf_client.connected:
+            if not self._pf_send_reset():
+                self._notify()
+                return {
+                    "ok": False,
+                    "error": "PreFeeder no aceptó Reset",
+                    "cleared": None,
+                    "homeOk": None,
+                }
+
         if not latch.active:
             self._cycle.request_reset()
             self._broadcast_machine_state(MACH_RESET)
@@ -1560,17 +1599,8 @@ class HmiState:
         elif "plc" in module:
             module_reset_ok = bool(self._plc_reset_reflect_off(log_label="Reset PLC"))
         elif "pre" in module or "feeder" in module:
-            if self._pf_client.connected:
-                module_reset_ok = bool(self._pf_client.cmd_reset())
-                if module_reset_ok:
-                    with self._lock:
-                        self._pf_clear_fault_cache()
-                        self._pf["status"] = {
-                            "text": "Reset enviado L+R (0x02C)",
-                            "kind": "ok",
-                        }
-            else:
-                module_reset_ok = False
+            # Ya enviado arriba si había enlace; sin enlace no se valida el EXXX de PF.
+            module_reset_ok = bool(self._pf_client.connected)
 
         if not module_reset_ok:
             self._set_banner(ui, "error")
@@ -1641,10 +1671,25 @@ class HmiState:
             "resumeEnabled": bool(active_lot),
         }
 
+    def _apply_andon_tower_preview(self, byte: int, *, manual: bool) -> None:
+        """HMI refleja la torreta esperada (0x40–0x49). Start/Reset no cambian luces."""
+        b = int(byte) & 0xFF
+        lights = andon_tower_outputs(b)
+        with self._lock:
+            self._andon["byte"] = b
+            self._andon["manual"] = manual
+            if lights is not None:
+                self._andon["green"] = lights["green"]
+                self._andon["yellow"] = lights["yellow"]
+                self._andon["red"] = lights["red"]
+                self._andon["buzzer"] = lights["buzzer"]
+
     def _broadcast_machine_state(self, byte: int) -> None:
-        """Estado máquina → Andon (si hay enlace). No envía EXXX detalle."""
+        """Estado máquina → preview HMI + Andon. No envía EXXX detalle."""
+        b = int(byte) & 0xFF
+        self._apply_andon_tower_preview(b, manual=False)
         try:
-            self._andon_client.send_machine_byte(int(byte) & 0xFF)
+            self._andon_client.send_machine_byte(b)
         except Exception:
             pass
 
@@ -2062,6 +2107,21 @@ class HmiState:
         "feeder": "refillFeeder",
     }
 
+    @staticmethod
+    def _pf_refill_on_arg(val: Any, default: bool = False) -> bool:
+        if val is None:
+            return default
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, (int, float)):
+            return val != 0
+        s = str(val).strip().lower()
+        if s in ("1", "true", "on", "yes"):
+            return True
+        if s in ("0", "false", "off", "no", ""):
+            return False
+        return default
+
     def _pf_refill_channels(self, channel: str) -> tuple[str, ...]:
         if channel == "material":
             return self._PF_REFILL_CHANS
@@ -2126,6 +2186,7 @@ class HmiState:
         """JOG Materialista: refill HTML L/R. Pulso configurable en el esclavo."""
         side_u = str(side or "").strip().upper()
         ch = str(channel or "").strip().lower()
+        want_on = self._pf_refill_on_arg(on, default=False)
         if side_u not in ("L", "R"):
             return {"ok": False, "error": "side L|R requerido"}
         if ch not in self._PF_REFILL_CHANS:
@@ -2135,7 +2196,11 @@ class HmiState:
         )
         if not self._pf_materialist and not side_idle:
             return {"ok": False, "error": "Refill solo en Materialist"}
-        ok = self._manual_pf(lambda: self._pf_client.cmd_refill(ch, bool(on), side_u))
+        # Serializar ON/OFF del mismo lado: un ON tardío no debe rearmar tras OFF.
+        with self._pf_refill_lock:
+            ok = self._manual_pf(
+                lambda: self._pf_client.cmd_refill(ch, want_on, side_u)
+            )
         if not ok:
             with self._lock:
                 err = str(
@@ -2147,12 +2212,12 @@ class HmiState:
         with self._lock:
             runtime = self._pf.setdefault("sides", {}).setdefault(side_u, {})
             key = self._PF_REFILL_KEYS[ch]
-            runtime[key] = bool(on)
+            runtime[key] = want_on
             if ch == "material":
-                runtime["refillDereeler"] = bool(on)
-                runtime["refillServo"] = bool(on)
-                runtime["refillFeeder"] = bool(on)
-                runtime["refillMaterial"] = bool(on)
+                runtime["refillDereeler"] = want_on
+                runtime["refillServo"] = want_on
+                runtime["refillFeeder"] = want_on
+                runtime["refillMaterial"] = want_on
             else:
                 runtime["refillMaterial"] = bool(
                     runtime.get("refillDereeler")
@@ -2160,11 +2225,15 @@ class HmiState:
                     and runtime.get("refillFeeder")
                 )
             pulse_s = self._pf_refill_pulse_s(side_u)
-            if on:
+            if want_on:
+                self._pf_refill_ignore_on_until.pop(side_u, None)
                 self._pf_refill_schedule_off(side_u, channels, pulse_s)
             else:
                 self._pf_refill_bump(side_u, channels)
-            text = f"Refill {ch} {side_u} → {'ON' if on else 'OFF'}"
+                self._pf_refill_ignore_on_until[side_u] = (
+                    time.monotonic() + max(pulse_s, 0.5) + 0.5
+                )
+            text = f"Refill {ch} {side_u} → {'ON' if want_on else 'OFF'}"
             _append_log(self._pf_log, text)
             self._pf["status"] = {"text": text, "kind": "ok"}
         self._notify()
@@ -2179,7 +2248,7 @@ class HmiState:
             return self.cmd_pf_refill(
                 str(kwargs.get("side", "")),
                 str(kwargs.get("channel", "")),
-                bool(kwargs.get("on", True)),
+                self._pf_refill_on_arg(kwargs.get("on"), default=False),
             )
         handlers = {
             "start": self._pf_client.cmd_start,
@@ -2244,6 +2313,13 @@ class HmiState:
         self._andon["red"] = bool(msg.get("red"))
         self._andon["buzzer"] = bool(msg.get("buzzer"))
         self._andon["manual"] = bool(msg.get("manual"))
+        if msg.get("byte") is not None:
+            try:
+                self._andon["byte"] = int(msg.get("byte")) & 0xFF
+            except (TypeError, ValueError):
+                pass
+        if "pressure" in msg:
+            self._andon["pressure"] = bool(msg.get("pressure"))
         # Mute: preferencia HMI (app_config). No pisar con status Andon
         # (RAM volatile; race al conectar dejaba UI en mute y buzzer sonando).
         if "mute" in msg and bool(msg.get("mute")) != bool(self._andon_buzzer_mute):
@@ -2255,57 +2331,52 @@ class HmiState:
             on = bool(kwargs.get("on", True))
             if out not in ("green", "yellow", "red", "buzzer"):
                 return {"ok": False, "error": "Salida Andon desconocida"}
-            ok = self._manual_andon(
+            with self._lock:
+                key = out if out != "buzzer" else "buzzer"
+                self._andon[key] = on
+                self._andon["manual"] = True
+                _append_log(
+                    self._andon_log,
+                    f"{out.upper()} {'ON' if on else 'OFF'}",
+                )
+            sent = self._manual_andon(
                 lambda: self._andon_client.set_output(out, on)
             )
-            if ok:
-                with self._lock:
-                    key = out if out != "buzzer" else "buzzer"
-                    self._andon[key] = on
-                    self._andon["manual"] = True
-                    _append_log(
-                        self._andon_log,
-                        f"{out.upper()} {'ON' if on else 'OFF'}",
-                    )
-                self._notify()
-            return {"ok": ok}
+            self._notify()
+            return {"ok": True, "sent": sent}
 
         if action == "all_off":
-            ok = self._manual_andon(lambda: self._andon_client.all_off())
-            if ok:
-                with self._lock:
-                    self._andon["green"] = False
-                    self._andon["yellow"] = False
-                    self._andon["red"] = False
-                    self._andon["buzzer"] = False
-                    self._andon["manual"] = True
-                    _append_log(self._andon_log, "Torre OFF (manual)")
-                self._notify()
-            return {"ok": ok}
+            with self._lock:
+                self._andon["green"] = False
+                self._andon["yellow"] = False
+                self._andon["red"] = False
+                self._andon["buzzer"] = False
+                self._andon["manual"] = True
+                _append_log(self._andon_log, "Torre OFF (manual)")
+            sent = self._manual_andon(lambda: self._andon_client.all_off())
+            self._notify()
+            return {"ok": True, "sent": sent}
 
         if action == "resume_auto":
-            ok = self._manual_andon(lambda: self._andon_client.resume_auto())
-            if ok:
-                with self._lock:
-                    self._andon["manual"] = False
-                    _append_log(self._andon_log, "Torre → automático (HMI)")
-                self._notify()
-            return {"ok": ok}
+            byte = int(self._andon.get("byte") or MACH_IDLE)
+            self._apply_andon_tower_preview(byte, manual=False)
+            with self._lock:
+                _append_log(self._andon_log, "Torre → automático (HMI)")
+            sent = self._manual_andon(lambda: self._andon_client.resume_auto())
+            self._notify()
+            return {"ok": True, "sent": sent}
 
         if action == "state":
             byte = int(kwargs.get("byte", 0))
-            from machine_states import STATE_LABELS
-
             label = STATE_LABELS.get(byte, f"0x{byte:02X}")
-            ok = self._manual_andon(
+            self._apply_andon_tower_preview(byte, manual=False)
+            with self._lock:
+                _append_log(self._andon_log, f"Estado máquina · {label}")
+            sent = self._manual_andon(
                 lambda: self._andon_client.send_machine_byte(byte)
             )
-            if ok:
-                with self._lock:
-                    self._andon["manual"] = False
-                    _append_log(self._andon_log, f"Estado máquina · {label}")
-                self._notify()
-            return {"ok": ok}
+            self._notify()
+            return {"ok": True, "sent": sent}
 
         return {"ok": False, "error": f"Acción Andon desconocida: {action}"}
 
@@ -2486,6 +2557,62 @@ class HmiState:
                 return err_b
         return None
 
+    def _error_snapshot(self) -> dict[str, Any]:
+        """Latch + cola de EXXX activos (solo UI). No cambia Set/Res."""
+        data = self._error_policy.snapshot()
+        data["queue"] = self._active_error_queue()
+        return data
+
+    def _active_error_queue(self) -> list[dict[str, str]]:
+        """EXXX activos para la status bar. El latch va primero; el resto sigue encolado."""
+        items: list[dict[str, str]] = []
+        seen: set[str] = set()
+
+        def add(code_or_byte: str | int) -> None:
+            entry = lookup(code_or_byte)
+            if entry is None:
+                return
+            code = str(entry["code"])
+            if code in seen:
+                return
+            seen.add(code)
+            items.append(
+                {
+                    "code": code,
+                    "module": str(entry["module"]),
+                    "description": str(entry["description"]),
+                    "ui": format_ui(code),
+                }
+            )
+
+        latch = self._error_policy.latch
+        if latch.active and latch.code:
+            add(latch.code)
+
+        for _label, _cmd, err_b, _sf in PLC_VALVES:
+            if err_b is None:
+                continue
+            v = self._plc.get("valves", {}).get(str(_cmd), {})
+            if isinstance(v, dict) and v.get("error"):
+                add(err_b)
+
+        if not self._pf_materialist_now():
+            for key, info in self._pf.get("errors", {}).items():
+                try:
+                    byte = int(key)
+                except (TypeError, ValueError):
+                    continue
+                if not self._pf_error_byte_in_lot(byte):
+                    continue
+                if byte in _PF_OK_WHEN_ACTIVE:
+                    if not self._pf.get("fault_active", {}).get(key):
+                        continue
+                elif not info.get("active"):
+                    continue
+                add(byte)
+
+        return items
+
     def _plc_has_fault(self) -> bool:
         """Fallo PLC en caché: ErrorState o sensor de seguridad. No exige latch."""
         if self._plc.get("last_state_byte") == TX_PLC_ERROR:
@@ -2594,6 +2721,8 @@ class HmiState:
             return self._plc_is_healthy()
         if "pre" in mod or "feeder" in mod:
             return self._pf_is_healthy()
+        if "andon" in mod or code == "E064":
+            return not bool(self._andon.get("pressure"))
 
         # Cycle-level errors are acknowledged by the explicit machine RESET.
         if "cycle" in mod:
@@ -3019,7 +3148,9 @@ class HmiState:
         text = STATE_TEXT.get(byte_code, f"Estado 0x{byte_code:02X}")
         kind = "info"
         if byte_code == TX_ERROR:
-            self._set_banner(text, "error")
+            latch = self._error_policy.latch
+            if latch.active and latch.ui_text:
+                self._set_banner(latch.ui_text, "error")
             _append_log(self._main_log, text)
             return
         if byte_code == TX_STOP_STATE:
@@ -3315,10 +3446,10 @@ class HmiState:
                         and "plc" in (latch.module or "").lower()
                     ):
                         text = latch.ui_text
-                    else:
-                        # ErrorState sin EXXX aún: banner de máquina (como Motion 0x0C).
-                        self._set_banner(text, "error")
-                        _append_log(self._main_log, text)
+                        self._set_banner(latch.ui_text, "error")
+                    elif latch.active and latch.ui_text:
+                        self._set_banner(latch.ui_text, "error")
+                    _append_log(self._main_log, text)
                 elif byte_code == TX_PLC_STOP:
                     kind = "warn"
                 elif byte_code in (TX_PLC_IDLE, TX_PLC_RETURN):
@@ -3446,6 +3577,10 @@ class HmiState:
             if runtime.get("triggerActive") != trig:
                 runtime["triggerActive"] = trig
                 changed = True
+        ignore_on = time.monotonic() < float(
+            self._pf_refill_ignore_on_until.get(side_key, 0.0) or 0.0
+        )
+        refill_seen: list[str] = []
         for src, dst in (
             ("refillMaterial", "refillMaterial"),
             ("refillDereeler", "refillDereeler"),
@@ -3454,10 +3589,17 @@ class HmiState:
         ):
             if src not in side:
                 continue
+            refill_seen.append(src)
             val = bool(side.get(src))
+            if val and ignore_on:
+                continue
             if runtime.get(dst) != val:
                 runtime[dst] = val
                 changed = True
+        if ignore_on and refill_seen and not any(
+            bool(side.get(src)) for src in refill_seen
+        ):
+            self._pf_refill_ignore_on_until.pop(side_key, None)
         if "refillPulseS" in side:
             try:
                 pulse = max(0.2, min(10.0, float(side.get("refillPulseS"))))

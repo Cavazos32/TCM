@@ -148,6 +148,13 @@ export interface BackendPreFeeder {
   };
 }
 
+export interface BackendErrorItem {
+  code: string;
+  module: string;
+  description: string;
+  ui: string;
+}
+
 export interface BackendErrorLatch {
   active: boolean;
   code: string;
@@ -156,6 +163,8 @@ export interface BackendErrorLatch {
   description: string;
   ui: string;
   last?: BackendErrorLatch;
+  /** EXXX activos: el latch va primero; el resto sigue encolado. */
+  queue?: BackendErrorItem[];
 }
 
 export interface BackendSnapshot {
@@ -182,6 +191,8 @@ export interface BackendSnapshot {
     red: boolean;
     buzzer: boolean;
     manual: boolean;
+    byte?: number;
+    pressure?: boolean;
   };
   motion: BackendMotion;
   plc: BackendPlc;

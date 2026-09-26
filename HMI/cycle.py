@@ -1066,9 +1066,9 @@ class CycleRunner:
 
     def mark_init_done(self) -> None:
         with self._lock:
-            if self._state_byte == TX_INIT and not self._active:
-                self._state_byte = TX_IDLE
-        self._host.cycle_notify()
+            if self._state_byte != TX_INIT or self._active:
+                return
+        self._set_state(TX_IDLE)
     # --- interno ---
     def _set_state(self, byte: int, detail: str = "") -> None:
         with self._lock:
