@@ -229,9 +229,9 @@ static uint16_t servoMotionPwmUs()
 static void servoWriteUsForced(uint16_t us)
 {
   us = constrain(us, SERVO_PWM_MIN_US, SERVO_PWM_MAX_US);
-  // RMT del DeReeler/Feeder puede soltar el canal LEDC; sin re-attach
-  // el write no llega al pin y el RC se queda en el último PWM (sigue alimentando).
-  ledcAttach(PIN_SERVO_PWM, 50, SERVO_LEDC_BITS);
+  // Canal 7 fijo: setSpeed/Stop RMT suelta LEDC y ledcAttach() auto a veces
+  // no recupera el pin → servo muerto, DeReeler sigue (HTML y HMI).
+  ledcAttachChannel(PIN_SERVO_PWM, 50, SERVO_LEDC_BITS, SERVO_LEDC_CHANNEL);
   servoLastOutputUs = us;
   ledcWrite(PIN_SERVO_PWM, servoUsToDuty(us));
 }
@@ -253,6 +253,20 @@ static void servoAssertNeutral(bool force)
   servoWriteUsForced(SERVO_PWM_NEUTRAL_US);
   servoRunning = false;
   lastNeutralMs = millis();
+}
+
+// Tras setSpeed/Stop RMT el LEDC se suelta. IfChanged no reescribe (mismo µs)
+// y el RC se apaga mientras el DeReeler sigue. Reafirmar cada frame (~20 ms).
+static void servoAssertRun(bool force)
+{
+  static uint32_t lastRunMs = 0;
+  const uint16_t us = servoMotionPwmUs();
+  if (!force && servoRunning && servoLastOutputUs == us
+      && (uint32_t)(millis() - lastRunMs) < SERVO_STOP_REASSERT_MS)
+    return;
+  servoWriteUsForced(us);
+  servoRunning = true;
+  lastRunMs = millis();
 }
 
 static void servoStop()
@@ -305,27 +319,21 @@ static void syncServoToAutoState()
   if (idleMode && systemFault == FAULT_NONE)
   {
     if (refillServoOn)
-    {
-      servoWriteUsIfChanged(servoMotionPwmUs());
-      servoRunning = true;
-    }
+      servoAssertRun(false);
     else if (servoRunning || servoLastOutputUs != SERVO_PWM_NEUTRAL_US)
       servoStop();
     return;
   }
 
   if (servoShouldRunAuto())
-  {
-    servoWriteUsIfChanged(servoMotionPwmUs());
-    servoRunning = true;
-  }
+    servoAssertRun(false);
   else if (servoRunning || servoLastOutputUs != SERVO_PWM_NEUTRAL_US)
     servoStop();
 }
 
 static void setupRotationServo()
 {
-  ledcAttach(PIN_SERVO_PWM, 50, SERVO_LEDC_BITS);
+  ledcAttachChannel(PIN_SERVO_PWM, 50, SERVO_LEDC_BITS, SERVO_LEDC_CHANNEL);
   servoLastOutputUs = 0;
   servoStop();
 }
@@ -647,6 +655,9 @@ static bool motorStartSigned(uint8_t idx, float uiSignedRpm)
   }
 
   *commandedRpmByIndex(idx) = uiSignedRpm;
+  // setSpeed RMT suelta LEDC: si el servo debía seguir, re-attach ya.
+  if (servoShouldRunAuto() || (idleMode && refillServoOn))
+    servoAssertRun(true);
   if (motorPinDir(idx) >= 0)
     DBG_PRINTF("Motor%u UI=%.1f → setSpeed(%.1f) MOSFET_GPIO=%s\n",
                   (unsigned)(idx + 1), uiSignedRpm, driveRpm,
@@ -688,6 +699,8 @@ static bool motorRun(uint8_t idx, float signedRpm)
     if (m->setSpeed(uiSignedToDriveRpm(target, idx), MOTOR_ACCEL))
     {
       *commandedRpmByIndex(idx) = target;
+      if (servoShouldRunAuto() || (idleMode && refillServoOn))
+        servoAssertRun(true);
       return true;
     }
   }
@@ -720,7 +733,11 @@ static void motorRunAutoDereeler()
   motorRun(autoDereelerTargetRpm());
 }
 
-// Arranque desde Buffer Full inactivo: servo ya; DeReeler tras DEREELER_START_DELAY_MS.
+// Secuencia fija (Start / Resume / buffer vacío mid-ciclo):
+//   1) servo ON ya
+//   2) DeReeler CW tras DEREELER_START_DELAY_MS
+// Full HIGH → forceStop al instante. Full OFF ~200 ms → otra vez esta secuencia.
+// Vacío no es EXXX: se sigue alimentando. Solo falla enclavada para el auto.
 static void beginAutoCwWithServoLead()
 {
   servoLeadStartMs = millis();
@@ -738,7 +755,7 @@ static void resumeAutoFromSensors()
     return;
   if (!sensorsMotionArmed())
   {
-    motorRun(0.0f);
+    forceStopDereelerAndServo();
     autoState = AUTO_HOME_HOLD;
     syncServoToAutoState();
     return;
@@ -752,15 +769,23 @@ static void resumeAutoFromSensors()
   {
     forceStopDereelerAndServo();
     autoState = AUTO_HOME_HOLD;
+    syncServoToAutoState();
+    return;
   }
-  else if (bufferFullAllowsMotion())
+  // Ya rellenando (HTML Iniciar o Start HMI): In process no debe restart/forceStop.
+  // Eso apagaba el servo y dejaba el DeReeler.
+  if (autoState == AUTO_SERVO_LEAD || autoState == AUTO_CW)
+  {
+    syncServoToAutoState();
+    return;
+  }
+  if (bufferFullAllowsMotion())
     beginAutoCwWithServoLead();
   else
   {
-    forceStopDereelerAndServo();
     autoState = AUTO_HOME_HOLD;
+    syncServoToAutoState();
   }
-  syncServoToAutoState();
 }
 
 static void requestFillUntilReady()
@@ -838,10 +863,7 @@ static void applyRefillOutputs()
     motorRun(0.0f);
 
   if (refillServoOn)
-  {
-    servoWriteUsIfChanged(servoMotionPwmUs());
-    servoRunning = true;
-  }
+    servoAssertRun(true);
   else if (servoRunning || servoLastOutputUs != SERVO_PWM_NEUTRAL_US)
     servoStop();
 
@@ -1210,11 +1232,13 @@ static void serviceAuto()
     return;
   }
 
-  // Idle / sin ventana: quieto.
+  // Idle / sin ventana: quieto. forceStop: RMT a veces ignora motorRun(0)
+  // y el DeReeler sigue con el servo ya en neutro.
   if (!sensorsMotionArmed())
   {
-    if (fabsf(commandedRpm) > 0.01f)
-      motorRun(0.0f);
+    forceStopDereelerAndServo();
+    if (autoState == AUTO_SERVO_LEAD || autoState == AUTO_CW)
+      autoState = AUTO_HOME_HOLD;
     syncServoToAutoState();
     serviceFillUntilReady();
     return;
@@ -1223,8 +1247,9 @@ static void serviceAuto()
   serviceFillUntilReady();
   if (!sensorsMotionArmed())
   {
-    if (fabsf(commandedRpm) > 0.01f)
-      motorRun(0.0f);
+    forceStopDereelerAndServo();
+    if (autoState == AUTO_SERVO_LEAD || autoState == AUTO_CW)
+      autoState = AUTO_HOME_HOLD;
     syncServoToAutoState();
     return;
   }
@@ -1271,19 +1296,25 @@ static void serviceAuto()
       // GPIO19 vacío estable (~200 ms OFF) → rellenar hasta Full ON.
       if (bufferFullAllowsMotion())
         beginAutoCwWithServoLead();
+      else if (motor && fabsf(motor->currentRPM()) > 1.0f)
+        // DeReeler huérfano (Stop RMT ignorado): servo ya, no esperar 200 ms.
+        beginAutoCwWithServoLead();
       break;
 
     case AUTO_SERVO_LEAD:
+      servoAssertRun(true);
       if ((uint32_t)(millis() - servoLeadStartMs) >= DEREELER_START_DELAY_MS)
       {
         motorRunAutoDereeler();
         autoState = AUTO_CW;
+        servoAssertRun(true);
         DBG_PRINTF("AUTO: servo lead %lums -> DeReeler CW\n", (unsigned long)DEREELER_START_DELAY_MS);
       }
       break;
 
     case AUTO_CW:
       motorRunAutoDereeler();
+      servoAssertRun(true);
       break;
 
     default:
@@ -2849,8 +2880,7 @@ static bool peerDoCmd(const String& cmd, const String& val, int id)
       clearFillUntilReady("inProcess-off");
       if (!idleMode && !refillOverrideActive())
       {
-        if (fabsf(commandedRpm) > 0.01f)
-          motorRun(0.0f);
+        forceStopDereelerAndServo();
         if (motor2Phase != M2_PHASE_TIMED_FEED)
           motor2AbortRequested = true;
         if (autoEnabled && systemFault == FAULT_NONE)
@@ -2858,12 +2888,21 @@ static bool peerDoCmd(const String& cmd, const String& val, int id)
         syncServoToAutoState();
       }
     }
-    else if (changed)
+    else
     {
+      // Ventana pasa a In process. Si Start ya abrió fillUntilReady (HTML/HMI),
+      // no picar resume: clear+restart cortaba el servo y dejaba el DeReeler.
+      const bool alreadyFilling =
+          autoState == AUTO_SERVO_LEAD || autoState == AUTO_CW;
       clearFillUntilReady("inProcess-on");
       if (!idleMode && autoEnabled && systemFault == FAULT_NONE
           && !refillOverrideActive())
-        resumeAutoFromSensors();
+      {
+        if (alreadyFilling && !bufferFullActive())
+          syncServoToAutoState();
+        else
+          resumeAutoFromSensors();
+      }
     }
     ok = true;
   }
@@ -3397,8 +3436,10 @@ void loop()
   }
   peerService();
   serviceHttp(8);
-  // HTTP/peer + feeder RMT (otro núcleo) pueden soltar LEDC tras el stop de Full.
-  if (!idleMode && bufferFullStopNow())
+  // HTTP/peer + feeder RMT (otro núcleo) pueden soltar LEDC.
+  if (!idleMode && servoShouldRunAuto())
+    servoAssertRun(true);
+  else if (!idleMode && !servoShouldRunAuto())
     servoAssertNeutral(false);
 
   updateBufferFullFilter();
@@ -3411,6 +3452,8 @@ void loop()
   serviceRefillPulses();
   serviceAuto();
   serviceHttp(8);
-  if (!idleMode && bufferFullStopNow())
+  if (!idleMode && servoShouldRunAuto())
+    servoAssertRun(true);
+  else if (!idleMode && !servoShouldRunAuto())
     servoAssertNeutral(false);
 }

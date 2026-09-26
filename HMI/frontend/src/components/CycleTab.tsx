@@ -214,7 +214,9 @@ export const CycleTab: React.FC<CycleTabProps> = ({
         : recoveryStage === 'after_cut'
           ? t('refill_confirm_hint_cut')
           : recoveryStage === 'await_feed'
-            ? t('refill_confirm_hint_await')
+            ? skipCut
+              ? t('refill_confirm_hint_await_nocut')
+              : t('refill_confirm_hint_await')
             : skipCut
               ? t('refill_confirm_hint_feed_nocut')
               : t('refill_confirm_hint_feed');
@@ -524,7 +526,8 @@ export const CycleTab: React.FC<CycleTabProps> = ({
               {t('btn_refill_confirm_long')}
             </button>
           )}
-          {recoveryStage === 'after_feed' && onRefillConfirm && (
+          {(recoveryStage === 'after_feed' || recoveryStage === 'await_feed') &&
+            onRefillConfirm && (
             <button
               id="btn-cycle-recovery-next-cut"
               type="button"
@@ -640,8 +643,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
               {t('btn_refill_confirm_long')}
             </button>
           )}
-          {machineState.refillPrompt !== 'working' &&
-            machineState.refillPrompt !== 'await_feed' && (
+          {machineState.refillPrompt !== 'working' && (
             <button
               id="btn-cycle-refill-yes"
               type="button"

@@ -45,7 +45,7 @@ TIMING_CMD_SLOW_S = 0.080
 # No modificar Feed / FEED_TARGET_FIXED_MM / Move ABS manual.
 # Excepción refill: skipValidate + mm opcional (Long feed). Ciclo de lote sigue en 55 mm.
 
-# Purga: no alimenta sola. Tras park, espera Retry (55) o Long feed (100).
+# Purga: no alimenta sola. Tras park: Retry (55), Long feed (100) o Next corte.
 # Long feed = skipValidate en Motion.
 REFILL_LONG_FEED_MM = 100.0
 
@@ -69,9 +69,17 @@ WIP_START_CACHE_TOL_MM = 5.0
 # Piso/techo duración soplo match-lineal (solo si CONTINUOUS=True).
 WIP_BLOWER_LINEAL_MATCH_MIN_S = 0.2
 WIP_BLOWER_LINEAL_MATCH_MAX_S = 30.0
-# Piso de asiento cortador antes de MOVE depósito (PLC pulso KEEP ~100 ms
-# + gap ~50 ms + retracción neumática). cutter_post_ms suele ser más corto.
-CUTTER_SETTLE_BEFORE_DEPOSIT_MS = 250
+# PLC/Config.h: cada KEEP bloquea el ESP (pulso + hueco LOW).
+# Holder+Encoder precut = 2 slots; si el HMI manda Set de cortador encima,
+# el PLC lo procesa tarde y el depósito/despeje arranca con la cuchilla
+# aún sin bajar → corte en el extra (~clearance 18 mm, pieza ~20 mm larga).
+PLC_VALVE_PULSE_MS = 100
+PLC_VALVE_GAP_MS = 50
+PLC_VALVE_SLOT_MS = PLC_VALVE_PULSE_MS + PLC_VALVE_GAP_MS  # 150
+PLC_PRECUT_VALVE_CMDS = 2  # holder + encoder
+# Asiento desde el Set HMI: 2 slots (Set+Res) + carrera neumática.
+# 250 ms desde Res era corto: coincidía con el drenaje de Holder/Encoder.
+CUTTER_SETTLE_BEFORE_DEPOSIT_MS = 400
 # HOME / Start: ASDA en 0 (caché Reached). No alimentar si está fuera.
 ASDA_HOME_EPS_MM = 0.5
 
@@ -377,6 +385,7 @@ class CycleHost(Protocol):
     def pf_trigger_active(self, side: str) -> bool | None: ...
     def pf_auto_filling(self, side: str) -> bool | None: ...
     def pf_request_status(self) -> bool: ...
+    def pf_status_seq(self) -> int: ...
     def clear_motion_wait_flags(self) -> None: ...
     def clear_motion_reached_flag(self) -> None: ...
     def wait_motion_idle_or_reached(self, timeout_s: float) -> bool: ...
@@ -497,7 +506,8 @@ class CycleRunner:
         self._lot_length_mm: float = 0.0
         self._last_lineal_sec: float = 0.0
         self._last_lineal_mm: float = 0.0
-        # monotonic() del último Res de cortador (asiento antes de depósito).
+        # monotonic() del Set/Res de cortador (asiento antes de depósito/despeje).
+        self._cutter_set_mono: float | None = None
         self._cutter_res_mono: float | None = None
         # Reloj de lote (wall, incluye prep) — refill / diagnóstico.
         self._started_at: float | None = None
@@ -817,9 +827,10 @@ class CycleRunner:
         feed_mm: float | None = None,
         asda_mm: float | None = None,
     ) -> dict[str, Any]:
-        """Purga/refill: ASDA park → holder → espera Retry/Long → feed → cut → home.
+        """Purga/refill: ASDA park → holder → espera Retry/Long/corte → feed → cut → home.
 
-        Tras park: operador Retry (55 mm) o Long feed (100 mm); no hay feed automático.
+        Tras park: operador Retry (55 mm), Long feed (100 mm) o Next Cutting;
+        no hay feed automático (Next corta sin alimentar).
         Tras feed: Retry, Long feed o Next Cutting.
         Tras corte: Next Return ASDA to 0.
         Feed físico sin validación láser ni OM (skipValidate en Motion).
@@ -862,7 +873,8 @@ class CycleRunner:
         self._set_state(TX_BUSY)
         self._host.cycle_log(
             f"Refill Start — ASDA→{use_asda:g} mm · "
-            f"espera Retry ({use_feed:g} mm) o Long feed {REFILL_LONG_FEED_MM:g} mm · "
+            f"espera Retry ({use_feed:g} mm), Long feed {REFILL_LONG_FEED_MM:g} mm "
+            f"o Next Cutting · "
             f"lados={CycleConfig.normalize_feed_sides(cfg.feed_sides)}"
         )
         args = (float(rpm), use_feed, use_asda)
@@ -878,12 +890,12 @@ class CycleRunner:
             return {"ok": False, "error": "Sin refill pendiente de confirmación"}
         prompt = self._refill_prompt
         if ok:
-            if prompt == "await_feed":
-                return {"ok": False, "error": "Purga: usa Retry o Long feed"}
             self._refill_confirm.set()
-            if prompt == "after_feed":
+            if prompt in ("await_feed", "after_feed"):
                 if self._refill_skip_cut:
                     self._host.cycle_log("Refill: Continuar → ASDA a 0")
+                elif prompt == "await_feed":
+                    self._host.cycle_log("Refill: Next → Cutting (sin feed)")
                 else:
                     self._host.cycle_log("Refill: Next → Cutting")
             else:
@@ -1049,8 +1061,26 @@ class CycleRunner:
         else:
             self._host.cycle_log("PreFeeder: In process OFF falló")
 
+    def _pf_arm_fill_for_buffer_full(self, reason: str) -> None:
+        """Start 0x2A + In process ON: ventana de relleno abierta.
+
+        Si no hay Buffer Full: el esclavo hace servo y luego DeReeler.
+        Full → corte instantáneo. Vacío otra vez → vuelve a alimentar.
+        In process se queda ON durante el lote (Tfeed + relleno). No se
+        detiene el ciclo por buffer vacío; solo un EXXX del PF para.
+        """
+        if not self._use_prefeeder() or self.is_refill_active():
+            return
+        if not self._host.cmd_pf_start():
+            self._host.cycle_log(f"PreFeeder: Start 0x2A falló ({reason})")
+        if self._host.cmd_pf_in_process(True):
+            self._pf_held_idle = False
+            self._host.cycle_log(f"PreFeeder: In process ON ({reason})")
+        else:
+            self._host.cycle_log("PreFeeder: In process ON falló")
+
     def _pf_rearm_in_process(self, reason: str) -> None:
-        """Resume/Busy con lote vivo → rearmar In process (sensores + Tfeed)."""
+        """Resume/Busy con lote vivo → Start + In process (relleno si no Full)."""
         if (
             not self._use_prefeeder()
             or not self.is_active()
@@ -1058,11 +1088,7 @@ class CycleRunner:
             or self.is_refill_active()
         ):
             return
-        if self._host.cmd_pf_in_process(True):
-            self._pf_held_idle = False
-            self._host.cycle_log(f"PreFeeder: In process ON ({reason})")
-        else:
-            self._host.cycle_log("PreFeeder: In process ON falló")
+        self._pf_arm_fill_for_buffer_full(reason)
 
     def mark_init_done(self) -> None:
         with self._lock:
@@ -2659,10 +2685,12 @@ class CycleRunner:
     ) -> bool:
         """Buffer Full confirmado (Start / Resume / Continuar ciclo) antes de producir.
 
-        Ya Full → sale al primer tick. Vacío → espera relleno. Stop aborta.
+        No fía la caché previa: pide status y espera un snapshot nuevo.
+        Vacío → el esclavo debe rellenar (Start + In process). Stop aborta.
         Timeout o EXXX PF (E052/E058) fallan el lote; no se alimenta a ciegas.
         """
         sides = self._feed_side_list()
+        seq0 = self._host.pf_status_seq()
         self._host.pf_request_status()
         deadline = time.monotonic() + max(0.0, float(timeout_s))
         last_why = ""
@@ -2675,6 +2703,7 @@ class CycleRunner:
                     fallback="prefeeder_all_ok",
                 )
                 return False
+            fresh = self._host.pf_status_seq() > seq0
             reasons: list[str] = []
             all_ok = True
             for s in sides:
@@ -2682,6 +2711,9 @@ class CycleRunner:
                 if not ok:
                     all_ok = False
                 reasons.append(why)
+            if not fresh:
+                all_ok = False
+                reasons.append("status=?")
             why_txt = " ".join(reasons)
             if all_ok:
                 self._host.cycle_log(
@@ -2713,11 +2745,10 @@ class CycleRunner:
     def _ensure_pf_buffer_full_after_resume(
         self, reason: str = "Resume", *, force: bool = False
     ) -> bool:
-        """Tras Resume / Continuar ciclo: misma espera Buffer Full que Start.
+        """Tras Resume / Continuar ciclo: Start + In process y espera Buffer Full.
 
-        request_resume no bloquea: deja el flag y rearma In process (Busy).
+        request_resume no bloquea: deja el flag; Busy/este método arman el relleno.
         Continuar ciclo no pasa por request_resume: force=True.
-        Si el hilo de ciclo gana la carrera, rearma aquí antes de esperar.
         La espera no suma a CT (Start también es prep fuera de reloj).
         """
         with self._lock:
@@ -2726,8 +2757,8 @@ class CycleRunner:
             self._resume_need_buffer_full = False
         if not self._use_prefeeder():
             return True
-        if self._pf_held_idle:
-            self._pf_rearm_in_process(reason)
+        # Start + In process: rellenar si no hay Full; el ciclo no se corta por vacío.
+        self._pf_arm_fill_for_buffer_full(reason)
         t0 = time.monotonic()
         ok = self._wait_pf_buffer_full_on_start(
             timeout_s=float(self.get_config().pf_ready_timeout_s),
@@ -2990,7 +3021,7 @@ class CycleRunner:
     def _wait_refill_operator_decision(self, prompt: str) -> str:
         """'ok' | 'reject' | 'retry'. Abort/Stop → 'reject'.
 
-        prompt: await_feed (Retry / Long feed, sin corte)
+        prompt: await_feed (Retry / Long feed / Next Cutting)
               | after_feed (Retry / Long feed / Next Cutting)
               | after_cut (Next ASDA 0).
         """
@@ -3004,8 +3035,8 @@ class CycleRunner:
         self._enter_pause_andon()
         if prompt == "await_feed":
             self._host.cycle_log(
-                f"Refill: park listo — Retry o Long feed {REFILL_LONG_FEED_MM:g} mm "
-                "(sin feed automático)"
+                f"Refill: park listo — Retry, Long feed {REFILL_LONG_FEED_MM:g} mm "
+                "o Next → Cutting (sin feed automático)"
             )
         elif prompt == "after_feed":
             if self._refill_skip_cut:
@@ -3025,7 +3056,7 @@ class CycleRunner:
             while True:
                 if self._should_abort() or self._refill_reject.is_set():
                     return "reject"
-                if prompt != "await_feed" and self._refill_confirm.is_set():
+                if self._refill_confirm.is_set():
                     return "ok"
                 if prompt in ("await_feed", "after_feed") and self._refill_retry.is_set():
                     return "retry"
@@ -3127,6 +3158,8 @@ class CycleRunner:
         while True:
             if not fed_once:
                 decision = self._wait_refill_operator_decision("await_feed")
+                if decision == "ok":
+                    break
                 if decision != "retry":
                     return "cancel"
                 use_feed = self._refill_next_feed_mm
@@ -3181,7 +3214,7 @@ class CycleRunner:
         return "ok"
 
     def _run_refill(self, rpm: float, feed_mm: float, asda_mm: float) -> None:
-        """ASDA park → holder → espera Retry/Long → feed ↔ retry → cut → home."""
+        """ASDA park → holder → espera Retry/Long/corte → feed ↔ retry → cut → home."""
         with self._lock:
             self._active = True
             self._refill_mode = True
@@ -3238,43 +3271,60 @@ class CycleRunner:
     def _deposit_target_mm(self, rep: int, target_mm: float) -> float:
         return float(target_mm) + self._deposit_extra_mm(rep)
 
+    def _mark_cutter_set(self) -> None:
+        self._cutter_set_mono = time.monotonic()
+
     def _mark_cutter_res(self) -> None:
         self._cutter_res_mono = time.monotonic()
 
-    def _ensure_cutter_settled_before_deposit(self, cut_sides: str) -> bool:
-        """True = abort. Reafirma Res y espera asiento mín. antes de MOVE depósito.
+    def _wait_ms_op(self, ms: int, op_name: str, log_txt: str) -> bool:
+        """Delay interno con timing. True = abort."""
+        wait = max(0, int(ms))
+        if wait <= 0:
+            return self._should_abort()
+        self._host.cycle_log(log_txt)
+        op = self._begin_op(op_name)
+        aborted = self._pausable_delay(wait)
+        self._end_op(op, ok=not aborted)
+        return aborted
 
-        Evita arrancar el lineal de depósito con el cortador aún en carrera
-        (Res TCP es fire-and-forget; cutter_post_ms a menudo << pulso PLC).
+    def _plc_precut_drain_remain_ms(self, already_ms: int) -> int:
+        """Ms que faltan para que el PLC termine Holder+Encoder precut."""
+        need = PLC_PRECUT_VALVE_CMDS * PLC_VALVE_SLOT_MS
+        return max(0, need - max(0, int(already_ms)))
+
+    def _ensure_cutter_settled_before_travel(self, cut_sides: str) -> bool:
+        """True = abort. ASDA no se mueve hasta KEEP Set/Res asentado.
+
+        El Set HMI va fire-and-forget: si Holder+Encoder aún ocupan el ESP,
+        el pulso real del cortador llega tarde. El reloj cuenta desde el Set.
         """
-        need_ms = max(
-            int(self.get_config().cutter_post_ms or 0),
-            int(CUTTER_SETTLE_BEFORE_DEPOSIT_MS),
-        )
-        # Reafirma OFF: el PLC solo pulsa si el KEEP lógico seguía ON.
         self._host.cmd_plc_cutters(False, sides=cut_sides, force=True)
+        need_from_set_ms = (
+            2 * PLC_VALVE_SLOT_MS
+            + max(
+                int(self.get_config().cutter_post_ms or 0),
+                int(CUTTER_SETTLE_BEFORE_DEPOSIT_MS),
+            )
+        )
         now = time.monotonic()
-        if self._cutter_res_mono is None:
-            self._cutter_res_mono = now
-            remain = need_ms
+        t0 = self._cutter_set_mono or self._cutter_res_mono
+        if t0 is None:
+            self._cutter_set_mono = now
+            remain = need_from_set_ms
         else:
-            remain = int(
-                max(0.0, need_ms - (now - self._cutter_res_mono) * 1000.0)
-            )
+            remain = int(max(0.0, need_from_set_ms - (now - t0) * 1000.0))
         if remain > 0:
-            self._host.cycle_log(
-                f"Depósito: espera asiento cortador {remain} ms "
-                f"(mín {need_ms} ms desde Res)"
+            return self._wait_ms_op(
+                remain,
+                "cutter_settle",
+                f"Post-corte: espera asiento {remain} ms "
+                f"(mín {need_from_set_ms} ms desde Set; "
+                f"slots PLC {2 * PLC_VALVE_SLOT_MS} ms + carrera)",
             )
-            op = self._begin_op("cutter_settle")
-            aborted = self._pausable_delay(remain)
-            self._end_op(op, ok=not aborted)
-            if aborted:
-                return True
-        else:
-            self._host.cycle_log(
-                f"Depósito: cortador asentado (ya ≥{need_ms} ms desde Res)"
-            )
+        self._host.cycle_log(
+            f"Post-corte: cortador asentado (ya ≥{need_from_set_ms} ms desde Set)"
+        )
         return False
 
     def _check_deposit_travel(self, length_mm: float, qty: int) -> str | None:
@@ -3395,15 +3445,14 @@ class CycleRunner:
                         )
                     self._finish(False)
                     return
-                # Busy máquina → In process en Master/L+R (arma sensores + acepta Tfeed).
-                # Sin esto, PF_LR NACK el trigger TCP (sensorsMotionArmed=false).
+                # Start ya se mandó. In process ON abre el relleno (servo→DeReeler
+                # si no hay Full) y se queda ON el lote: vacío mid-ciclo = seguir
+                # alimentando, no parar. Solo EXXX del PF detiene.
                 if self._host.cmd_pf_in_process(True):
                     self._pf_held_idle = False
                     self._host.cycle_log("PreFeeder: In process ON (ciclo Busy)")
                 else:
                     self._host.cycle_log("PreFeeder: In process ON falló")
-                # Start, Resume y Continuar ciclo: no alimentar hasta Buffer Full.
-                # Si ya está Full (lote previo settled), sale al primer tick.
                 if not self._wait_pf_buffer_full_on_start(
                     timeout_s=float(self.get_config().pf_ready_timeout_s)
                 ):
@@ -3431,6 +3480,7 @@ class CycleRunner:
                         self._last_lineal_mm = 0.0
                         self._mark_piece_clock_start()
                         self._timing_reset_piece()
+                        self._cutter_set_mono = None
                         self._cutter_res_mono = None
                         # 1–2 Holder+Encoder ON + delay (solo 1ª; se mantienen el lote)
                         if rep == 1:
@@ -3560,6 +3610,17 @@ class CycleRunner:
                             break
                         if self._do_wait(rep, qty, "wait_holder_precut", "holder_on_ms"):
                             break
+                        precut_wait = max(0, int(self.get_config().holder_on_ms or 0))
+                        drain_ms = self._plc_precut_drain_remain_ms(precut_wait)
+                        if drain_ms > 0 and self._wait_ms_op(
+                            drain_ms,
+                            "plc_precut_drain",
+                            f"PLC: drena Holder+Encoder {drain_ms} ms "
+                            f"antes del cortador "
+                            f"({PLC_PRECUT_VALVE_CMDS}×{PLC_VALVE_SLOT_MS} ms "
+                            f"− {precut_wait} ms ya esperados)",
+                        ):
+                            break
                         # 15–18 Corte solo en lados de feed (evita pulsar el cortador vacío)
                         # force=True: no omitir Set/Res por caché HMI desfasada.
                         # Si abortamos tras Set, Res de emergencia antes del break.
@@ -3596,6 +3657,7 @@ class CycleRunner:
                         cut_op = self._begin_op("corte")
                         self._host.cycle_log(f"Cortador ON (Set) lados={cut_sides}")
                         self._host.cmd_plc_cutters(True, sides=cut_sides, force=True)
+                        self._mark_cutter_set()
                         if self._after_step("cutter_on"):
                             self._end_op(cut_op, ok=False)
                             self._host.cmd_plc_cutters(False, sides=cut_sides, force=True)
@@ -3619,6 +3681,9 @@ class CycleRunner:
                             break
                         if self._do_wait(rep, qty, "wait_cutter_post", "cutter_post_ms"):
                             break
+                        # No mover ASDA (depósito ni despeje) hasta KEEP asentado.
+                        if self._ensure_cutter_settled_before_travel(cut_sides):
+                            break
                         # 19–20 Depósito + delay. Feed de la siguiente: tras HOME (ASDA=0).
                         # wip_pos_signed = posición firmada confirmada; wip_start_mm = |pos|
                         # (fuente soplo WIP fin; se actualiza tras despeje post-pinzas).
@@ -3630,9 +3695,6 @@ class CycleRunner:
                         if abs(extra) > 0.01:
                             deposit_target = target_mm + extra
                             batch_n = self._deposit_batch_index(rep)
-                            # No mover ASDA hasta cortador asentado (Res + piso 250 ms).
-                            if self._ensure_cutter_settled_before_deposit(cut_sides):
-                                break
                             self._host.clear_motion_wait_flags()
                             self._host.cycle_log(
                                 f"Depósito MOVE → {deposit_target:.1f} mm "

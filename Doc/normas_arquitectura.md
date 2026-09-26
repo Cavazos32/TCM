@@ -182,7 +182,7 @@ ERROR → latch EXXX → mostrar EXXX → detener secuencia
 4. Corregir causa física si aplica.  
 5. **Reset HMI:** Reset del módulo fuente → validar condición. **Siempre** Reset PF `0x2C` si hay enlace (igual que Start siempre manda `0x2A`). Si sigue, no se libera el latch. **No Home. No Start automático.** Reset PLC `0x1E` solo si el EXXX latcheado es del PLC.  
 6. **Sin lote:** Idle. Esperar Start.  
-7. **Con lote activo:** Pause. **Resume** (solo si el latch ya no está) → Start/Init PF → Buffer Full → terminar la pieza → review OK → purga (refill existente; no alimentar sola: espera Retry o Long feed; no mover ASDA si ya está en park) → Continuar ciclo → Buffer Full (igual que Start/Resume) → siguiente pieza.
+7. **Con lote activo:** Pause. **Resume** (solo si el latch ya no está) → Start/Init PF → Buffer Full → terminar la pieza → review OK → purga (refill existente; no alimentar sola: espera Retry, Long feed o Next corte; no mover ASDA si ya está en park) → Continuar ciclo → Buffer Full (igual que Start/Resume) → siguiente pieza.
 
 **Home** es comando explícito del operador. Reset jamás llama Home.
 
@@ -198,7 +198,7 @@ Con **pieza/lote en curso** (no refill): Pause. HMI pregunta si requiere Materia
 2. **Sí Materialist** → se libera solo el latch E050 para entrar a Materialist; HOME de esa ruta; esperar Materialist OFF; continuar lote.
 
 **Purga / Refill con E050:** el operador puede vaciar manguera **con el latch E050 aún activo**. No libera el latch. Start y Resume siguen bloqueados.  
-La purga no alimenta sola: tras park espera Retry (55 mm) o Long feed (100 mm).  
+La purga no alimenta sola: tras park espera Retry (55 mm), Long feed (100 mm) o Next corte.  
 Si el lote está en Pause por E050, Purge es comando de operador: suelta el hilo del lote (mismo efecto que Stop) y corre la purga suelta. No es Stop automático por el EXXX.
 
 Stop del lote solo si el operador pulsa Stop **o** Purge (caso E050 anterior). No añadir pasos a FLOW_STEPS.
@@ -212,6 +212,8 @@ El láser es el **tope de feed** (L y R): no alimentar más allá de su referenc
 **Start y tras error (HMI):** antes de mandar Feed (1ª pieza al Start, misma pieza tras error, o siguiente tras Continuar ciclo), Main **valida la referencia** (GET `/api/status` una vez; si falla, caché TCP). Si el láser de todos los `feedSides` está ON, **omite el feed**. Feed ya hecho post-HOME (handoff) no revalida. No es sondeo de ciclo.
 
 **Feed entre piezas:** no hay prefetch en paralelo con depósito/despeje/HOME. Tras HOME, Main confirma ASDA en 0 (caché Reached, ±0.5 mm; si no, MOVE_ZERO) y entonces Feed de la siguiente. Tfeed sigue en el paso 3. Última pieza: sin feed post-HOME.
+
+**Corte antes de depósito/despeje:** el KEEP del cortador (Set/Res) debe quedar procesado y asentado en el PLC antes de cualquier MOVE ASDA post-corte. Holder+Encoder precut ocupan el ESP (~150 ms cada uno); no encolar el Set de corte encima ni arrancar depósito/despeje durante ese pulso. Si ASDA se mueve antes, el corte cae en el extra (despeje ~18 mm) y la pieza sale larga.
 
 Si el láser está **OFF al iniciar** el feed (hunt / 1ª carga): no hay approach rápido a 44–55 mm. **LASER_SEEK** avanza a trozos cortos (~1.5 mm, ~25 mm/s) hasta flanco ON. Al ON: CW Halt + **congelar destino = posición actual** (el Halt solo no cancela el perfil largo). GPIO crudo, sin debounce HMI de 150 ms. Tras halt → **FEED_OK** sin ventana PHYS OM (50–58).
 

@@ -369,7 +369,9 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                 : recoveryStage === 'working'
                   ? t('refill_confirm_hint_working')
                   : recoveryStage === 'await_feed'
-                    ? t('refill_confirm_hint_await')
+                    ? skipCut
+                      ? t('refill_confirm_hint_await_nocut')
+                      : t('refill_confirm_hint_await')
                     : skipCut
                       ? t('refill_confirm_hint_feed_nocut')
                       : t('refill_confirm_hint_feed');
@@ -848,7 +850,8 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     {t('btn_refill_confirm_long')}
                   </button>
                 )}
-                {recoveryStage === 'after_feed' && onRefillConfirm && (
+                {(recoveryStage === 'after_feed' || recoveryStage === 'await_feed') &&
+                  onRefillConfirm && (
                   <button
                     id="btn-recovery-next-cut"
                     type="button"
@@ -968,8 +971,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     {t('btn_refill_confirm_long')}
                   </button>
                 )}
-                {machineState.refillPrompt !== 'working' &&
-                  machineState.refillPrompt !== 'await_feed' && (
+                {machineState.refillPrompt !== 'working' && (
                   <button
                     id="btn-refill-confirm-yes"
                     type="button"

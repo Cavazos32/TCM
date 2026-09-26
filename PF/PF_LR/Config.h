@@ -4,7 +4,7 @@
 
 // ====================== LADO L / R ======================
 // Comentada = L | descomentada = R
-#define PREFEEDER_SIDE_RIGHT
+//#define PREFEEDER_SIDE_RIGHT
 
 #ifndef PREFEEDER_SIDE_RIGHT
 #define PREFEEDER_SIDE_TAG  "L"
@@ -54,6 +54,9 @@ constexpr uint16_t SERVO_PWM_MIN_US       = 500;
 constexpr uint16_t SERVO_PWM_MAX_US       = 2500;
 constexpr uint16_t SERVO_PWM_NEUTRAL_US     = 1500;
 constexpr uint8_t  SERVO_LEDC_BITS        = 14;
+// Canal fijo: ledcAttach() auto-elige y el RMT del DeReeler lo suelta;
+// sin canal fijo el RC a veces no recupera y solo gira el DeReeler.
+constexpr uint8_t  SERVO_LEDC_CHANNEL     = 7;
 constexpr uint32_t DEREELER_START_DELAY_MS = 100;
 // Tras Stop() RMT el LEDC se suelta: reafirmar 1500 cada frame RC, no cada 250 ms.
 constexpr uint32_t SERVO_STOP_REASSERT_MS = 20;

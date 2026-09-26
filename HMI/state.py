@@ -356,6 +356,8 @@ class HmiState:
             # UI del Master (EXXX / PF-007). Nunca el texto genérico 0x3C.
             "master_error_ui": "",
             "master_error_side": "",
+            # Cada status Master incrementa: Start/Resume no fían Buffer Full de caché.
+            "status_seq": 0,
         }
 
         self._client = MotionClient(
@@ -856,6 +858,11 @@ class HmiState:
             if not st:
                 return None
             return st in ("cw", "servo_lead")
+
+    def pf_status_seq(self) -> int:
+        """Monótono: sube con cada status Master (Buffer Full fresco)."""
+        with self._lock:
+            return int(self._pf.get("status_seq") or 0)
 
     def pf_request_status(self) -> bool:
         """Sondea Master (byte Idle): responde con status L/R + holgura."""
@@ -1885,7 +1892,7 @@ class HmiState:
         feed_mm: float | None = None,
         asda_mm: float | None = None,
     ) -> dict:
-        """Purga/refill material: ASDA park → espera Retry/Long → feed → corte → HOME.
+        """Purga/refill material: ASDA park → espera Retry/Long/corte → feed → corte → HOME.
 
         E050 (encoder / aire / manguera): se permite con latch activo.
         Start/Resume siguen bloqueados; el EXXX no se borra.
@@ -3871,6 +3878,7 @@ class HmiState:
             if mtype == "hello" and msg.get("role") == "prefeeder":
                 return False
             if mtype == "status" and msg.get("actuator") == "prefeeder":
+                self._pf["status_seq"] = int(self._pf.get("status_seq") or 0) + 1
                 changed = False
                 entered_error = False
                 any_rose = False
