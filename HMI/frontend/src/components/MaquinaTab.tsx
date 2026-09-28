@@ -270,11 +270,13 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
   const pfHasError = !!preFeederState.hasError && pfConnected;
   // Module Controls keeps independent PF diagnostics; machine RESET owns the global EXXX latch.
   const recoveryStage =
-    machineState.recoveryPrompt ||
-    (machineState.recoveryAfterError || machineState.e050Lot
-      ? machineState.refillPrompt ||
-        (machineState.refillActive ? 'working' : '')
-      : '');
+    machineState.refillActive && machineState.refillPrompt
+      ? machineState.refillPrompt
+      : machineState.recoveryPrompt ||
+        (machineState.recoveryAfterError || machineState.e050Lot
+          ? machineState.refillPrompt ||
+            (machineState.refillActive ? 'working' : '')
+          : '');
   const trayFull = recoveryStage === 'tray_full';
   const showRecoveryTrack = !!recoveryStage && !trayFull;
   const e050Lot = !!machineState.e050Lot;
@@ -304,7 +306,8 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
       ? 'abort'
     : recoveryStage === 'continue_cycle'
       ? 'continue'
-      : recoveryStage === 'purge_decide'
+      : recoveryStage === 'purge_decide' ||
+          recoveryStage === 'pre_purge_decide'
         ? 'purge'
         : recoveryStage === 'review_piece'
         ? 'review'
@@ -330,6 +333,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
   const showMachineResumeCoach = showErrorProcess && processStep === 'resume';
   const showRecoveryActions =
     recoveryStage === 'abort_decide' ||
+    recoveryStage === 'pre_purge_decide' ||
     recoveryStage === 'purge_decide' ||
     recoveryStage === 'await_feed' ||
     recoveryStage === 'after_feed' ||
@@ -358,6 +362,8 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
         ? t('e050_materialist_wait_title')
         : recoveryStage === 'abort_decide'
           ? t('recovery_abort_title')
+        : recoveryStage === 'pre_purge_decide'
+          ? t('recovery_pre_purge_title')
         : recoveryStage === 'review_piece'
           ? t('recovery_review_title')
           : recoveryStage === 'continue_cycle'
@@ -383,6 +389,8 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
         ? t('e050_materialist_wait_hint')
         : recoveryStage === 'abort_decide'
             ? t('recovery_abort_hint')
+        : recoveryStage === 'pre_purge_decide'
+            ? t('recovery_pre_purge_hint')
         : recoveryStage === 'review_piece'
             ? t('recovery_review_hint')
             : recoveryStage === 'continue_cycle'
@@ -954,7 +962,9 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     </button>
                   </>
                 )}
-                {recoveryStage === 'purge_decide' && onRecoveryReview && (
+                {(recoveryStage === 'purge_decide' ||
+                  recoveryStage === 'pre_purge_decide') &&
+                  onRecoveryReview && (
                   <>
                     <button
                       id="btn-recovery-purge-yes"

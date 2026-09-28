@@ -112,7 +112,7 @@ export interface MachineState {
   refillAwaitingConfirm: boolean;
   /** working | await_feed | after_feed | after_cut | "" */
   refillPrompt: string;
-  /** abort_decide | review_piece | continue_cycle | tray_full | e050_* | "" */
+  /** abort_decide | pre_purge_decide | review_piece | continue_cycle | tray_full | e050_* | "" */
   recoveryPrompt: string;
   recoveryAwaitingConfirm: boolean;
   /** Piezas por tray antes de pausar para vaciar (0 = sin tope). */

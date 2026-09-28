@@ -1625,7 +1625,7 @@ class HmiState:
             asked = self._cycle.request_abort_decision()
             self._banner = {
                 "text": (
-                    "Reset — ¿Abortar ciclo o continuar?"
+                    "Reset — ¿Purgar ahora? Luego continuar o abortar"
                     if asked
                     else "Reset — Resume para continuar"
                 ),
@@ -1717,7 +1717,7 @@ class HmiState:
             asked = self._cycle.request_abort_decision()
             self._banner = {
                 "text": (
-                    "Error reseteado — ¿Abortar ciclo o continuar?"
+                    "Error reseteado — ¿Purgar ahora? Luego continuar o abortar"
                     if asked
                     else "Error reseteado — Resume para continuar"
                 ),
@@ -1990,6 +1990,8 @@ class HmiState:
 
     def cmd_recovery_review(self, ok: bool = True) -> dict:
         res = self._cycle.confirm_recovery_review(ok)
+        if res.get("purge"):
+            return self.cmd_cycle_refill()
         if res.get("resume"):
             return self.cmd_resume()
         if res.get("abort"):

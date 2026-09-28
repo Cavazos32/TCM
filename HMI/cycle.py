@@ -491,10 +491,11 @@ class CycleRunner:
         self._fault = ""
         # recovery en lote: completar pieza en curso (hasta post_piece / corte) y pausar.
         self._recovery = ""  # common lot recovery context | e050_materialist
-        # Tras error recovery: lote vivo → Reset → Resume → pieza → review → purga → Continuar.
+        # Tras error: lote vivo → Reset → purga → abort_decide → Resume → pieza → review → purga.
         self._recovery_after_error = False
-        self._recovery_prompt = ""  # "" | abort_decide | review_piece | continue_cycle | tray_full | e050_materialist
+        self._recovery_prompt = ""  # "" | pre_purge_decide | abort_decide | review_piece | continue_cycle | tray_full | e050_materialist
         self._recovery_awaiting = False
+        self._pending_lot_decision = False
         self._recovery_confirm = threading.Event()
         self._recovery_reject = threading.Event()
         # E050 + Materialist: terminar pieza en curso si existe, HOME y Materialist.
@@ -768,6 +769,7 @@ class CycleRunner:
             self._refill_prompt = ""
             self._recovery_awaiting = False
             self._recovery_prompt = ""
+            self._pending_lot_decision = False
         # Desarma waits Stage2/Feed/Reached — si no, el hilo queda active ~3 min
         # y Reset responde "Detener ciclo antes de Reset".
         self._host.clear_motion_wait_flags()
@@ -822,17 +824,39 @@ class CycleRunner:
         return {"ok": True}
 
     def request_abort_decision(self) -> bool:
-        """Tras Reset válido con lote vivo: operador elige Abortar o Continuar.
+        """Tras Reset válido con lote vivo: primero purgar, luego Abortar/Continuar.
 
         No pisa prompts de recovery en curso (E050 Materialist, review, purga).
         """
         if not self.is_active() or not self._pause.is_set():
             return False
         with self._lock:
-            if self._recovery_prompt == "abort_decide" and self._recovery_awaiting:
+            if (
+                self._recovery_prompt in ("pre_purge_decide", "abort_decide")
+                and self._recovery_awaiting
+            ):
                 return True
             if self._recovery_prompt or self._refill_awaiting_confirm:
                 return False
+            self._pending_lot_decision = True
+            self._recovery_prompt = "pre_purge_decide"
+            self._recovery_awaiting = True
+        self._host.cycle_log(
+            "Recovery: ¿purgar ahora? Luego continuar o abortar el lote"
+        )
+        self._host.cycle_notify()
+        return True
+
+    def request_lot_continue_or_abort(self) -> bool:
+        """Tras purga (o skip): operador elige Abortar o Continuar el lote."""
+        if not self.is_active() or not self._pause.is_set():
+            return False
+        with self._lock:
+            if self._recovery_prompt == "abort_decide" and self._recovery_awaiting:
+                return True
+            if self._refill_awaiting_confirm or self._refill_mode:
+                return False
+            self._pending_lot_decision = True
             self._recovery_prompt = "abort_decide"
             self._recovery_awaiting = True
         self._host.cycle_log("Recovery: ¿abortar ciclo o continuar el lote?")
@@ -842,10 +866,22 @@ class CycleRunner:
     def confirm_recovery_review(self, ok: bool = True) -> dict[str, Any]:
         """Resuelve la decisión E050 o las confirmaciones genéricas de recovery."""
         prompt = self._recovery_prompt
+        if self._recovery_awaiting and prompt == "pre_purge_decide":
+            with self._lock:
+                self._recovery_awaiting = False
+                self._recovery_prompt = ""
+            if ok:
+                self._host.cycle_log("Recovery: operador eligió purgar primero")
+                self._host.cycle_notify()
+                return {"ok": True, "purge": True}
+            self._host.cycle_log("Recovery: operador omitió la purga previa")
+            asked = self.request_lot_continue_or_abort()
+            return {"ok": True, "askedAbort": asked}
         if self._recovery_awaiting and prompt == "abort_decide":
             with self._lock:
                 self._recovery_awaiting = False
                 self._recovery_prompt = ""
+                self._pending_lot_decision = False
             if ok:
                 self._host.cycle_log("Recovery: operador eligió continuar el lote")
                 self._host.cycle_notify()
@@ -955,6 +991,14 @@ class CycleRunner:
             return {"ok": False, "error": "Sin lote activo"}
         if self.is_refill_active() or self._lot_purge_request is not None:
             return {"ok": False, "error": "Purga ya en curso"}
+        with self._lock:
+            # Overlay Abortar/Purgar no puede tapar Retry / Long feed / Next.
+            if self._recovery_prompt in (
+                "pre_purge_decide",
+                "abort_decide",
+            ):
+                self._recovery_awaiting = False
+                self._recovery_prompt = ""
         self._lot_purge_request = (feed_mm, asda_mm)
         self._restart_piece = True
         self._flow_interrupt.set()
@@ -1012,6 +1056,8 @@ class CycleRunner:
             if self._pause_t0 is None:
                 self._pause_t0 = time.monotonic()
         self._enter_pause_andon()
+        if self._pending_lot_decision:
+            self.request_lot_continue_or_abort()
         self._host.cycle_notify()
 
     def release_for_manual_refill(self, timeout_s: float = 2.0) -> dict[str, Any]:
@@ -1183,6 +1229,7 @@ class CycleRunner:
         self._recovery_after_error = False
         self._recovery_prompt = ""
         self._recovery_awaiting = False
+        self._pending_lot_decision = False
         self._recovery_confirm.clear()
         self._recovery_reject.clear()
         self._e050_finish_piece = False
@@ -1363,7 +1410,7 @@ class CycleRunner:
         self._host.cycle_log(reason)
         self._host.cycle_notify()
         while self._pause.is_set():
-            if self._should_abort() or self._restart_piece:
+            if self._should_abort() or self._restart_piece or self._lot_purge_request is not None:
                 return True
             time.sleep(0.05)
         with self._lock:
@@ -1418,7 +1465,7 @@ class CycleRunner:
             return False
         self._arm_recovery_pause()
         self._host.cycle_log(
-            "Recovery: lote vivo — Reset → Resume para terminar la pieza"
+            "Recovery: lote vivo — Reset, luego purga y decidir continuar/abortar"
         )
         self._host.cycle_notify()
         while True:
@@ -1802,7 +1849,7 @@ class CycleRunner:
         while self._pause.is_set():
             if self._should_abort():
                 return True
-            if self._restart_piece:
+            if self._restart_piece or self._lot_purge_request is not None:
                 return True
             time.sleep(0.05)
         if paused_here:
@@ -1817,7 +1864,7 @@ class CycleRunner:
             return True
         self._release_e050_finish_pause()
         while self._pause.is_set():
-            if self._should_abort() or self._restart_piece:
+            if self._should_abort() or self._restart_piece or self._lot_purge_request is not None:
                 return True
             time.sleep(0.05)
         if not self._ensure_pf_buffer_full_after_resume():

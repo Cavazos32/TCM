@@ -175,11 +175,13 @@ export const CycleTab: React.FC<CycleTabProps> = ({
 }) => {
   const { t } = useApp();
   const recoveryStage =
-    machineState.recoveryPrompt ||
-    (machineState.recoveryAfterError || machineState.e050Lot
-      ? machineState.refillPrompt ||
-        (machineState.refillActive ? 'working' : '')
-      : '');
+    machineState.refillActive && machineState.refillPrompt
+      ? machineState.refillPrompt
+      : machineState.recoveryPrompt ||
+        (machineState.recoveryAfterError || machineState.e050Lot
+          ? machineState.refillPrompt ||
+            (machineState.refillActive ? 'working' : '')
+          : '');
   const showManualRefill =
     !machineState.recoveryAfterError &&
     !machineState.e050Lot &&
@@ -199,6 +201,8 @@ export const CycleTab: React.FC<CycleTabProps> = ({
       ? t('e050_materialist_wait_title')
       : recoveryStage === 'abort_decide'
         ? t('recovery_abort_title')
+      : recoveryStage === 'pre_purge_decide'
+        ? t('recovery_pre_purge_title')
       : recoveryStage === 'review_piece'
         ? t('recovery_review_title')
         : recoveryStage === 'purge_decide'
@@ -222,6 +226,8 @@ export const CycleTab: React.FC<CycleTabProps> = ({
       ? t('e050_materialist_wait_hint')
       : recoveryStage === 'abort_decide'
       ? t('recovery_abort_hint')
+      : recoveryStage === 'pre_purge_decide'
+      ? t('recovery_pre_purge_hint')
       : recoveryStage === 'review_piece'
       ? t('recovery_review_hint')
       : recoveryStage === 'purge_decide'
@@ -248,6 +254,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
     recoveryStage === 'e050_finishing' ||
     recoveryStage === 'e050_materialist_wait' ||
     recoveryStage === 'abort_decide' ||
+    recoveryStage === 'pre_purge_decide' ||
     recoveryStage === 'review_piece' ||
     recoveryStage === 'purge_decide' ||
     recoveryStage === 'continue_cycle' ||
@@ -620,7 +627,9 @@ export const CycleTab: React.FC<CycleTabProps> = ({
               </button>
             </>
           )}
-          {recoveryStage === 'purge_decide' && onRecoveryReview && (
+          {(recoveryStage === 'purge_decide' ||
+            recoveryStage === 'pre_purge_decide') &&
+            onRecoveryReview && (
             <>
               <button
                 id="btn-cycle-recovery-purge-yes"

@@ -123,12 +123,12 @@ export const translations = {
     lot_recover_title_c1: 'Proceso C1',
     lot_recover_title_c2: 'Proceso C2 / C3',
     lot_recover_hint_reset:
-      'Pulsa Reset de máquina. No uses Start. Después Resume para terminar la pieza.',
+      'Pulsa Reset de máquina. No uses Start. Después purga y decide si continúas el lote.',
     lot_recover_hint_reset_pf:
       'Pulsa Reset del PreFeeder (no el de máquina). Después Resume.',
     lot_recover_hint_reset_idle: 'Pulsa Reset de máquina. No uses Start.',
     lot_recover_hint_resume:
-      'Pulsa Resume. La máquina termina la pieza; luego revisar, purga y Continuar ciclo.',
+      'Pulsa Continuar lote. La máquina re-arranca la pieza; luego revisar, purga y Continuar ciclo.',
     lot_recover_last_error: 'Último error',
     lot_recover_hint_piece: 'Terminando la pieza. No interrumpas. Luego revisarás.',
     lot_recover_hint_c1:
@@ -226,7 +226,7 @@ export const translations = {
     refill_confirm_title_working: 'Purga en curso…',
     refill_confirm_hint_working: 'ASDA a park. Luego Retry, Long feed o Next para cortar; no alimenta sola.',
     recovery_abort_title: '¿Abortar el ciclo?',
-    recovery_abort_hint: 'Error reseteado con lote activo. Abortar detiene el lote (E068); Continuar reanuda y termina la pieza actual (espera Buffer Full).',
+    recovery_abort_hint: 'Tras la purga (o si el material ya está listo). Abortar detiene el lote (E068); Continuar re-arranca la pieza (espera Buffer Full).',
     btn_recovery_abort: 'Abortar ciclo',
     btn_recovery_abort_continue: 'Continuar lote',
     recovery_review_title: 'Revisa la pieza',
@@ -234,6 +234,8 @@ export const translations = {
     btn_recovery_review_ok: 'Pieza OK',
     recovery_purge_title: '¿Requiere purga?',
     recovery_purge_hint: 'Selecciona si es necesario ejecutar la purga antes de continuar.',
+    recovery_pre_purge_title: '¿Purgar ahora?',
+    recovery_pre_purge_hint: 'Error reseteado con lote activo. Purga primero para sacar el material; después decides si continúas el lote o lo abortas.',
     btn_recovery_purge_yes: 'Sí, purgar',
     btn_recovery_purge_no: 'No purgar',
     recovery_continue_title: 'Listo para continuar',
@@ -561,12 +563,12 @@ export const translations = {
     lot_recover_title_c1: 'C1 process',
     lot_recover_title_c2: 'C2 / C3 process',
     lot_recover_hint_reset:
-      'Press machine Reset. Do not use Start. Then Resume to finish the piece.',
+      'Press machine Reset. Do not use Start. Then purge and decide whether to continue the batch.',
     lot_recover_hint_reset_pf:
       'Press PreFeeder Reset (not machine Reset). Then Resume.',
     lot_recover_hint_reset_idle: 'Press machine Reset. Do not use Start.',
     lot_recover_hint_resume:
-      'Press Resume. The machine finishes the piece; then inspect, purge, Continue cycle.',
+      'Press Continue batch. The machine restarts the piece; then inspect, purge, Continue cycle.',
     lot_recover_last_error: 'Last error',
     lot_recover_hint_piece: 'Finishing the piece. Do not interrupt. Inspect comes next.',
     lot_recover_hint_c1:
@@ -664,7 +666,7 @@ export const translations = {
     refill_confirm_title_working: 'Purge in progress…',
     refill_confirm_hint_working: 'ASDA to park. Then Retry, Long feed or Next to cut; it does not feed by itself.',
     recovery_abort_title: 'Abort the cycle?',
-    recovery_abort_hint: 'Error reset with an active batch. Abort stops the batch (E068); Continue resumes and finishes the current piece (waits for Buffer Full).',
+    recovery_abort_hint: 'After purge (or if the material is already ready). Abort stops the batch (E068); Continue restarts the piece (waits for Buffer Full).',
     btn_recovery_abort: 'Abort cycle',
     btn_recovery_abort_continue: 'Continue batch',
     recovery_review_title: 'Inspect the piece',
@@ -672,6 +674,8 @@ export const translations = {
     btn_recovery_review_ok: 'Piece OK',
     recovery_purge_title: 'Requires purge?',
     recovery_purge_hint: 'Select whether purge is required before continuing.',
+    recovery_pre_purge_title: 'Purge now?',
+    recovery_pre_purge_hint: 'Error reset with an active batch. Purge first to clear the material; then decide whether to continue or abort the batch.',
     btn_recovery_purge_yes: 'Yes, purge',
     btn_recovery_purge_no: 'No purge',
     recovery_continue_title: 'Ready to continue',
