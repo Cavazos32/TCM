@@ -859,7 +859,7 @@ static void refillExpireChannels(uint32_t now)
   auto expire = [&](volatile bool& onFlag, volatile uint32_t& pulseUntilMs) {
     if (!onFlag)
       return;
-    if (pulseUntilMs == 0 || (int32_t)(now - pulseUntilMs) >= 0)
+    if (pulseUntilMs != 0 && (int32_t)(now - pulseUntilMs) >= 0)
     {
       onFlag = false;
       pulseUntilMs = 0;
@@ -901,12 +901,12 @@ static void refillStopChannel(volatile bool& onFlag, volatile uint32_t& pulseUnt
   pulseUntilMs = 0;
 }
 
-// Clic = pulso de refillPulseMs (misma duración para todos). Relanza el timer.
+// JOG: el estado ON/OFF lo gobierna el HMI. No hay autoapagado local.
 static bool refillStartChannel(volatile bool& onFlag, volatile uint32_t& pulseUntilMs)
 {
   const bool wasOn = onFlag;
   onFlag = true;
-  pulseUntilMs = millis() + refillPulseNowMs();
+  pulseUntilMs = 0;
   return !wasOn;
 }
 
@@ -932,7 +932,7 @@ static void serviceRefillPulses()
 }
 
 // which: "material" | "dereeler" | "servo" | "feeder".
-// on=true → un pulso de refillPulseMs (misma duración; relanza el timer).
+// on=true → mantiene JOG hasta recibir on=false desde HMI.
 // on=false → apaga de inmediato.
 static bool applyRefillCommand(const String& which, bool on)
 {
