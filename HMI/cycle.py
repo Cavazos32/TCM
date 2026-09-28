@@ -766,6 +766,7 @@ class CycleRunner:
         prompt = self._recovery_prompt
         if not self._recovery_awaiting or prompt not in (
             "review_piece",
+            "purge_decide",
             "continue_cycle",
             "e050_materialist",
         ):
@@ -1217,11 +1218,19 @@ class CycleRunner:
             time.sleep(0.05)
 
     def _recovery_review_purge_decide(self) -> bool:
-        """Review → purga → Continuar ciclo. False solo si Stop / purga no OK."""
+        """Review → decidir purga → opcionalmente purga → Continuar ciclo."""
         self._host.cycle_log("Recovery: revisa la pieza y confirma OK")
         if self._wait_recovery_prompt("review_piece") != "ok":
             return False
-        self._host.cycle_log("Recovery: purga obligatoria (secuencia refill)")
+        self._host.cycle_log("Recovery: ¿requiere purga?")
+        if self._wait_recovery_prompt("purge_decide") != "ok":
+            self._host.cycle_log("Recovery: operador omitió la purga")
+            with self._lock:
+                self._recovery_prompt = ""
+            self._host.cycle_notify()
+            return self._wait_recovery_prompt("continue_cycle") == "ok"
+
+        self._host.cycle_log("Recovery: operador solicitó purga")
         cfg = self.get_config()
         rpm = float(self._lot_rpm or 1200.0)
         with self._lock:
