@@ -299,7 +299,9 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                 : ''
     : recoveryStage === 'continue_cycle'
       ? 'continue'
-      : recoveryStage === 'review_piece'
+      : recoveryStage === 'purge_decide'
+        ? 'purge'
+        : recoveryStage === 'review_piece'
         ? 'review'
         : recoveryStage === 'working' ||
             recoveryStage === 'await_feed' ||
@@ -322,6 +324,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
   const showMachineResetCoach = showErrorProcess && processStep === 'reset';
   const showMachineResumeCoach = showErrorProcess && processStep === 'resume';
   const showRecoveryActions =
+    recoveryStage === 'purge_decide' ||
     recoveryStage === 'await_feed' ||
     recoveryStage === 'after_feed' ||
     recoveryStage === 'after_cut' ||
@@ -346,7 +349,9 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
           ? t('recovery_review_title')
           : recoveryStage === 'continue_cycle'
             ? t('recovery_continue_title')
-            : recoveryStage === 'after_cut'
+            : recoveryStage === 'purge_decide'
+              ? t('recovery_purge_title')
+              : recoveryStage === 'after_cut'
               ? t('refill_confirm_title_cut')
               : recoveryStage === 'working'
                 ? t('refill_confirm_title_working')
@@ -364,7 +369,9 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
             ? t('recovery_review_hint')
             : recoveryStage === 'continue_cycle'
               ? t('recovery_continue_hint')
-              : recoveryStage === 'after_cut'
+              : recoveryStage === 'purge_decide'
+                ? t('recovery_purge_hint')
+                : recoveryStage === 'after_cut'
                 ? t('refill_confirm_hint_cut')
                 : recoveryStage === 'working'
                   ? t('refill_confirm_hint_working')
@@ -900,6 +907,30 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     >
                       <Check className="h-3.5 w-3.5" />
                       {t('btn_e050_yes_materialist')}
+                    </button>
+                  </>
+                )}
+                {recoveryStage === 'purge_decide' && onRecoveryReview && (
+                  <>
+                    <button
+                      id="btn-recovery-purge-yes"
+                      type="button"
+                      onClick={() => onRecoveryReview(true)}
+                      disabled={!machineState.recoveryAwaitingConfirm}
+                      className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 text-xs font-bold text-white disabled:opacity-40"
+                    >
+                      <Check className="h-3.5 w-3.5" />
+                      {t('btn_recovery_purge_yes')}
+                    </button>
+                    <button
+                      id="btn-recovery-purge-no"
+                      type="button"
+                      onClick={() => onRecoveryReview(false)}
+                      disabled={!machineState.recoveryAwaitingConfirm}
+                      className="flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3.5 py-2 text-xs font-bold text-slate-700 dark:text-slate-200 disabled:opacity-40"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                      {t('btn_recovery_purge_no')}
                     </button>
                   </>
                 )}
