@@ -266,6 +266,14 @@ static void servoAssertNeutral(bool force)
 // y el RC se apaga mientras el DeReeler sigue. Reafirmar cada frame (~20 ms).
 static void servoAssertRun(bool force)
 {
+  // Buffer Full es un enclavamiento directo: ningún caller puede reactivar
+  // el RC mientras el sensor indique Full durante operación automática.
+  if (!idleMode && bufferFullStopNow())
+  {
+    servoAssertNeutral(true);
+    return;
+  }
+
   static uint32_t lastRunMs = 0;
   const uint16_t us = servoMotionPwmUs();
   if (!force && servoRunning && servoLastOutputUs == us
@@ -747,6 +755,14 @@ static void motorRunAutoDereeler()
 // Vacío no es EXXX: se sigue alimentando. Solo falla enclavada para el auto.
 static void beginAutoCwWithServoLead()
 {
+  // Protección local para el arranque automático que escribe PWM directamente.
+  if (!idleMode && bufferFullStopNow())
+  {
+    autoState = AUTO_HOME_HOLD;
+    servoAssertNeutral(true);
+    return;
+  }
+
   servoLeadStartMs = millis();
   autoState = AUTO_SERVO_LEAD;
   // Arranque inmediato del RC (Forced: no depender de cache si forceStop dejó neutro).
