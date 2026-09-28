@@ -27,8 +27,8 @@ Al cerrar el cambio: indicar qué archivos se alinearon.
 - Heartbeat TCP solo valida enlace; no sustituye eventos de aplicación.
 - Opcode = contrato (Excel / Opcodes). No inventar bytes sueltos.
 - PLC válvulas: pulso ON/OFF (KEEP); no enclavado en GPIO ESP. Excepción: Blower (nivel + durationSec del comando). Pause y Error pueden mandar **solo Blower OFF** (cancelar timer).
-- Reset PLC `0x1E`: control PLC **o** Reset HMI si el EXXX es del PLC; tras Reset estados lógicos OFF (HMI refleja). All Off solo bajo demanda (UI / ciclo / Home máquina).
-- Start HMI siempre manda Start PF `0x2A` si hay enlace. Reset HMI siempre manda Reset PF `0x2C` si hay enlace (no solo cuando el EXXX latcheado es del PF).
+- Reset PLC `0x1E`: control PLC **o** Reset HMI si hay enlace (igual que PF `0x2C`); tras Reset estados lógicos OFF (HMI refleja). All Off solo bajo demanda (UI / ciclo / Home máquina).
+- Start HMI siempre manda Start PF `0x2A` si hay enlace. Reset HMI siempre manda Reset PF `0x2C` y Reset PLC `0x1E` si hay enlace (no solo cuando el EXXX latcheado es de ese módulo).
 - Stop y Pause **no** mandan válvulas KEEP ni Reset PLC. Home máquina: ASDA→0 + encoders Set0 + All Off.
 - Pause (`0x48`) / Error (`0x46`) máquina: PreFeeder Idle (`In process OFF`). Resume/Busy/Continuar ciclo rearma In process y espera Buffer Full (igual que Start). Stop de operador sí manda Stop `0x2B` (no In process OFF).
 - Andon: solo estado máquina `0x40–0x49` (no EXXX); TCP `:8769`; mute buzzer desde HMI Debug.
@@ -50,8 +50,10 @@ Detalle operativo: `.cursor/rules/tcm-communication.mdc` (+ `Doc/normas_arquitec
 - EXXX no se reenvía entre esclavos; se alinean por estado / stop / reset.
 - Mismo EXXX + descripción en Main y en HTML local del módulo (R0). Formato UI: `EXXX: Module, Descripción`.
 - Catálogo oficial: hoja Error list en `Doc/TCM - D.xlsx`.
-- Salida de fallo: secuencia unificada — latch EXXX → Reset valida condición → Idle o Resume. No Home automático. Start/Resume bloqueados mientras el latch esté activo. **Excepción:** E050 — con lote/pieza: Pause y preguntar Materialist; Purge/Refill permitido con latch activo (no libera el EXXX). Detalle: `Doc/normas_arquitectura.md`.
-- Lote activo tras Reset válido: Resume → Buffer Full → terminar pieza → review OK → purga (refill existente) → Continuar ciclo → Buffer Full (igual que Start/Resume). Stop solo si el operador pulsa Stop.
+- Salida de fallo: secuencia unificada — latch EXXX → Reset valida condición → Idle o Resume. No Home automático. Start/Resume bloqueados mientras el latch esté activo. Purge / Home / Materialist **siempre accionables** (también con latch; no liberan el EXXX). **Excepción E050:** con lote/pieza: Pause y preguntar Materialist. Detalle: `Doc/normas_arquitectura.md`.
+- Progreso del lote solo se pierde por Stop del operador, Abortar o fin de lote. EXXX / Reset / error en Resume de recovery / Home máquina / Purge (corre dentro del lote) / Materialist / excepción interna del ciclo → Pause con el lote vivo, nunca `_finish` ni Idle. Purge, Home y Materialist **siempre accionables** (no se bloquean por lote, Pause ni latch EXXX; no cierran el lote).
+- MOVE ASDA cierra solo con Reached en destino (Idle fuera de destino → E015; tras Resume se reenvía el MOVE post-corte). Feed exige Holder+Encoder cerrados (re-cerrar tras Reset PLC).
+- Lote activo tras Reset válido: HMI pregunta **¿Abortar ciclo?** (prompt `abort_decide`; Abortar = Stop E068, Continuar = Resume). Nunca abortar ni reanudar solo. Re-arranque de pieza: re-cerrar Holder+Encoder y ASDA en 0 antes del feed. Luego Resume → Buffer Full → terminar pieza → review OK → purga (refill existente) → Continuar ciclo → Buffer Full (igual que Start/Resume). Stop solo si el operador pulsa Stop.
 
 ## Código
 

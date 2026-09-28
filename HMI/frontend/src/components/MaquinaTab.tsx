@@ -275,13 +275,16 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
       ? machineState.refillPrompt ||
         (machineState.refillActive ? 'working' : '')
       : '');
-  const showRecoveryTrack = !!recoveryStage;
+  const trayFull = recoveryStage === 'tray_full';
+  const showRecoveryTrack = !!recoveryStage && !trayFull;
   const e050Lot = !!machineState.e050Lot;
   const skipCut = !!machineState.refillSkipCut;
 
   const processStep: string = e050Lot
     ? recoveryStage === 'e050_materialist'
       ? 'ask'
+      : recoveryStage === 'e050_finishing'
+        ? 'piece'
       : recoveryStage === 'e050_materialist_wait' ||
           ((recoveryStage === 'working' ||
             recoveryStage === 'await_feed' ||
@@ -297,6 +300,8 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               : resumeEnabled || machineState.isPaused
                 ? 'resume'
                 : ''
+    : recoveryStage === 'abort_decide'
+      ? 'abort'
     : recoveryStage === 'continue_cycle'
       ? 'continue'
       : recoveryStage === 'purge_decide'
@@ -324,15 +329,18 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
   const showMachineResetCoach = showErrorProcess && processStep === 'reset';
   const showMachineResumeCoach = showErrorProcess && processStep === 'resume';
   const showRecoveryActions =
+    recoveryStage === 'abort_decide' ||
     recoveryStage === 'purge_decide' ||
     recoveryStage === 'await_feed' ||
     recoveryStage === 'after_feed' ||
     recoveryStage === 'after_cut' ||
     (recoveryStage === 'e050_materialist' &&
       !!machineState.recoveryAwaitingConfirm) ||
+    recoveryStage === 'e050_finishing' ||
     recoveryStage === 'e050_materialist_wait' ||
     recoveryStage === 'review_piece' ||
-    recoveryStage === 'continue_cycle';
+    recoveryStage === 'continue_cycle' ||
+    trayFull;
 
   const showManualRefill =
     !machineState.recoveryAfterError &&
@@ -340,11 +348,16 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
     !!machineState.refillActive &&
     !!machineState.refillPrompt &&
     !!onRefillConfirm;
-  const recoveryTitle =
-    recoveryStage === 'e050_materialist'
+  const recoveryTitle = trayFull
+    ? t('tray_full_title')
+    : recoveryStage === 'e050_materialist'
       ? t('e050_materialist_title')
+      : recoveryStage === 'e050_finishing'
+        ? t('e050_materialist_finish_title')
       : recoveryStage === 'e050_materialist_wait'
         ? t('e050_materialist_wait_title')
+        : recoveryStage === 'abort_decide'
+          ? t('recovery_abort_title')
         : recoveryStage === 'review_piece'
           ? t('recovery_review_title')
           : recoveryStage === 'continue_cycle'
@@ -358,13 +371,18 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                 : recoveryStage === 'await_feed'
                   ? t('refill_confirm_title_await')
                   : t('refill_confirm_title_feed');
-  const recoveryHint =
-    recoveryStage === 'e050_materialist'
+  const recoveryHint = trayFull
+    ? t('tray_full_hint').replace('{n}', String(machineState.trayPieces || ''))
+    : recoveryStage === 'e050_materialist'
       ? machineState.e050FinishPiece
         ? `${t('e050_materialist_hint')} ${t('lot_recover_hint_e050_finish')}`
         : t('e050_materialist_hint')
+      : recoveryStage === 'e050_finishing'
+        ? t('e050_materialist_finish_hint')
       : recoveryStage === 'e050_materialist_wait'
         ? t('e050_materialist_wait_hint')
+        : recoveryStage === 'abort_decide'
+            ? t('recovery_abort_hint')
         : recoveryStage === 'review_piece'
             ? t('recovery_review_hint')
             : recoveryStage === 'continue_cycle'
@@ -398,6 +416,8 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               : processStep === 'empty'
                 ? recoveryHint
                 : t('lot_recover_hint_e050_reset')
+    : processStep === 'abort'
+      ? t('recovery_abort_hint')
     : processStep === 'reset'
       ? t('lot_recover_hint_reset')
       : processStep === 'resume'
@@ -910,6 +930,30 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     </button>
                   </>
                 )}
+                {recoveryStage === 'abort_decide' && onRecoveryReview && (
+                  <>
+                    <button
+                      id="btn-recovery-abort-cycle"
+                      type="button"
+                      onClick={() => onRecoveryReview(false)}
+                      disabled={!machineState.recoveryAwaitingConfirm}
+                      className="flex items-center gap-1.5 rounded-lg bg-red-600 hover:bg-red-700 px-3.5 py-2 text-xs font-bold text-white disabled:opacity-40"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                      {t('btn_recovery_abort')}
+                    </button>
+                    <button
+                      id="btn-recovery-abort-continue"
+                      type="button"
+                      onClick={() => onRecoveryReview(true)}
+                      disabled={!machineState.recoveryAwaitingConfirm}
+                      className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 text-xs font-bold text-white disabled:opacity-40"
+                    >
+                      <Check className="h-3.5 w-3.5" />
+                      {t('btn_recovery_abort_continue')}
+                    </button>
+                  </>
+                )}
                 {recoveryStage === 'purge_decide' && onRecoveryReview && (
                   <>
                     <button
@@ -948,6 +992,18 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     {recoveryStage === 'continue_cycle'
                       ? t('btn_recovery_continue')
                       : t('btn_recovery_review_ok')}
+                  </button>
+                )}
+                {trayFull && onRecoveryReview && (
+                  <button
+                    id="btn-recovery-tray-emptied"
+                    type="button"
+                    onClick={() => onRecoveryReview(true)}
+                    disabled={!machineState.recoveryAwaitingConfirm}
+                    className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 text-xs font-bold text-white disabled:opacity-40"
+                  >
+                    <Check className="h-3.5 w-3.5" />
+                    {t('btn_tray_emptied')}
                   </button>
                 )}
               </div>

@@ -69,6 +69,7 @@ const DEFAULT_MACHINE: MachineState = {
   refillPrompt: '',
   recoveryPrompt: '',
   recoveryAwaitingConfirm: false,
+  trayPieces: 0,
   recoveryAfterError: false,
   e050Lot: false,
   e050FinishPiece: false,

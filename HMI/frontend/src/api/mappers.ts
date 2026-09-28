@@ -129,14 +129,18 @@ export function mapMachineState(
 
   const errorActive = !!snap.error?.active;
   const lastErr = snap.error?.last;
+  const e050Path =
+    !!cycle.e050MaterialistRequested || !!cycle.e050MaterialistWait;
   const inRecovery =
     !!cycle.recoveryAfterError ||
-    String(cycle.recovery || '') === 'e050_material' ||
+    e050Path ||
+    String(cycle.recovery || '') === 'e050_materialist' ||
     !!cycle.e050FinishPiece ||
     String(cycle.recoveryPrompt || '').startsWith('e050_');
   const plcFault =
-    snap.plc.status?.kind === 'error' ||
-    Object.values(snap.plc.valves || {}).some((v) => v.error === true);
+    !e050Path &&
+    (snap.plc.status?.kind === 'error' ||
+      Object.values(snap.plc.valves || {}).some((v) => v.error === true));
   const faultModule = errorActive ? snap.error?.module || '' : '';
   const modKey = faultModule.toLowerCase();
   let faultModuleStatus = '';
@@ -175,9 +179,10 @@ export function mapMachineState(
     refillPrompt: String(cycle.refillPrompt || ''),
     recoveryPrompt: String(cycle.recoveryPrompt || ''),
     recoveryAwaitingConfirm: !!cycle.recoveryAwaitingConfirm,
+    trayPieces: Number(cycle.trayPieces ?? 0),
     recoveryAfterError: !!cycle.recoveryAfterError,
     e050Lot:
-      String(cycle.recovery || '') === 'e050_material' ||
+      e050Path ||
       !!cycle.e050FinishPiece ||
       String(cycle.recoveryPrompt || '').startsWith('e050_'),
     e050FinishPiece: !!cycle.e050FinishPiece,

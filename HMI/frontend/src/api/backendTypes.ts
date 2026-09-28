@@ -80,7 +80,11 @@ export interface BackendCycleSnapshot {
   recoveryAfterError?: boolean;
   recoveryPrompt?: string;
   recoveryAwaitingConfirm?: boolean;
+  /** Piezas por tray antes de pausar para vaciar (0 = sin tope). */
+  trayPieces?: number;
   e050FinishPiece?: boolean;
+  e050MaterialistRequested?: boolean;
+  e050MaterialistWait?: boolean;
   refillSkipCut?: boolean;
   config: BackendCycleConfig;
   /** Ausente en SSE slim (la UI conserva el último flow). */

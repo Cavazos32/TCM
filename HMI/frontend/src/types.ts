@@ -112,9 +112,11 @@ export interface MachineState {
   refillAwaitingConfirm: boolean;
   /** working | await_feed | after_feed | after_cut | "" */
   refillPrompt: string;
-  /** review_piece | continue_cycle | e050_* | "" */
+  /** abort_decide | review_piece | continue_cycle | tray_full | e050_* | "" */
   recoveryPrompt: string;
   recoveryAwaitingConfirm: boolean;
+  /** Piezas por tray antes de pausar para vaciar (0 = sin tope). */
+  trayPieces: number;
   recoveryAfterError: boolean;
   e050Lot: boolean;
   e050FinishPiece: boolean;

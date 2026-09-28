@@ -82,6 +82,11 @@ PLC_PRECUT_VALVE_CMDS = 2  # holder + encoder
 CUTTER_SETTLE_BEFORE_DEPOSIT_MS = 400
 # HOME / Start: ASDA en 0 (caché Reached). No alimentar si está fuera.
 ASDA_HOME_EPS_MM = 0.5
+# Idle de Motion sin Reached en destino no cierra un MOVE (stop por error,
+# Reset, Idle viejo). Tolerancia < despeje (5 mm) para detectar MOVE no ejecutado.
+MOTION_TARGET_TOL_MM = 3.0
+# Idle sin Busy ni Reached en destino durante este tiempo → E015.
+MOTION_IDLE_NO_TARGET_S = 1.0
 
 # Protocolo máquina: machine_states.py (0x40–0x49). Andon solo refleja esos bytes.
 # Pasos atómicos (acción / delay independientes). Secuencia principal (action|wait).
@@ -375,6 +380,8 @@ class CycleHost(Protocol):
     def plc_connected(self) -> bool: ...
     def pf_connected(self) -> bool: ...
     def motion_state_byte(self) -> int | None: ...
+    def motion_busy(self) -> bool: ...
+    def holder_encoder_closed(self) -> bool: ...
     def pf_state_byte(self) -> int | None: ...
     def pf_has_fault(self) -> bool: ...
     def pf_is_ready(self) -> bool: ...
@@ -470,6 +477,9 @@ class CycleRunner:
         self._refill_reject = threading.Event()
         self._refill_retry = threading.Event()
         self._refill_next_feed_mm: float | None = None
+        # Lote vivo: Purge corre dentro del hilo del lote (feed_mm, asda_mm).
+        self._lot_purge_request: tuple[float | None, float | None] | None = None
+        self._suspend_piece_watch = False
         self._step = 0
         self._parallel_group = ""
         self._rep = 0
@@ -483,7 +493,7 @@ class CycleRunner:
         self._recovery = ""  # common lot recovery context | e050_materialist
         # Tras error recovery: lote vivo → Reset → Resume → pieza → review → purga → Continuar.
         self._recovery_after_error = False
-        self._recovery_prompt = ""  # "" | review_piece | continue_cycle | e050_materialist
+        self._recovery_prompt = ""  # "" | abort_decide | review_piece | continue_cycle | tray_full | e050_materialist
         self._recovery_awaiting = False
         self._recovery_confirm = threading.Event()
         self._recovery_reject = threading.Event()
@@ -505,6 +515,8 @@ class CycleRunner:
         self._resume_need_buffer_full = False
         self._lot_rpm = 1200.0
         self._lot_length_mm: float = 0.0
+        # Batches que caben en carrera por tray (None = sin tope). Lleno → vaciar.
+        self._tray_batches: int | None = None
         self._last_lineal_sec: float = 0.0
         self._last_lineal_mm: float = 0.0
         # monotonic() del Set/Res de cortador (asiento antes de depósito/despeje).
@@ -582,7 +594,13 @@ class CycleRunner:
                     else ""
                 ),
                 "recoveryAwaitingConfirm": self._recovery_awaiting,
+                "trayPieces": (
+                    self._tray_batches * max(1, int(self._cfg.deposit_batch_size))
+                    if self._tray_batches
+                    else 0
+                ),
                 "e050FinishPiece": self._e050_finish_piece,
+                "e050MaterialistRequested": self._e050_materialist_requested,
                 "e050MaterialistWait": self._e050_materialist_wait,
                 "refillSkipCut": bool(self._refill_skip_cut and self._refill_mode),
                 "config": self._cfg.to_dict(),
@@ -628,6 +646,32 @@ class CycleRunner:
         with self._lock:
             return bool(self._e050_materialist_wait)
 
+    def is_e050_materialist_path(self) -> bool:
+        """Sí Materialist ya decidido: terminar pieza / HOME / espera OFF.
+
+        El PLC sigue reportando EncoderE mientras el sensor esté activo.
+        No re-preguntar ni re-latchear E050 hasta salir de esta ruta.
+        """
+        with self._lock:
+            return bool(
+                self._e050_materialist_requested or self._e050_materialist_wait
+            )
+
+    def _e050_finishing_piece(self) -> bool:
+        """Sí Materialist, aún terminando/parking la pieza (antes del wait)."""
+        return bool(
+            self._e050_materialist_requested and not self._e050_materialist_wait
+        )
+
+    def _release_e050_finish_pause(self) -> None:
+        """El Sí ya continuó: no quedarse en Pause residual de E050."""
+        if not self._e050_finishing_piece() or not self._pause.is_set():
+            return
+        self._pause.clear()
+        with self._lock:
+            self._sync_pause_exclusion_locked(time.monotonic())
+        self._leave_pause_andon()
+
     # --- comandos máquina ---
     def request_start(self, length_mm: float, qty: int, rpm: float) -> dict[str, Any]:
         with self._lock:
@@ -653,10 +697,21 @@ class CycleRunner:
                 "error": "Desactiva el modo Materialist para iniciar el ciclo",
             }
         self.reload_config()
-        travel_err = self._check_deposit_travel(float(length_mm), int(qty))
+        tray_batches, travel_err = self._deposit_tray_capacity(float(length_mm))
         if travel_err:
             self._host.cycle_log(f"Cycle Start rechazado: {travel_err}")
             return {"ok": False, "error": travel_err}
+        self._tray_batches = tray_batches
+        if tray_batches is not None:
+            batch = max(1, int(self.get_config().deposit_batch_size))
+            per_tray = tray_batches * batch
+            if int(qty) > per_tray:
+                n_trays = (int(qty) + per_tray - 1) // per_tray
+                self._host.cycle_log(
+                    f"Tray: caben {tray_batches} batch(es) / {per_tray} piezas "
+                    f"(L={abs(float(length_mm)):g}) — lote {qty} → {n_trays} trays, "
+                    f"pausa para vaciar cada {per_tray} piezas"
+                )
         self._stop.clear()
         self._pause.clear()
         self._aborted = False
@@ -745,6 +800,11 @@ class CycleRunner:
                 "ok": False,
                 "error": "Espera confirmación del operador (pieza / lote)",
             }
+        if self._materialist:
+            return {
+                "ok": False,
+                "error": "Desactiva el modo Materialist para reanudar",
+            }
         if not self._pause.is_set():
             return {"ok": False, "error": "Ciclo no está en Pause"}
         # Unified recovery: Resume never selects a class-specific branch.
@@ -761,13 +821,43 @@ class CycleRunner:
         self._host.cycle_notify()
         return {"ok": True}
 
+    def request_abort_decision(self) -> bool:
+        """Tras Reset válido con lote vivo: operador elige Abortar o Continuar.
+
+        No pisa prompts de recovery en curso (E050 Materialist, review, purga).
+        """
+        if not self.is_active() or not self._pause.is_set():
+            return False
+        with self._lock:
+            if self._recovery_prompt == "abort_decide" and self._recovery_awaiting:
+                return True
+            if self._recovery_prompt or self._refill_awaiting_confirm:
+                return False
+            self._recovery_prompt = "abort_decide"
+            self._recovery_awaiting = True
+        self._host.cycle_log("Recovery: ¿abortar ciclo o continuar el lote?")
+        self._host.cycle_notify()
+        return True
+
     def confirm_recovery_review(self, ok: bool = True) -> dict[str, Any]:
         """Resuelve la decisión E050 o las confirmaciones genéricas de recovery."""
         prompt = self._recovery_prompt
+        if self._recovery_awaiting and prompt == "abort_decide":
+            with self._lock:
+                self._recovery_awaiting = False
+                self._recovery_prompt = ""
+            if ok:
+                self._host.cycle_log("Recovery: operador eligió continuar el lote")
+                self._host.cycle_notify()
+                return {"ok": True, "resume": True}
+            self._host.cycle_log("Recovery: operador eligió abortar el ciclo")
+            self._host.cycle_notify()
+            return {"ok": True, "abort": True}
         if not self._recovery_awaiting or prompt not in (
             "review_piece",
             "purge_decide",
             "continue_cycle",
+            "tray_full",
             "e050_materialist",
         ):
             return {"ok": False, "error": "Sin confirmación de recuperación pendiente"}
@@ -783,15 +873,27 @@ class CycleRunner:
                 self.apply_error_policy(self._fault, self._e050_normal_recovery)
                 self._host.cycle_notify()
                 return {"ok": True, "materialist": False, "normalRecovery": True}
-            if not self._host.clear_e050_latch_for_materialist():
-                return {"ok": False, "error": "No se pudo liberar E050 para iniciar Materialist"}
+            # Marcar la ruta ANTES de liberar el latch: el PLC reenvía EncoderE
+            # en el siguiente status y no debe volver a apply_e050_policy.
             self._e050_materialist_requested = True
             self._e050_finish_piece = self._piece_t0 is not None
             self._recovery_after_error = False
             self._recovery = "e050_materialist"
             self._recovery_awaiting = False
-            self._recovery_prompt = ""
+            self._recovery_prompt = (
+                "e050_finishing" if self._e050_finish_piece else ""
+            )
             self._fault = ""
+            if not self._host.clear_e050_latch_for_materialist():
+                self._e050_materialist_requested = False
+                self._e050_finish_piece = False
+                self._recovery_prompt = "e050_materialist"
+                self._recovery_awaiting = True
+                return {"ok": False, "error": "No se pudo liberar E050 para iniciar Materialist"}
+            # clear_fault_mirror no debe borrar la ruta E050 ya decidida.
+            self._recovery = "e050_materialist"
+            if self._e050_finish_piece:
+                self._recovery_prompt = "e050_finishing"
             self._pause.clear()
             with self._lock:
                 self._sync_pause_exclusion_locked(time.monotonic())
@@ -800,13 +902,117 @@ class CycleRunner:
             self._host.cycle_notify()
             return {"ok": True, "materialist": True, "finishingPiece": bool(self._e050_finish_piece)}
         if ok:
+            label = (
+                "continuar ciclo"
+                if prompt == "continue_cycle"
+                else "tray vaciado"
+                if prompt == "tray_full"
+                else "purga"
+                if prompt == "purge_decide"
+                else "pieza revisada"
+            )
             self._recovery_confirm.set()
-            self._host.cycle_log("Recovery: operador OK — " + ("continuar ciclo" if prompt == "continue_cycle" else "pieza revisada"))
+            self._host.cycle_log("Recovery: operador OK — " + label)
         else:
             self._recovery_reject.set()
             self._host.cycle_log("Recovery: operador rechazó la etapa")
         self._host.cycle_notify()
         return {"ok": True}
+
+    def hold_lot_and_restart_piece(self, reason: str) -> dict[str, Any]:
+        """Pausa el lote vivo y marca re-arranque de pieza. No cierra el lote."""
+        if not self.is_active():
+            return {"ok": True}
+        if not self._pause.is_set():
+            self.request_pause()
+        self._restart_piece = True
+        self._flow_interrupt.set()
+        self._host.cycle_log(reason)
+        self._host.cycle_notify()
+        return {"ok": True}
+
+    def restart_piece_after_manual_home(self) -> dict[str, Any]:
+        """Home máquina con lote vivo: no cierra el lote.
+
+        Home (ASDA→0 + All Off) deja la pieza en curso sin pinzas/holder;
+        al Resume la pieza se re-arranca desde step 0 (Holder+Encoder, ASDA 0).
+        Si el ciclo está en marcha, pasa a Pause.
+        """
+        return self.hold_lot_and_restart_piece(
+            "Home máquina con lote vivo — la pieza se re-arranca al Resume "
+            "(progreso conservado)"
+        )
+
+    def request_lot_purge(
+        self, feed_mm: float | None = None, asda_mm: float | None = None
+    ) -> dict[str, Any]:
+        """Purge con lote vivo: dentro del lote (no Stop, no borra progreso).
+
+        El hilo del lote sale del paso en curso, corre la purga existente y
+        vuelve a Pause; al Resume la pieza se re-arranca desde step 0.
+        """
+        if not self.is_active():
+            return {"ok": False, "error": "Sin lote activo"}
+        if self.is_refill_active() or self._lot_purge_request is not None:
+            return {"ok": False, "error": "Purga ya en curso"}
+        self._lot_purge_request = (feed_mm, asda_mm)
+        self._restart_piece = True
+        self._flow_interrupt.set()
+        self._host.cycle_log(
+            "Purge con lote vivo — dentro del lote (progreso conservado)"
+        )
+        self._host.cycle_notify()
+        return {"ok": True}
+
+    def _run_lot_purge(self) -> None:
+        """Purga pedida por request_lot_purge. Termina siempre en Pause (lote vivo)."""
+        req = self._lot_purge_request
+        self._lot_purge_request = None
+        self._restart_piece = False
+        self._flow_interrupt.clear()
+        if req is None or self._should_abort():
+            return
+        feed_mm, asda_mm = req
+        cfg = self.get_config()
+        use_feed = float(feed_mm) if feed_mm is not None else float(cfg.refill_mm)
+        use_asda = float(asda_mm) if asda_mm is not None else float(cfg.refill_asda_mm)
+        rpm = float(self._lot_rpm or 1200.0)
+        with self._lock:
+            saved_progress = self._progress
+            self._refill_mode = True
+            self._refill_prompt = "working"
+        self._suspend_piece_watch = True
+        # La purga maneja sus propios prompts (Pause); el latch EXXX sigue activo.
+        self._pause.clear()
+        self._host.cycle_notify()
+        status = "fail"
+        try:
+            status = self._execute_refill_body(rpm, use_feed, use_asda)
+        except Exception as exc:
+            self._host.cycle_log(f"Purga (lote) exception: {exc}")
+        finally:
+            with self._lock:
+                self._refill_mode = False
+                self._refill_awaiting_confirm = False
+                self._refill_prompt = ""
+                self._progress = saved_progress
+            self._refill_skip_cut = False
+            self._suspend_piece_watch = False
+        if status == "cancel":
+            self._host.cmd_plc_tools_safe()
+            self._host.cycle_log("Purga (lote) cancelada — lote en Pause")
+        elif status != "ok":
+            self._host.cycle_log("Purga (lote) incompleta — lote en Pause")
+        else:
+            self._host.cycle_log("Purga (lote) OK — lote en Pause (Reset → Resume)")
+        if self._should_abort():
+            return
+        self._pause.set()
+        with self._lock:
+            if self._pause_t0 is None:
+                self._pause_t0 = time.monotonic()
+        self._enter_pause_andon()
+        self._host.cycle_notify()
 
     def release_for_manual_refill(self, timeout_s: float = 2.0) -> dict[str, Any]:
         """Suelta un lote en Pause (p. ej. E050) para arrancar purga suelta.
@@ -1007,18 +1213,24 @@ class CycleRunner:
         lote completado o Reset local de Motion).
         """
         self._fault = ""
-        self._recovery = ""
+        if not (self._e050_materialist_requested or self._e050_materialist_wait):
+            self._recovery = ""
         # No borrar _recovery_after_error: el lote sigue en recuperación.
         self._abort_needs_ack = False
 
     def set_materialist(self, on: bool) -> dict[str, Any]:
-        if on and self.is_active() and not self._e050_materialist_wait:
-            return {"ok": False, "error": "No Materialist con ciclo activo"}
         self._materialist = bool(on)
         self._busy_mode = False
         if self._materialist:
             self._set_state(TX_MATERIALIST)
             self._host.cycle_log("Cycle Materialist ON (0x049)")
+        elif self.is_active() and self._pause.is_set():
+            if self._fault:
+                self._set_state(TX_ERROR)
+                self._pf_idle_for_hold("Error")
+            else:
+                self._enter_pause_andon()
+            self._host.cycle_log("Cycle Materialist OFF → Pause (lote vivo)")
         else:
             self._set_state(TX_BUSY if self.is_active() else TX_IDLE)
             self._host.cycle_log("Cycle Materialist OFF → " + ("Busy" if self.is_active() else "Idle"))
@@ -1151,7 +1363,7 @@ class CycleRunner:
         self._host.cycle_log(reason)
         self._host.cycle_notify()
         while self._pause.is_set():
-            if self._should_abort():
+            if self._should_abort() or self._restart_piece:
                 return True
             time.sleep(0.05)
         with self._lock:
@@ -1196,14 +1408,15 @@ class CycleRunner:
             self._host.cycle_notify()
 
     def _wait_recovery_resume_hold(self) -> bool:
-        """True = Resume (seguir). False = abortar lote."""
+        """True = Resume (seguir). False = solo Stop / Abortar del operador.
+
+        Un error nuevo durante el Resume (p. ej. E058) no cierra el lote: vuelve
+        a Pause y espera otro Reset → Resume. El progreso solo se pierde por
+        Stop, Abortar o fin de lote.
+        """
         if self._should_abort():
             return False
-        if not self._pause.is_set():
-            self._pause.set()
-            with self._lock:
-                if self._pause_t0 is None:
-                    self._pause_t0 = time.monotonic()
+        self._arm_recovery_pause()
         self._host.cycle_log(
             "Recovery: lote vivo — Reset → Resume para terminar la pieza"
         )
@@ -1211,11 +1424,70 @@ class CycleRunner:
         while True:
             if self._should_abort():
                 return False
+            # Home / Purge / Materialist con lote vivo: volver al bucle de piezas.
+            if self._restart_piece or self._lot_purge_request is not None:
+                return True
             if not self._pause.is_set():
                 with self._lock:
                     self._sync_pause_exclusion_locked(time.monotonic())
-                return self._ensure_pf_buffer_full_after_resume()
+                if self._ensure_pf_buffer_full_after_resume():
+                    return True
+                if self._should_abort():
+                    return False
+                self._arm_recovery_pause()
+                self._host.cycle_log(
+                    "Recovery: Resume no completó — lote sigue en Pause "
+                    "(Reset → Resume)"
+                )
+                self._host.cycle_notify()
+                continue
             time.sleep(0.05)
+
+    def _recovery_continue_cycle(self) -> bool:
+        """Continuar ciclo → Buffer Full (igual que Start/Resume)."""
+        if self._wait_recovery_prompt("continue_cycle") != "ok":
+            return False
+        with self._lock:
+            self._recovery_prompt = ""
+        # El prompt pone Pause → In process OFF. Busy rearma, pero no usa
+        # request_resume: hay que esperar Buffer Full igual que Start/Resume.
+        if not self._ensure_pf_buffer_full_after_resume(
+            "Continuar ciclo", force=True
+        ):
+            return False
+        self._host.cycle_log(
+            "Recovery: Continuar ciclo — siguiente pieza (validar referencia láser)"
+        )
+        self._host.cycle_notify()
+        return True
+
+    def _tray_pieces(self) -> int | None:
+        if not self._tray_batches:
+            return None
+        return self._tray_batches * max(1, int(self.get_config().deposit_batch_size))
+
+    def _tray_full_after(self, rep: int, qty: int) -> bool:
+        per_tray = self._tray_pieces()
+        return bool(per_tray) and int(rep) < int(qty) and int(rep) % per_tray == 0
+
+    def _wait_tray_emptied(self, rep: int, qty: int) -> bool:
+        """Tray lleno: Pause → operador vacía y confirma → ASDA 0 → Buffer Full."""
+        per_tray = self._tray_pieces() or 0
+        self._host.cycle_log(
+            f"Tray lleno ({per_tray} piezas) tras pieza {rep}/{qty} — "
+            "vaciar tray y confirmar"
+        )
+        if self._wait_recovery_prompt("tray_full") != "ok":
+            return False
+        with self._lock:
+            self._recovery_prompt = ""
+        self._host.cycle_log("Tray vaciado — ASDA a 0, batches desde el 1º")
+        if not self._ensure_asda_at_zero(reason="tray vaciado"):
+            return False
+        if not self._ensure_pf_buffer_full_after_resume("Tray vaciado", force=True):
+            return False
+        self._host.cycle_notify()
+        return True
 
     def _recovery_review_purge_decide(self) -> bool:
         """Review → decidir purga → opcionalmente purga → Continuar ciclo."""
@@ -1224,11 +1496,13 @@ class CycleRunner:
             return False
         self._host.cycle_log("Recovery: ¿requiere purga?")
         if self._wait_recovery_prompt("purge_decide") != "ok":
+            if self._should_abort():
+                return False
             self._host.cycle_log("Recovery: operador omitió la purga")
             with self._lock:
                 self._recovery_prompt = ""
             self._host.cycle_notify()
-            return self._wait_recovery_prompt("continue_cycle") == "ok"
+            return self._recovery_continue_cycle()
 
         self._host.cycle_log("Recovery: operador solicitó purga")
         cfg = self.get_config()
@@ -1259,37 +1533,24 @@ class CycleRunner:
         if self._should_abort():
             return False
         self._host.cycle_log("Recovery: purga lista — espera Continuar ciclo")
-        if self._wait_recovery_prompt("continue_cycle") != "ok":
-            return False
-        with self._lock:
-            self._recovery_prompt = ""
-        # El prompt pone Pause → In process OFF. Busy rearma, pero no usa
-        # request_resume: hay que esperar Buffer Full igual que Start/Resume.
-        if not self._ensure_pf_buffer_full_after_resume(
-            "Continuar ciclo", force=True
-        ):
-            return False
-        self._host.cycle_log(
-            "Recovery: Continuar ciclo — siguiente pieza (validar referencia láser)"
-        )
-        self._host.cycle_notify()
-        return True
+        return self._recovery_continue_cycle()
 
     def _run_e050_materialist_recovery(self) -> bool:
         """E050 especial: HOME → Materialist ON → esperar Materialist OFF."""
         if self._should_abort():
             return False
+        self._release_e050_finish_pause()
         if self._e050_finish_piece:
-            self._host.cycle_log("E050: pieza terminada y depositada → HOME")
+            self._host.cycle_log("E050: pieza terminada y depositada → confirmar HOME")
         else:
             self._host.cycle_log("E050: sin pieza en curso → HOME")
-            self._host.clear_motion_wait_flags()
-            if not self._host.cmd_motion_move_zero(self._lot_rpm):
-                if not self._fault:
-                    self._raise_fault("home_cmd")
-                return False
-            if not self._wait_motion() or self._should_abort():
-                return False
+        self._host.clear_motion_wait_flags()
+        if not self._host.cmd_motion_move_zero(self._lot_rpm):
+            if not self._fault:
+                self._raise_fault("home_cmd")
+            return False
+        if not self._wait_motion() or self._should_abort():
+            return False
         with self._lock:
             self._e050_materialist_wait = True
             self._recovery_prompt = "e050_materialist_wait"
@@ -1305,9 +1566,15 @@ class CycleRunner:
             return False
         self._host.cycle_log("E050: Materialist activo — esperar que el operador lo apague")
         self._host.cycle_notify()
-        while self._host.pf_is_materialist():
+        while True:
             if self._should_abort():
                 return False
+            if self._lot_purge_request is not None:
+                self._run_lot_purge()
+                if self._should_abort():
+                    return False
+            if not (self._materialist or self._host.pf_is_materialist()):
+                break
             time.sleep(0.05)
         with self._lock:
             self._e050_materialist_wait = False
@@ -1390,6 +1657,11 @@ class CycleRunner:
         recovery: str = "recovery",
     ) -> dict[str, Any]:
         """E050 durante lote: primero pregunta si requiere Materialist."""
+        if self._e050_materialist_requested or self._e050_materialist_wait:
+            return {"ok": True, "action": "e050_path", "e050": True}
+        if self._recovery_awaiting and self._recovery_prompt == "e050_materialist":
+            self._fault = ui
+            return {"ok": True, "action": "pause", "e050": True}
         self._fault = ui
         self._recovery = "e050_materialist"
         self._e050_normal_recovery = recovery or "recovery"
@@ -1483,6 +1755,7 @@ class CycleRunner:
         while remaining > 0:
             if self._should_abort() or self._restart_piece:
                 return True
+            self._release_e050_finish_pause()
             if self._pause.is_set():
                 while self._pause.is_set():
                     if self._should_abort() or self._restart_piece:
@@ -1516,8 +1789,9 @@ class CycleRunner:
         """Pausa cooperativa tras completar un paso atómico. True = abortar."""
         if self._should_abort():
             return True
+        self._release_e050_finish_pause()
         paused_here = False
-        if self._step_by_step_should_pause(step_key):
+        if self._step_by_step_should_pause(step_key) and not self._e050_finishing_piece():
             meta = STEP_BY_KEY.get(step_key, {})
             label = meta.get("label", step_key)
             self._pause.set()
@@ -1527,6 +1801,8 @@ class CycleRunner:
             self._host.cycle_notify()
         while self._pause.is_set():
             if self._should_abort():
+                return True
+            if self._restart_piece:
                 return True
             time.sleep(0.05)
         if paused_here:
@@ -1539,17 +1815,38 @@ class CycleRunner:
         _ = step_name
         if self._should_abort():
             return True
+        self._release_e050_finish_pause()
         while self._pause.is_set():
-            if self._should_abort():
+            if self._should_abort() or self._restart_piece:
                 return True
             time.sleep(0.05)
         if not self._ensure_pf_buffer_full_after_resume():
             return True
         return bool(self._restart_piece)
-    def _wait_motion(self) -> bool:
+    def _asda_at_target(self, target_mm: float) -> bool | None:
+        """True/False según caché ASDA vs destino (magnitud). None = sin dato."""
+        pos = self._host.asda_position_mm()
+        if pos is None:
+            return None
+        return abs(abs(float(pos)) - abs(float(target_mm))) <= MOTION_TARGET_TOL_MM
+
+    def _fmt_asda_pos(self) -> str:
+        pos = self._host.asda_position_mm()
+        return "?" if pos is None else f"{float(pos):.2f}"
+
+    def _wait_motion(
+        self,
+        target_mm: float | None = None,
+        reissue: Callable[[], bool] | None = None,
+    ) -> bool:
         """Espera Idle/Reached. El caller debe limpiar flags ANTES del comando
         (clear_motion_wait_flags / clear_motion_reached_flag) — no limpiar aquí
-        o se pierde el evento si Motion responde entre el cmd y el wait."""
+        o se pierde el evento si Motion responde entre el cmd y el wait.
+
+        target_mm: Idle sin posición en destino no cuenta como llegada.
+        reissue: tras Resume, si el ASDA quedó fuera de destino (stop por
+        error / Reset), reenvía el mismo MOVE en vez de dar el paso por hecho.
+        """
         cfg = self.get_config()
         limit = float(cfg.motion_wait_timeout_s)
         remain = self._piece_watch_remaining_s()
@@ -1560,9 +1857,11 @@ class CycleRunner:
             self._raise_piece_watch("timeout_motion")
             return False
         deadline = time.monotonic() + limit
+        idle_off_target_since: float | None = None
         while True:
             if self._should_abort() or self._restart_piece:
                 return False
+            self._release_e050_finish_pause()
             if self._pause.is_set():
                 while self._pause.is_set():
                     if self._should_abort() or self._restart_piece:
@@ -1570,6 +1869,24 @@ class CycleRunner:
                     time.sleep(0.05)
                 if not self._ensure_pf_buffer_full_after_resume():
                     return False
+                if (
+                    target_mm is not None
+                    and reissue is not None
+                    and self._asda_at_target(target_mm) is False
+                ):
+                    self._host.cycle_log(
+                        f"Resume: ASDA pos={self._fmt_asda_pos()} mm ≠ destino "
+                        f"{abs(float(target_mm)):.1f} mm — reenviar MOVE"
+                    )
+                    self._host.clear_motion_reached_flag()
+                    if not reissue():
+                        if not self._should_abort() and not self._fault:
+                            kind = ""
+                            if hasattr(self._host, "last_move_fail_kind"):
+                                kind = self._host.last_move_fail_kind()
+                            self._raise_fault("E065" if kind == "transport" else "move_cmd")
+                        return False
+                idle_off_target_since = None
                 remain = self._piece_watch_remaining_s()
                 limit = float(cfg.motion_wait_timeout_s)
                 if remain is not None:
@@ -1588,7 +1905,29 @@ class CycleRunner:
                     )
                     return False
             if self._host.wait_motion_idle_or_reached(0.1):
-                return True
+                if target_mm is None or self._asda_at_target(target_mm) is not False:
+                    return True
+                # Idle viejo (MOVE aún no arrancó) o MOVE no ejecutado: seguir
+                # esperando Reached; si Motion sigue quieto, E015.
+                self._host.clear_motion_reached_flag()
+                if idle_off_target_since is None:
+                    idle_off_target_since = time.monotonic()
+            elif idle_off_target_since is not None:
+                if self._host.motion_busy():
+                    idle_off_target_since = None
+                elif (
+                    time.monotonic() - idle_off_target_since
+                    >= MOTION_IDLE_NO_TARGET_S
+                ):
+                    self._host.cycle_log(
+                        f"MOVE sin llegar a destino: ASDA pos={self._fmt_asda_pos()} mm, "
+                        f"destino={abs(float(target_mm)):.1f} mm (Idle sin Reached)"
+                    )
+                    self._raise_fault("E015")
+                    idle_off_target_since = None
+                    if reissue is None or not self._pause.is_set():
+                        return False
+                    continue
             if time.monotonic() >= deadline:
                 break
             if watch and (self._piece_watch_remaining_s() or 0.0) <= 0:
@@ -1701,6 +2040,8 @@ class CycleRunner:
 
     def _piece_watch_remaining_s(self) -> float | None:
         """Segundos que quedan del watchdog de pieza. None = no aplica."""
+        if self._suspend_piece_watch:
+            return None
         limit = float(self.get_config().piece_watch_timeout_s)
         if limit <= 0:
             return None
@@ -2272,7 +2613,9 @@ class CycleRunner:
                     kind = self._host.last_move_fail_kind()
                 self._raise_fault("E065" if kind == "transport" else "home_cmd")
             return False
-        if not self._wait_motion():
+        if not self._wait_motion(
+            target_mm=0.0, reissue=lambda: self._host.cmd_motion_move_zero(rpm)
+        ):
             return False
         self._host.cycle_log("WIP Delivery move ok @ HOME=0.0 mm")
         return True
@@ -2293,7 +2636,10 @@ class CycleRunner:
                     f"WIP Delivery move FAIL @ {tag}={float(mm):.1f} mm"
                 )
             return False
-        if not self._wait_motion():
+        if not self._wait_motion(
+            target_mm=float(mm),
+            reissue=lambda: self._host.cmd_motion_move_mm(float(mm), rpm),
+        ):
             return False
         self._host.cycle_log(f"WIP Delivery move ok @ {tag}={float(mm):.1f} mm")
         return True
@@ -2415,7 +2761,9 @@ class CycleRunner:
             f"(≡ {piece_mm:.1f} mm; PLC timer + OFF al Reached)"
         )
 
-        if not self._wait_motion():
+        if not self._wait_motion(
+            target_mm=0.0, reissue=lambda: self._host.cmd_motion_move_zero(rpm)
+        ):
             self._cancel_wip_blower()
             return False
         self._host.cycle_log("WIP Delivery move ok @ HOME=0.0 mm (continuo)")
@@ -2511,6 +2859,7 @@ class CycleRunner:
         while remaining > 0:
             if self._should_abort() or self._restart_piece:
                 return False
+            self._release_e050_finish_pause()
             if self._pause.is_set():
                 while self._pause.is_set():
                     if self._should_abort() or self._restart_piece:
@@ -2541,6 +2890,11 @@ class CycleRunner:
             if self._should_abort() or self._restart_piece:
                 return False
             if self._pause.is_set():
+                # NG ya recibido: cerrar ahora. Si no, tras Resume el wait consume
+                # el NG viejo sin re-mandar feed y exige otro Reset→Resume.
+                ng_now = [s for s, v in outcomes.items() if v == "ng"]
+                if ng_now:
+                    return self._fail_feed_ng(ng_now, outcomes)
                 continue
             bad = [s for s, v in outcomes.items() if v != "ok"]
             if not bad:
@@ -2742,6 +3096,10 @@ class CycleRunner:
         Continuar ciclo no pasa por request_resume: force=True.
         La espera no suma a CT (Start también es prep fuera de reloj).
         """
+        if self._e050_finishing_piece() or self._e050_materialist_wait:
+            with self._lock:
+                self._resume_need_buffer_full = False
+            return True
         with self._lock:
             if not force and not self._resume_need_buffer_full:
                 return True
@@ -2849,7 +3207,9 @@ class CycleRunner:
             self._last_lineal_mm = 0.0
             return False
         op = self._begin_op("lineal")
-        if not self._wait_motion():
+        # Sin reissue: tras Reset PLC las pinzas abren y repetir el lineal
+        # daría una pieza de largo incorrecto → la pieza se re-arranca.
+        if not self._wait_motion(target_mm=abs_mm):
             self._end_op(op, ok=False)
             self._metro_snap("post-lineal", target_mm=abs_mm)
             self._last_lineal_sec = 0.0
@@ -2886,6 +3246,21 @@ class CycleRunner:
         self._host.cmd_plc_holder(False)
         self._host.cmd_plc_encoder(False)
 
+    def _ensure_holder_encoder_closed_for_feed(self) -> bool:
+        """Feed con Holder/Encoder abiertos: la rueda no toca → E028/E002/E003.
+
+        Reset PLC 0x1E / All Off los dejan OFF aunque la secuencia siga a mitad
+        de pieza (p. ej. error en HOME → Reset → Resume → feed post-HOME).
+        False = abort.
+        """
+        if self._host.holder_encoder_closed():
+            return True
+        self._host.cycle_log(
+            "Holder+Encoder abiertos antes del feed (Reset PLC / All Off) — re-cerrar"
+        )
+        self._arm_holder_encoder()
+        return not self._pausable_delay(int(self.get_config().holder_on_ms or 0))
+
     def _ensure_asda_at_zero(self, *, reason: str = "Start") -> bool:
         """Si ASDA no está en 0 (caché Reached), MOVE_ZERO y esperar Reached.
 
@@ -2909,7 +3284,10 @@ class CycleRunner:
         if not self._host.cmd_motion_move_zero(self._lot_rpm):
             self._raise_fault("home_cmd")
             return False
-        if not self._wait_motion():
+        if not self._wait_motion(
+            target_mm=0.0,
+            reissue=lambda: self._host.cmd_motion_move_zero(self._lot_rpm),
+        ):
             return False
         return not self._should_abort()
 
@@ -2945,6 +3323,12 @@ class CycleRunner:
 
     def _run_feed_after_home(self, rep: int, qty: int) -> bool:
         """Feed de la *siguiente* pieza. Exige ASDA en 0. Tfeed ya fue (post-corte)."""
+        if self._e050_materialist_requested:
+            self._host.cycle_log("Feed post-HOME: omitido (ruta E050 Materialist)")
+            return True
+        if self._tray_full_after(rep, qty):
+            self._host.cycle_log("Feed post-HOME: omitido (tray lleno — espera vaciado)")
+            return True
         if not self._confirm_asda_at_zero_for_feed():
             return False
         if int(rep) >= int(qty):
@@ -2969,6 +3353,8 @@ class CycleRunner:
         timing_tag: str = "feed",
         metro_tag: str = "post-feed",
     ) -> bool:
+        if not self._ensure_holder_encoder_closed_for_feed():
+            return False
         self._host.clear_motion_wait_flags()
         sides = self._feed_side_list()
         cmd_op = self._begin_op(f"{timing_tag}_cmd")
@@ -3129,7 +3515,13 @@ class CycleRunner:
             self._raise_fault("move_cmd")
             return "fail"
         if current_asda is None or abs(float(current_asda) - float(asda_mm)) > 0.5:
-            if not self._wait_motion() or self._should_abort():
+            if (
+                not self._wait_motion(
+                    target_mm=asda_mm,
+                    reissue=lambda: self._host.cmd_motion_move_mm(asda_mm, rpm),
+                )
+                or self._should_abort()
+            ):
                 return "fail"
         elif self._should_abort():
             return "fail"
@@ -3197,7 +3589,12 @@ class CycleRunner:
         if not self._host.cmd_motion_move_zero(rpm):
             self._raise_fault("home_cmd")
             return "fail"
-        if not self._wait_motion() or self._should_abort():
+        if (
+            not self._wait_motion(
+                target_mm=0.0, reissue=lambda: self._host.cmd_motion_move_zero(rpm)
+            )
+            or self._should_abort()
+        ):
             return "fail"
         with self._lock:
             self._progress = 100
@@ -3243,8 +3640,12 @@ class CycleRunner:
                 self._finish(False)
 
     def _deposit_batch_index(self, rep: int) -> int:
+        """Batch dentro del tray actual (1…tray_batches); tras vaciar vuelve a 1."""
         batch = max(1, int(self.get_config().deposit_batch_size))
-        return (max(1, int(rep)) - 1) // batch + 1
+        idx = (max(1, int(rep)) - 1) // batch
+        if self._tray_batches:
+            idx %= self._tray_batches
+        return idx + 1
 
     def _deposit_extra_mm(self, rep: int) -> float:
         """Offset respecto a target_mm (corte). Apila batches en la misma dirección.
@@ -3318,60 +3719,49 @@ class CycleRunner:
         )
         return False
 
-    def _check_deposit_travel(self, length_mm: float, qty: int) -> str | None:
-        """None si cabe en carrera; mensaje de error si el último batch + despeje > máx."""
+    def _deposit_tray_capacity(
+        self, length_mm: float
+    ) -> tuple[int | None, str | None]:
+        """(batches por tray, error). None batches = sin tope de carrera.
+
+        Error solo si ni el lineal ni el 1er batch caben. Si el lote no cabe
+        entero, el ciclo pausa al llenar el tray (vaciar) y reinicia batches.
+        """
         cfg = self.get_config()
         L = abs(float(length_mm))
-        qty_i = max(1, int(qty))
-        batch = max(1, int(cfg.deposit_batch_size))
-        n_batches = (qty_i + batch - 1) // batch
         target_mm = L + float(cfg.cut_offset_mm)
         gap = max(0.0, float(cfg.deposit_stack_gap_mm))
         extra0 = float(cfg.deposit_extra_mm)
         clearance = abs(float(cfg.gripper_clearance_mm))
         max_travel = abs(float(cfg.deposit_max_travel_mm))
         if max_travel <= 0:
-            return None
-        # Lineal de corte.
+            return None, None
         if abs(target_mm) > max_travel + 1e-6:
-            return (
+            return None, (
                 f"Lineal {abs(target_mm):.1f} mm > carrera máx "
                 f"{max_travel:g} mm"
             )
-        last_extra = extra0 + (n_batches - 1) * (L + gap)
-        last_deposit = target_mm + last_extra
-        reach = abs(last_deposit) + clearance
-        if reach > max_travel + 1e-6:
-            # Máx. batches que caben.
-            step = L + gap
-            if step <= 1e-9:
-                max_batches = 1 if abs(target_mm + extra0) + clearance <= max_travel else 0
-            else:
-                # abs(target+extra0+(n-1)*step)+clearance <= max
-                # Con stacking típico (deposit positivo): target+extra0+(n-1)*step + clearance <= max
-                base = target_mm + extra0
-                if abs(base) + clearance > max_travel + 1e-6:
-                    max_batches = 0
-                elif base >= 0:
-                    max_batches = 1 + int(max(0.0, max_travel - clearance - base) // step)
-                else:
-                    # Extra negativo: al apilar hacia +L se acerca a 0; evaluar n=1..
-                    max_batches = 0
-                    for n in range(1, n_batches + 1):
-                        d = base + (n - 1) * step
-                        if abs(d) + clearance <= max_travel + 1e-6:
-                            max_batches = n
-                        else:
-                            break
-            max_pcs = max_batches * batch
-            return (
-                f"Depósito fuera de carrera: {n_batches} batch(es) -> "
-                f"alcance {reach:.1f} mm (depósito {last_deposit:.1f} + "
-                f"despeje {clearance:g}) > máx {max_travel:g} mm. "
-                f"Máximo ~{max_batches} batch(es) / {max_pcs} piezas "
-                f"con L={L:g}, gap={gap:g}, extra={extra0:g}"
+        base = target_mm + extra0
+        if abs(base) + clearance > max_travel + 1e-6:
+            return None, (
+                f"Depósito fuera de carrera: 1er batch alcance "
+                f"{abs(base) + clearance:.1f} mm (depósito {base:.1f} + "
+                f"despeje {clearance:g}) > máx {max_travel:g} mm "
+                f"con L={L:g}, extra={extra0:g}"
             )
-        return None
+        step = L + gap
+        if step <= 1e-9:
+            return None, None
+        if base >= 0:
+            return 1 + int(max(0.0, max_travel - clearance - base) // step), None
+        # Extra negativo: al apilar hacia +L primero se acerca a 0.
+        n = 1
+        while n < 100000:
+            d = base + n * step
+            if abs(d) + clearance > max_travel + 1e-6:
+                break
+            n += 1
+        return n, None
 
     @staticmethod
     def _clearance_target_mm(pos_signed: float, fallback_signed: float, clearance_mm: float) -> float:
@@ -3449,14 +3839,44 @@ class CycleRunner:
                 ):
                     self._finish(False)
                     return
+            start_rep = 1
+            while self._run_pieces(length_mm, qty, rpm, start_rep):
+                start_rep = max(1, int(self._pieces_done) + 1)
+        except Exception as exc:
+            self._raise_fault(f"exception:{exc}")
+            self._host.cycle_log(f"Cycle exception: {exc}")
+            self._finish(False)
+        finally:
+            with self._lock:
+                still_active = self._active
+            if still_active:
+                self._host.cycle_log(
+                    "Cycle: hilo terminó sin cierre limpio — revisar logs"
+                )
+                self._finish(False)
+
+    def _run_pieces(
+        self, length_mm: float, qty: int, rpm: float, start_rep: int
+    ) -> bool:
+        """Bucle de piezas desde start_rep. True = excepción interna ya en
+        Pause y el operador hizo Resume → reentrar desde la pieza en curso.
+        Una excepción no cierra el lote (solo Stop / Abortar / fin de lote)."""
+        try:
             target_mm = 0.0
-            completed = 0
+            completed = start_rep - 1
             handoff_ready = False
-            for rep in range(1, qty + 1):
+            for rep in range(start_rep, qty + 1):
                 self._pf_trigger_sent_this_piece = False
                 while True:
                     early_exit = True
                     materialist_only = False
+                    if self._lot_purge_request is not None:
+                        self._run_lot_purge()
+                        if self._should_abort():
+                            break
+                        handoff_ready = False
+                        self._recovery_skip_feed = True
+                        continue
                     for _piece_attempt in (0,):
                         if self._gate("listo" if rep == 1 else "rep-start"):
                             break
@@ -3474,8 +3894,11 @@ class CycleRunner:
                         self._timing_reset_piece()
                         self._cutter_set_mono = None
                         self._cutter_res_mono = None
-                        # 1–2 Holder+Encoder ON + delay (solo 1ª; se mantienen el lote)
-                        if rep == 1:
+                        # 1–2 Holder+Encoder ON + delay (1ª pieza; y tras recovery,
+                        # porque Reset PLC 0x1E deja Holder/Encoder OFF y el feed
+                        # sin rueda de encoder da E028/E002/E003).
+                        recovery_restart = self._recovery_skip_feed
+                        if rep == 1 or recovery_restart:
                             if self._enter(rep, qty, "holder_on"):
                                 break
                             hold_op = self._begin_op("holder_on")
@@ -3488,6 +3911,11 @@ class CycleRunner:
                                 break
                             if self._do_wait(rep, qty, "wait_holder_on", "holder_on_ms"):
                                 break
+                        # Pause/error en HOME puede dejar ASDA sin confirmar en 0.
+                        if recovery_restart and not self._ensure_asda_at_zero(
+                            reason="recovery"
+                        ):
+                            break
                         # 3 Feed / ya listo post-HOME
                         if self._enter(rep, qty, "feed"):
                             break
@@ -3711,7 +4139,12 @@ class CycleRunner:
                                         self._raise_fault("deposit_cmd")
                                 break
                             dep_op = self._begin_op("depósito")
-                            if not self._wait_motion():
+                            if not self._wait_motion(
+                                target_mm=deposit_target,
+                                reissue=lambda: self._host.cmd_motion_move_mm(
+                                    deposit_target, rpm
+                                ),
+                            ):
                                 self._end_op(dep_op, ok=False)
                                 self._metro_snap(
                                     "post-depósito", target_mm=deposit_target
@@ -3781,7 +4214,12 @@ class CycleRunner:
                                         self._raise_fault("clearance_cmd")
                                 break
                             clr_op = self._begin_op("despeje")
-                            if not self._wait_motion():
+                            if not self._wait_motion(
+                                target_mm=clearance_target,
+                                reissue=lambda: self._host.cmd_motion_move_mm(
+                                    clearance_target, rpm
+                                ),
+                            ):
                                 self._end_op(clr_op, ok=False)
                                 break
                             wip_pos_signed = float(clearance_target)
@@ -3863,6 +4301,12 @@ class CycleRunner:
                             handoff_ready = False
                             self._recovery_skip_feed = True
                             self._recovery_skip_pf_trigger = False
+                        if self._tray_full_after(rep, qty):
+                            if not self._wait_tray_emptied(rep, qty):
+                                early_exit = True
+                                break
+                            handoff_ready = False
+                            self._recovery_skip_feed = True
                         early_exit = False
                     if materialist_only:
                         continue
@@ -3876,7 +4320,7 @@ class CycleRunner:
                         )
                         continue
                     if (
-                        self._recovery_after_error
+                        (self._recovery_after_error or self._fault)
                         and not self._should_abort()
                         and self._wait_recovery_resume_hold()
                     ):
@@ -3892,18 +4336,30 @@ class CycleRunner:
                 if early_exit:
                     break
             self._finish(completed >= qty and not self._aborted and not self._fault)
+            return False
         except Exception as exc:
-            self._raise_fault(f"exception:{exc}")
-            self._host.cycle_log(f"Cycle exception: {exc}")
-            self._finish(False)
-        finally:
+            self._host.cycle_log(
+                f"Cycle exception: {exc} — lote en Pause (progreso conservado)"
+            )
             with self._lock:
-                still_active = self._active
-            if still_active:
-                self._host.cycle_log(
-                    "Cycle: hilo terminó sin cierre limpio — revisar logs"
-                )
+                self._refill_mode = False
+                self._refill_awaiting_confirm = False
+                self._refill_prompt = ""
+            self._suspend_piece_watch = False
+            self._raise_fault(f"exception:{exc}")
+            if self._should_abort() or not self._wait_recovery_resume_hold():
                 self._finish(False)
+                return False
+            self._restart_piece = False
+            self._flow_interrupt.clear()
+            self._recovery_skip_feed = True
+            self._recovery_skip_pf_trigger = bool(self._pf_trigger_sent_this_piece)
+            self._host.cycle_log(
+                f"Cycle: Resume tras excepción → reinicio pieza "
+                f"{int(self._pieces_done) + 1}/{qty} desde step 0"
+            )
+            return True
+
     def _finish(self, ok: bool, *, soft_cancel: bool = False) -> None:
         # Antes de In process OFF: si no, PF Idle dispara Res auto y la HMI queda verde.
         if not ok and not soft_cancel:
@@ -3915,6 +4371,8 @@ class CycleRunner:
         self._clear_recovery_gate()
         self._resume_need_buffer_full = False
         self._restart_piece = False
+        self._lot_purge_request = None
+        self._suspend_piece_watch = False
         self._recovery_skip_feed = False
         self._recovery_skip_pf_trigger = False
         self._flow_interrupt.clear()

@@ -1221,7 +1221,9 @@ static void pfTcpOnLine(const char* line)
     return;
   }
   if (cmdName == "refillMaterial" || cmdName == "refillDereeler"
-      || cmdName == "refillServo" || cmdName == "refillFeeder") {
+      || cmdName == "refillServo" || cmdName == "refillFeeder"
+      || cmdName == "refillHoldMaterial" || cmdName == "refillHoldDereeler"
+      || cmdName == "refillHoldServo" || cmdName == "refillHoldFeeder") {
     pfTcpDoRefill(cmdName, jSideChar(line, '-'));
     return;
   }

@@ -188,28 +188,45 @@ export const CycleTab: React.FC<CycleTabProps> = ({
     !!onRefillConfirm;
   const skipCut = !!machineState.refillSkipCut;
   const e050Ask = recoveryStage === 'e050_materialist';
-  const recoveryTitle = e050Ask
+  const trayFull = recoveryStage === 'tray_full';
+  const recoveryTitle = trayFull
+    ? t('tray_full_title')
+    : e050Ask
     ? t('e050_materialist_title')
+    : recoveryStage === 'e050_finishing'
+      ? t('e050_materialist_finish_title')
     : recoveryStage === 'e050_materialist_wait'
       ? t('e050_materialist_wait_title')
+      : recoveryStage === 'abort_decide'
+        ? t('recovery_abort_title')
       : recoveryStage === 'review_piece'
         ? t('recovery_review_title')
-        : recoveryStage === 'continue_cycle'
+        : recoveryStage === 'purge_decide'
+          ? t('recovery_purge_title')
+          : recoveryStage === 'continue_cycle'
           ? t('recovery_continue_title')
           : recoveryStage === 'after_cut'
             ? t('refill_confirm_title_cut')
             : recoveryStage === 'await_feed'
               ? t('refill_confirm_title_await')
               : t('refill_confirm_title_feed');
-  const recoveryHint = e050Ask
+  const recoveryHint = trayFull
+    ? t('tray_full_hint').replace('{n}', String(machineState.trayPieces || ''))
+    : e050Ask
     ? machineState.e050FinishPiece
       ? `${t('e050_materialist_hint')} ${t('lot_recover_hint_e050_finish')}`
       : t('e050_materialist_hint')
+    : recoveryStage === 'e050_finishing'
+      ? t('e050_materialist_finish_hint')
     : recoveryStage === 'e050_materialist_wait'
       ? t('e050_materialist_wait_hint')
+      : recoveryStage === 'abort_decide'
+      ? t('recovery_abort_hint')
       : recoveryStage === 'review_piece'
       ? t('recovery_review_hint')
-      : recoveryStage === 'continue_cycle'
+      : recoveryStage === 'purge_decide'
+        ? t('recovery_purge_hint')
+        : recoveryStage === 'continue_cycle'
         ? t('recovery_continue_hint')
         : recoveryStage === 'after_cut'
           ? t('refill_confirm_hint_cut')
@@ -228,9 +245,13 @@ export const CycleTab: React.FC<CycleTabProps> = ({
     recoveryStage === 'after_feed' ||
     recoveryStage === 'after_cut' ||
     (e050Ask && !!machineState.recoveryAwaitingConfirm) ||
+    recoveryStage === 'e050_finishing' ||
     recoveryStage === 'e050_materialist_wait' ||
+    recoveryStage === 'abort_decide' ||
     recoveryStage === 'review_piece' ||
-    recoveryStage === 'continue_cycle';
+    recoveryStage === 'purge_decide' ||
+    recoveryStage === 'continue_cycle' ||
+    trayFull;
 
   const [config, setConfig] = useState<CycleConfig>(cycleConfig || DEFAULT_CYCLE_CONFIG);
   const [configDirty, setConfigDirty] = useState(false);
@@ -575,6 +596,54 @@ export const CycleTab: React.FC<CycleTabProps> = ({
               </button>
             </>
           )}
+          {recoveryStage === 'abort_decide' && onRecoveryReview && (
+            <>
+              <button
+                id="btn-cycle-recovery-abort"
+                type="button"
+                onClick={() => onRecoveryReview(false)}
+                disabled={!machineState.recoveryAwaitingConfirm}
+                className="flex items-center gap-1.5 rounded-lg bg-red-600 hover:bg-red-700 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40"
+              >
+                <X className="h-3.5 w-3.5" />
+                {t('btn_recovery_abort')}
+              </button>
+              <button
+                id="btn-cycle-recovery-abort-continue"
+                type="button"
+                onClick={() => onRecoveryReview(true)}
+                disabled={!machineState.recoveryAwaitingConfirm}
+                className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40"
+              >
+                <Check className="h-3.5 w-3.5" />
+                {t('btn_recovery_abort_continue')}
+              </button>
+            </>
+          )}
+          {recoveryStage === 'purge_decide' && onRecoveryReview && (
+            <>
+              <button
+                id="btn-cycle-recovery-purge-yes"
+                type="button"
+                onClick={() => onRecoveryReview(true)}
+                disabled={!machineState.recoveryAwaitingConfirm}
+                className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40"
+              >
+                <Check className="h-3.5 w-3.5" />
+                {t('btn_recovery_purge_yes')}
+              </button>
+              <button
+                id="btn-cycle-recovery-purge-no"
+                type="button"
+                onClick={() => onRecoveryReview(false)}
+                disabled={!machineState.recoveryAwaitingConfirm}
+                className="flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-200 disabled:opacity-40"
+              >
+                <X className="h-3.5 w-3.5" />
+                {t('btn_recovery_purge_no')}
+              </button>
+            </>
+          )}
           {(recoveryStage === 'review_piece' ||
             recoveryStage === 'continue_cycle') &&
             onRecoveryReview && (
@@ -589,6 +658,18 @@ export const CycleTab: React.FC<CycleTabProps> = ({
               {recoveryStage === 'continue_cycle'
                 ? t('btn_recovery_continue')
                 : t('btn_recovery_review_ok')}
+            </button>
+          )}
+          {trayFull && onRecoveryReview && (
+            <button
+              id="btn-cycle-tray-emptied"
+              type="button"
+              onClick={() => onRecoveryReview(true)}
+              disabled={!machineState.recoveryAwaitingConfirm}
+              className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40"
+            >
+              <Check className="h-3.5 w-3.5" />
+              {t('btn_tray_emptied')}
             </button>
           )}
         </div>

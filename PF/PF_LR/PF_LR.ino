@@ -138,6 +138,15 @@ volatile bool motor2AbortRequested = false;
 uint16_t  servoActivePwmUs = SERVO_PWM_ACTIVE_US;  // editable UI/NVS (default por lado)
 bool      servoRunning      = false;
 uint16_t  servoLastOutputUs = 0;
+// Stop/setSpeed/Brake RMT (DeReeler o Feeder) suelta el GPIO del LEDC. El canal
+// puede seguir leyendo 1500 y el cache “ya parado”, pero el pin ya no emite:
+// el RC continuo se queda en el último pulso de marcha ~3 s (failsafe).
+static volatile bool servoPinDirty = false;
+
+static void servoMarkPinDirty()
+{
+  servoPinDirty = true;
+}
 
 // Refill / override manual: DeReeler + servo + Feeder (ignora Buffer Full / holgura).
 // Clic = un pulso de refillPulseMs; otro clic apaga de inmediato (no relanza).
@@ -236,11 +245,22 @@ static uint16_t servoMotionPwmUs()
 static void servoWriteUsForced(uint16_t us)
 {
   us = constrain(us, SERVO_PWM_MIN_US, SERVO_PWM_MAX_US);
-  // Canal 7 fijo: setSpeed/Stop RMT suelta LEDC y ledcAttach() auto a veces
-  // no recupera el pin → servo muerto, DeReeler sigue (HTML y HMI).
-  ledcAttachChannel(PIN_SERVO_PWM, 50, SERVO_LEDC_BITS, SERVO_LEDC_CHANNEL);
+  const uint32_t duty = servoUsToDuty(us);
+  const bool remux = servoPinDirty;
+  servoPinDirty = false;
   servoLastOutputUs = us;
-  ledcWrite(PIN_SERVO_PWM, servoUsToDuty(us));
+
+  // Sin remux: no reescribir el mismo duty (ledcWrite en cada frame glitchea el RC).
+  // Con remux (tras RMT): hay que Detach+Attach; Attach sobre pin “ya LEDC” no
+  // reconecta el matrix y el servo sigue alimentando con Full y DeReeler parados.
+  if (!remux && ledcRead(PIN_SERVO_PWM) == duty)
+    return;
+  if (!remux && ledcWrite(PIN_SERVO_PWM, duty))
+    return;
+
+  ledcDetach(PIN_SERVO_PWM);
+  ledcAttachChannel(PIN_SERVO_PWM, 50, SERVO_LEDC_BITS, SERVO_LEDC_CHANNEL);
+  ledcWrite(PIN_SERVO_PWM, duty);
 }
 
 // No reescribir LEDC si ya está: ledcWrite repetido glitchea el RC (vibra).
@@ -255,15 +275,18 @@ static void servoAssertNeutral(bool force)
 {
   static uint32_t lastNeutralMs = 0;
   const bool need = servoRunning || servoLastOutputUs != SERVO_PWM_NEUTRAL_US;
-  if (!force && !need && (uint32_t)(millis() - lastNeutralMs) < SERVO_STOP_REASSERT_MS)
+  if (!force && !servoPinDirty && !need
+      && (uint32_t)(millis() - lastNeutralMs) < SERVO_STOP_REASSERT_MS)
     return;
   servoWriteUsForced(SERVO_PWM_NEUTRAL_US);
   servoRunning = false;
   lastNeutralMs = millis();
 }
 
-// Tras setSpeed/Stop RMT el LEDC se suelta. IfChanged no reescribe (mismo µs)
-// y el RC se apaga mientras el DeReeler sigue. Reafirmar cada frame (~20 ms).
+// Arduino no genera prototipos de funciones static: debe ir antes de servoAssertRun.
+static bool bufferFullStopNow();
+
+// Reafirma cada ~20 ms. Si RMT ensució el pin, remux + 1500/marcha en este frame.
 static void servoAssertRun(bool force)
 {
   // Buffer Full es un enclavamiento directo: ningún caller puede reactivar
@@ -276,7 +299,7 @@ static void servoAssertRun(bool force)
 
   static uint32_t lastRunMs = 0;
   const uint16_t us = servoMotionPwmUs();
-  if (!force && servoRunning && servoLastOutputUs == us
+  if (!force && !servoPinDirty && servoRunning && servoLastOutputUs == us
       && (uint32_t)(millis() - lastRunMs) < SERVO_STOP_REASSERT_MS)
     return;
   servoWriteUsForced(us);
@@ -286,7 +309,7 @@ static void servoAssertRun(bool force)
 
 static void servoStop()
 {
-  if (!servoRunning && servoLastOutputUs == SERVO_PWM_NEUTRAL_US)
+  if (!servoPinDirty && !servoRunning && servoLastOutputUs == SERVO_PWM_NEUTRAL_US)
     return;
   servoAssertNeutral(true);
 }
@@ -344,6 +367,24 @@ static void syncServoToAutoState()
     servoAssertRun(false);
   else if (servoRunning || servoLastOutputUs != SERVO_PWM_NEUTRAL_US)
     servoStop();
+}
+
+// Auto: misma reafirmación de siempre. JOG Materialista: el feeder RMT suelta
+// LEDC al parar; hay que reescribir marcha o 1500 o el RC sigue solo.
+static void serviceServoPwm()
+{
+  if (idleMode)
+  {
+    if (refillServoOn)
+      servoAssertRun(true);
+    else
+      servoAssertNeutral(false);
+    return;
+  }
+  if (servoShouldRunAuto())
+    servoAssertRun(true);
+  else
+    servoAssertNeutral(false);
 }
 
 static void setupRotationServo()
@@ -431,13 +472,13 @@ static void forceStopDereelerAndServo()
   const bool commanded = motor && fabsf(commandedRpm) > 0.01f;
   const bool stillSpinning = motor && fabsf(motor->currentRPM()) > 1.0f;
 
-  // Primer corte o motor aún vivo: 1500 ya. En hold, el throttle de 20 ms basta.
-  servoAssertNeutral(commanded || stillSpinning);
+  servoAssertNeutral(true);
 
   if (commanded || (stillSpinning && (uint32_t)(millis() - lastStopMs) >= 250u))
   {
     motor->Stop();
     lastStopMs = millis();
+    servoMarkPinDirty();
     servoAssertNeutral(true);
   }
   commandedRpm = 0.0f;
@@ -643,6 +684,7 @@ static void motorHardStop(uint8_t idx)
 {
   StepperRMT* m = motorByIndex(idx);
   m->Stop();
+  servoMarkPinDirty();
   motorWaitStopped(idx);
   *commandedRpmByIndex(idx) = 0.0f;
 }
@@ -670,9 +712,11 @@ static bool motorStartSigned(uint8_t idx, float uiSignedRpm)
   }
 
   *commandedRpmByIndex(idx) = uiSignedRpm;
-  // setSpeed RMT suelta LEDC: si el servo debía seguir, re-attach ya.
+  servoMarkPinDirty();
   if (servoShouldRunAuto() || (idleMode && refillServoOn))
     servoAssertRun(true);
+  else
+    servoAssertNeutral(true);
   if (motorPinDir(idx) >= 0)
     DBG_PRINTF("Motor%u UI=%.1f → setSpeed(%.1f) MOSFET_GPIO=%s\n",
                   (unsigned)(idx + 1), uiSignedRpm, driveRpm,
@@ -714,8 +758,11 @@ static bool motorRun(uint8_t idx, float signedRpm)
     if (m->setSpeed(uiSignedToDriveRpm(target, idx), MOTOR_ACCEL))
     {
       *commandedRpmByIndex(idx) = target;
+      servoMarkPinDirty();
       if (servoShouldRunAuto() || (idleMode && refillServoOn))
         servoAssertRun(true);
+      else
+        servoAssertNeutral(true);
       return true;
     }
   }
@@ -872,9 +919,23 @@ static void refillExpireChannels(uint32_t now)
     Serial.println("REFILL servo OFF (pulso expirado)");
 }
 
+static void refillHaltOutputs()
+{
+  // Neutro → Stop RMT → neutro. motorRun(0) espera hasta 200 ms y el Stop del
+  // feeder (otro núcleo) suelta LEDC: DeReeler/feeder paran y el RC sigue.
+  forceStopDereelerAndServo();
+  motor2AbortRequested = true;
+}
+
 static void applyRefillOutputs()
 {
   refillExpireChannels(millis());
+
+  // RC primero: Stop/setSpeed del DeReeler suelta LEDC; el 1500 posterior se pierde.
+  if (refillServoOn)
+    servoAssertRun(true);
+  else
+    servoAssertNeutral(true);
 
   if (refillDereelerOn)
   {
@@ -883,12 +944,17 @@ static void applyRefillOutputs()
       motorRun(want);
   }
   else if (fabsf(commandedRpm) > 0.01f)
-    motorRun(0.0f);
+  {
+    if (motor)
+      motor->Stop();
+    commandedRpm = 0.0f;
+    servoMarkPinDirty();
+  }
 
   if (refillServoOn)
     servoAssertRun(true);
-  else if (servoRunning || servoLastOutputUs != SERVO_PWM_NEUTRAL_US)
-    servoStop();
+  else
+    servoAssertNeutral(true);
 
   // Feeder se aplica en motor2HolguraTask vía refillFeederOn.
   if (!refillFeederOn)
@@ -922,9 +988,7 @@ static void serviceRefillPulses()
     if (refillOverrideActive())
     {
       refillClearFlags();
-      motorRun(0.0f);
-      servoStop();
-      motor2AbortRequested = true;
+      refillHaltOutputs();
     }
     return;
   }
@@ -958,13 +1022,9 @@ static bool applyRefillCommand(
   {
     if (on)
     {
-      const bool der = refillStartChannel(refillDereelerOn, refillDereelerPulseUntilMs, hold);
-      const bool srv = refillStartChannel(refillServoOn, refillServoPulseUntilMs, hold);
-      const bool fed = refillStartChannel(refillFeederOn, refillFeederPulseUntilMs, hold);
-      if (srv)
-        setupRotationServo();
-      (void)der;
-      (void)fed;
+      refillStartChannel(refillDereelerOn, refillDereelerPulseUntilMs, hold);
+      refillStartChannel(refillServoOn, refillServoPulseUntilMs, hold);
+      refillStartChannel(refillFeederOn, refillFeederPulseUntilMs, hold);
     }
     else
     {
@@ -986,7 +1046,6 @@ static bool applyRefillCommand(
     {
       if (refillStartChannel(refillServoOn, refillServoPulseUntilMs, hold))
       {
-        setupRotationServo();
         Serial.printf("REFILL servo ON %u us (cfg %u, neutro %u)\n",
                       (unsigned)servoMotionPwmUs(), (unsigned)servoActivePwmUs,
                       (unsigned)SERVO_PWM_NEUTRAL_US);
@@ -1009,9 +1068,7 @@ static bool applyRefillCommand(
     applyRefillOutputs();
   else
   {
-    motorRun(0.0f);
-    servoStop();
-    motor2AbortRequested = true;
+    refillHaltOutputs();
     if (!idleMode && autoEnabled && systemFault == FAULT_NONE && sensorsMotionArmed())
       resumeAutoFromSensors();
   }
@@ -1118,9 +1175,7 @@ static void applyIdleMode(bool on)
     if (refillOverrideActive())
     {
       refillClearFlags();
-      motorRun(0.0f);
-      servoStop();
-      motor2AbortRequested = true;
+      refillHaltOutputs();
     }
     Serial.println("MODE: Idle");
     if (hoseBeltAbsentActive())
@@ -1789,6 +1844,7 @@ static bool motor2StartSignedTask(float uiSignedRpm)
   }
 
   commandedRpm2 = target;
+  servoMarkPinDirty();
   DBG_PRINTF("Motor2 arranque UI=%.1f → setSpeed(%.1f)\n", target, driveRpm);
   return true;
 }
@@ -1803,6 +1859,7 @@ static bool motor2ApplySpeedTask(float signedRpm)
     if (motor2->setSpeed(driveRpm, MOTOR2_ACCEL))
     {
       commandedRpm2 = target;
+      servoMarkPinDirty();
       return true;
     }
   }
@@ -3468,11 +3525,9 @@ void loop()
   }
   peerService();
   serviceHttp(8);
-  // HTTP/peer + feeder RMT (otro núcleo) pueden soltar LEDC.
-  if (!idleMode && servoShouldRunAuto())
-    servoAssertRun(true);
-  else if (!idleMode && !servoShouldRunAuto())
-    servoAssertNeutral(false);
+  // Auto: igual que antes. Materialista/JOG: el RMT del feeder también suelta
+  // LEDC; sin reafirmar 1500 el RC se queda en marcha.
+  serviceServoPwm();
 
   updateBufferFullFilter();
   updateBufferMaxFaultMonitor();
@@ -3484,8 +3539,5 @@ void loop()
   serviceRefillPulses();
   serviceAuto();
   serviceHttp(8);
-  if (!idleMode && servoShouldRunAuto())
-    servoAssertRun(true);
-  else if (!idleMode && !servoShouldRunAuto())
-    servoAssertNeutral(false);
+  serviceServoPwm();
 }

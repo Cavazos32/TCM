@@ -25,6 +25,8 @@ static inline PfCmdScope pfMasterCmdScope(const String& cmd)
       // HTTP Master: refill L+R. HMI TCP Materialist JOG usa side L|R (pfTcpDoRefill).
       || cmd == "refillMaterial" || cmd == "refillDereeler"
       || cmd == "refillServo" || cmd == "refillFeeder"
+      || cmd == "refillHoldMaterial" || cmd == "refillHoldDereeler"
+      || cmd == "refillHoldServo" || cmd == "refillHoldFeeder"
       || cmd == "halt" || cmd == "motionStop" || cmd == "hardStop"
       || cmd == "ping")
     return PfCmdScope::Global;

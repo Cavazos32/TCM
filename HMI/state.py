@@ -677,6 +677,17 @@ class HmiState:
         with self._lock:
             return self._last_state_byte
 
+    def motion_busy(self) -> bool:
+        with self._lock:
+            return self._last_state_byte == TX_BUSY
+
+    def holder_encoder_closed(self) -> bool:
+        """True solo si la caché HMI tiene Holder y Encoder ON (None = no)."""
+        return (
+            self.plc_valve_is_on(CMD_HOLDER) is True
+            and self.plc_valve_is_on(CMD_ENCODER) is True
+        )
+
     def asda_position_mm(self) -> float | None:
         """Última posición ASDA conocida (mm magnitud / report Motion). None = sin dato."""
         with self._lock:
@@ -1483,6 +1494,11 @@ class HmiState:
         if blocked:
             return {"ok": False, "error": blocked}
         snap = self._cycle.snapshot()
+        if snap.get("materialist"):
+            return {
+                "ok": False,
+                "error": "Desactiva el modo Materialist para reanudar",
+            }
         if snap.get("paused"):
             if self._pf_client.connected:
                 if not self._manual_pf(lambda: self._pf_client.cmd_start()):
@@ -1510,6 +1526,7 @@ class HmiState:
                     "text": f"{log_label} — estados OFF (0x01E)",
                     "kind": "ok",
                 }
+            self._notify()
         return bool(ok)
 
     def cmd_machine_home(self) -> dict:
@@ -1517,17 +1534,11 @@ class HmiState:
         Home de máquina (control de máquina):
         ASDA → posición 0 + encoders Set0 L/R + All Off neumática.
         No es Buscar HOME (0x01) ni Reset HMI.
+        Siempre accionable: con lote vivo pausa y re-arranca la pieza al Resume.
         """
-        recovery_mode = bool(
-            self._error_policy.latch.active
-            or self._cycle.snapshot().get("recoveryAfterError")
-        )
         if self._cycle.is_active():
-            if not recovery_mode:
-                return {"ok": False, "error": "Ciclo activo — detén o Reset antes de Home"}
-            released = self._cycle.release_for_manual_refill()
-            if not released.get("ok"):
-                return released
+            # Home no es Stop: el lote queda en Pause y la pieza se re-arranca.
+            self._cycle.restart_piece_after_manual_home()
 
         home_ok = self.cmd_motion_move_zero()
         enc_r = bool(self.cmd_motion_enc_set0_r())
@@ -1583,25 +1594,6 @@ class HmiState:
         """Machine RESET: reset source, validate source, never HOME."""
         latch = self._error_policy.latch
 
-        # Reset de máquina también reinicia el PLC y refleja sus válvulas en OFF.
-        if self._plc_client.connected:
-            if not self._plc_reset_reflect_off(log_label="Reset PLC"):
-                self._notify()
-                return {
-                    "ok": False,
-                    "error": "PLC no aceptó Reset",
-                    "cleared": None,
-                    "homeOk": None,
-                }
-        else:
-            self._notify()
-            return {
-                "ok": False,
-                "error": "PLC sin enlace — Reset no ejecutado",
-                "cleared": None,
-                "homeOk": None,
-            }
-
         # Reset HMI siempre manda Reset PF (0x2C) si hay enlace — igual que Start manda 0x2A.
         if self._pf_client.connected:
             if not self._pf_send_reset():
@@ -1612,6 +1604,40 @@ class HmiState:
                     "cleared": None,
                     "homeOk": None,
                 }
+
+        # Reset HMI siempre manda Reset PLC (0x1E) si hay enlace; UI refleja OFF.
+        if self._plc_client.connected:
+            if not self._plc_reset_reflect_off(log_label="Reset PLC"):
+                self._notify()
+                return {
+                    "ok": False,
+                    "error": "PLC no aceptó Reset",
+                    "cleared": None,
+                    "homeOk": None,
+                }
+
+        if not latch.active and self._cycle.is_active():
+            # Reset nunca cierra un lote vivo: queda en Pause con su progreso.
+            self._cycle.clear_fault_mirror()
+            self._cycle.request_pause()
+            self._broadcast_machine_state(MACH_RESET)
+            self._broadcast_machine_state(MACH_PAUSE)
+            asked = self._cycle.request_abort_decision()
+            self._banner = {
+                "text": (
+                    "Reset — ¿Abortar ciclo o continuar?"
+                    if asked
+                    else "Reset — Resume para continuar"
+                ),
+                "kind": "ok",
+            }
+            self._notify()
+            return {
+                "ok": True,
+                "cleared": None,
+                "homeOk": None,
+                "resumeEnabled": True,
+            }
 
         if not latch.active:
             self._cycle.request_reset()
@@ -1631,6 +1657,7 @@ class HmiState:
         if "motion" in module:
             module_reset_ok = bool(self._client.cmd_reset_errors())
         elif "plc" in module:
+            # Ya enviado arriba si había enlace; sin enlace no se valida el EXXX de PLC.
             module_reset_ok = bool(self._plc_client.connected)
         elif "pre" in module or "feeder" in module:
             # Ya enviado arriba si había enlace; sin enlace no se valida el EXXX de PF.
@@ -1687,8 +1714,13 @@ class HmiState:
             self._cycle.request_pause()
             self._broadcast_machine_state(MACH_RESET)
             self._broadcast_machine_state(MACH_PAUSE)
+            asked = self._cycle.request_abort_decision()
             self._banner = {
-                "text": "Error reseteado — Resume para continuar",
+                "text": (
+                    "Error reseteado — ¿Abortar ciclo o continuar?"
+                    if asked
+                    else "Error reseteado — Resume para continuar"
+                ),
                 "kind": "ok",
             }
         else:
@@ -1729,6 +1761,15 @@ class HmiState:
 
     def _apply_detail_error(self, code_or_byte: str | int, *, source: str = "") -> bool:
         """Latch one EXXX and enter the common ERROR hold."""
+        entry = lookup(code_or_byte)
+        if (
+            entry is not None
+            and str(entry.get("code")) == "E050"
+            and self._cycle.is_e050_materialist_path()
+        ):
+            # Latch ya liberado para Materialist; el sensor PLC sigue activo.
+            return True
+
         result = self._error_policy.set_error(code_or_byte)
         if result is None:
             return False
@@ -1844,10 +1885,13 @@ class HmiState:
     def clear_e050_latch_for_materialist(self) -> bool:
         """Limpia solo el latch HMI de E050 para la ruta especial Materialist."""
         latch = self._error_policy.latch
-        if not latch.active or latch.code != "E050":
+        if not latch.active:
+            return True
+        if latch.code != "E050":
             return False
         old = self._error_policy.clear()
         self._cycle.clear_fault_mirror()
+        self._set_banner("E050 → Materialist", "ok")
         _append_log(self._main_log, f"E050: latch liberado para Materialist · {old.ui_text}")
         self._notify()
         return True
@@ -1857,17 +1901,12 @@ class HmiState:
 
         El flag HMI solo queda ON si el PreFeeder aceptó 0x3F (HTML local idleMode).
         OFF: si no hay enlace PF, igual se sale del interlock HMI.
+        Siempre accionable: con lote vivo pausa y re-arranca la pieza al Resume.
         """
         if on and self._cycle.is_active() and not self._cycle.is_e050_materialist_wait():
-            recovery_mode = bool(
-                self._error_policy.latch.active
-                or self._cycle.snapshot().get("recoveryAfterError")
+            self._cycle.hold_lot_and_restart_piece(
+                "Materialist con lote vivo — Pause (progreso conservado)"
             )
-            if not recovery_mode:
-                return {"ok": False, "error": "No Materialist con ciclo activo"}
-            released = self._cycle.release_for_manual_refill()
-            if not released.get("ok"):
-                return released
         pf_ok = self._manual_pf(lambda: self._pf_client.cmd_materialist(bool(on)))
         if on and pf_ok:
             self._manual_pf(lambda: self._pf_client.cmd_in_process(False))
@@ -1929,25 +1968,18 @@ class HmiState:
     ) -> dict:
         """Purga/refill material: ASDA park → espera Retry/Long/corte → feed → corte → HOME.
 
-        E050 (encoder / aire / manguera): se permite con latch activo.
-        Start/Resume siguen bloqueados; el EXXX no se borra.
+        Siempre accionable (también con latch EXXX o lote vivo).
+        Start/Resume siguen bloqueados si hay latch; el EXXX no se borra.
         """
         with self._lock:
-            recovery_mode = bool(
-                self._error_policy.latch.active
-                or self._cycle.snapshot().get("recoveryAfterError")
-            )
             rpm = self._rpm
-        if not recovery_mode:
-            with self._lock:
-                blocked = self._work_blocked_error()
-            if blocked:
-                return {"ok": False, "error": blocked}
-        if recovery_mode:
-            released = self._cycle.release_for_manual_refill()
-            if not released.get("ok"):
-                return released
-            _append_log(self._main_log, "Recovery: Purge / Refill manual")
+        if self._cycle.is_refill_active():
+            return {"ok": False, "error": "Purga ya en curso"}
+        if self._cycle.is_active():
+            res = self._cycle.request_lot_purge(feed_mm=feed_mm, asda_mm=asda_mm)
+            if res.get("ok"):
+                _append_log(self._main_log, "Purge dentro del lote (progreso conservado)")
+            return res
         return self._cycle.request_refill(rpm, feed_mm=feed_mm, asda_mm=asda_mm)
 
     def cmd_cycle_refill_confirm(self, ok: bool = True) -> dict:
@@ -1957,7 +1989,12 @@ class HmiState:
         return self._cycle.retry_refill(feed_mm=feed_mm)
 
     def cmd_recovery_review(self, ok: bool = True) -> dict:
-        return self._cycle.confirm_recovery_review(ok)
+        res = self._cycle.confirm_recovery_review(ok)
+        if res.get("resume"):
+            return self.cmd_resume()
+        if res.get("abort"):
+            return self.cmd_stop()
+        return res
 
     def cmd_motion(self, action: str, **kwargs) -> dict:
         handlers = {
@@ -2130,10 +2167,8 @@ class HmiState:
             sec = self.set_blower_sec(float(kwargs.get("blowerSec", kwargs.get("sec", DEFAULT_BLOWER_SEC))))
             return {"ok": True, "blowerSec": sec}
         elif action == "reset":
-            # Reset PLC propio (también lo dispara Reset HMI hard).
+            # Reset PLC propio (0x1E). Reset HMI también lo manda si hay enlace.
             ok = self._plc_reset_reflect_off()
-            if ok:
-                self._notify()
         elif action == "all_off":
             ok = self._manual_plc(lambda: self._plc_client.cmd_all_off())
             if ok:
@@ -2626,6 +2661,8 @@ class HmiState:
             code = str(entry["code"])
             if code in seen:
                 return
+            if code == "E050" and self._cycle.is_e050_materialist_path():
+                return
             seen.add(code)
             items.append(
                 {
@@ -2677,6 +2714,8 @@ class HmiState:
         primary = self._plc_primary_active_error_byte()
         if primary is None:
             return False
+        if primary == TX_ENCODER_ERR and self._cycle.is_e050_materialist_path():
+            return False
         return self._apply_detail_error(primary, source="plc")
 
     def _e050_latched(self) -> bool:
@@ -2686,7 +2725,7 @@ class HmiState:
     def _work_blocked_error(self) -> str | None:
         """Motivo para rechazar Start/Resume. Latch EXXX o fallo PLC.
 
-        Purge/Refill con E050 no usa esta puerta (ver cmd_cycle_refill).
+        Purge / Home / Materialist no usan esta puerta.
         """
         latch = self._error_policy.latch
         if latch.active:
