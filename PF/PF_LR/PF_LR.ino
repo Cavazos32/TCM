@@ -857,9 +857,9 @@ static void refillExpireChannels(uint32_t now)
 {
   const bool servoWasOn = refillServoOn;
   auto expire = [&](volatile bool& onFlag, volatile uint32_t& pulseUntilMs) {
-    if (!onFlag)
+    if (!onFlag || pulseUntilMs == 0)
       return;
-    if (pulseUntilMs == 0 || (int32_t)(now - pulseUntilMs) >= 0)
+    if ((int32_t)(now - pulseUntilMs) >= 0)
     {
       onFlag = false;
       pulseUntilMs = 0;
@@ -902,11 +902,16 @@ static void refillStopChannel(volatile bool& onFlag, volatile uint32_t& pulseUnt
 }
 
 // Clic = pulso de refillPulseMs (misma duración para todos). Relanza el timer.
-static bool refillStartChannel(volatile bool& onFlag, volatile uint32_t& pulseUntilMs)
+static bool refillStartChannel(
+  volatile bool& onFlag,
+  volatile uint32_t& pulseUntilMs,
+  bool hold
+)
 {
   const bool wasOn = onFlag;
   onFlag = true;
-  pulseUntilMs = millis() + refillPulseNowMs();
+  // Hold remoto: permanece ON hasta recibir el comando OFF.
+  pulseUntilMs = hold ? 0 : millis() + refillPulseNowMs();
   return !wasOn;
 }
 
@@ -934,7 +939,9 @@ static void serviceRefillPulses()
 // which: "material" | "dereeler" | "servo" | "feeder".
 // on=true → un pulso de refillPulseMs (misma duración; relanza el timer).
 // on=false → apaga de inmediato.
-static bool applyRefillCommand(const String& which, bool on)
+static bool applyRefillCommand(
+  const String& which, bool on, bool hold = false
+)
 {
   if (!idleMode)
   {
@@ -951,9 +958,9 @@ static bool applyRefillCommand(const String& which, bool on)
   {
     if (on)
     {
-      const bool der = refillStartChannel(refillDereelerOn, refillDereelerPulseUntilMs);
-      const bool srv = refillStartChannel(refillServoOn, refillServoPulseUntilMs);
-      const bool fed = refillStartChannel(refillFeederOn, refillFeederPulseUntilMs);
+      const bool der = refillStartChannel(refillDereelerOn, refillDereelerPulseUntilMs, hold);
+      const bool srv = refillStartChannel(refillServoOn, refillServoPulseUntilMs, hold);
+      const bool fed = refillStartChannel(refillFeederOn, refillFeederPulseUntilMs, hold);
       if (srv)
         setupRotationServo();
       (void)der;
@@ -969,7 +976,7 @@ static bool applyRefillCommand(const String& which, bool on)
   else if (which == "dereeler")
   {
     if (on)
-      refillStartChannel(refillDereelerOn, refillDereelerPulseUntilMs);
+      refillStartChannel(refillDereelerOn, refillDereelerPulseUntilMs, hold);
     else
       refillStopChannel(refillDereelerOn, refillDereelerPulseUntilMs);
   }
@@ -977,7 +984,7 @@ static bool applyRefillCommand(const String& which, bool on)
   {
     if (on)
     {
-      if (refillStartChannel(refillServoOn, refillServoPulseUntilMs))
+      if (refillStartChannel(refillServoOn, refillServoPulseUntilMs, hold))
       {
         setupRotationServo();
         Serial.printf("REFILL servo ON %u us (cfg %u, neutro %u)\n",
@@ -991,7 +998,7 @@ static bool applyRefillCommand(const String& which, bool on)
   else if (which == "feeder")
   {
     if (on)
-      refillStartChannel(refillFeederOn, refillFeederPulseUntilMs);
+      refillStartChannel(refillFeederOn, refillFeederPulseUntilMs, hold);
     else
       refillStopChannel(refillFeederOn, refillFeederPulseUntilMs);
   }
@@ -2864,14 +2871,17 @@ static bool peerDoCmd(const String& cmd, const String& val, int id)
     }
   }
   else if (cmd == "refillMaterial" || cmd == "refillDereeler" || cmd == "refillServo"
-           || cmd == "refillFeeder")
+           || cmd == "refillFeeder"
+           || cmd == "refillHoldMaterial" || cmd == "refillHoldDereeler"
+           || cmd == "refillHoldServo" || cmd == "refillHoldFeeder")
   {
+    const bool hold = cmd.startsWith("refillHold");
     const bool on = (val == "1" || val == "true" || val == "on");
     String which = "material";
-    if (cmd == "refillDereeler") which = "dereeler";
-    else if (cmd == "refillServo") which = "servo";
-    else if (cmd == "refillFeeder") which = "feeder";
-    ok = applyRefillCommand(which, on);
+    if (cmd.endsWith("Dereeler")) which = "dereeler";
+    else if (cmd.endsWith("Servo")) which = "servo";
+    else if (cmd.endsWith("Feeder")) which = "feeder";
+    ok = applyRefillCommand(which, on, hold);
   }
   else if (cmd == "setIdleMode" || cmd == "idleMode"
            || cmd == "setTestMode" || cmd == "testMode"

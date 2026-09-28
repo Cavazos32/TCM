@@ -2189,8 +2189,10 @@ class HmiState:
                 )
         self._notify()
 
-    def cmd_pf_refill(self, side: str, channel: str, on: bool = True) -> dict:
-        """JOG Materialista: refill HTML L/R. Pulso configurable en el esclavo."""
+    def cmd_pf_refill(
+        self, side: str, channel: str, on: bool = True, *, hold: bool = True
+    ) -> dict:
+        """JOG Materialista por lado. La HMI mantiene ON hasta recibir OFF."""
         side_u = str(side or "").strip().upper()
         ch = str(channel or "").strip().lower()
         want_on = self._pf_refill_on_arg(on, default=False)
@@ -2206,7 +2208,9 @@ class HmiState:
         # Serializar ON/OFF del mismo lado: un ON tardío no debe rearmar tras OFF.
         with self._pf_refill_lock:
             ok = self._manual_pf(
-                lambda: self._pf_client.cmd_refill(ch, want_on, side_u)
+                lambda: self._pf_client.cmd_refill(
+                    ch, want_on, side_u, hold=hold
+                )
             )
         if not ok:
             with self._lock:
@@ -2234,7 +2238,8 @@ class HmiState:
             pulse_s = self._pf_refill_pulse_s(side_u)
             if want_on:
                 self._pf_refill_ignore_on_until.pop(side_u, None)
-                self._pf_refill_schedule_off(side_u, channels, pulse_s)
+                if not hold:
+                    self._pf_refill_schedule_off(side_u, channels, pulse_s)
             else:
                 self._pf_refill_bump(side_u, channels)
                 self._pf_refill_ignore_on_until[side_u] = (
@@ -2244,7 +2249,7 @@ class HmiState:
             _append_log(self._pf_log, text)
             self._pf["status"] = {"text": text, "kind": "ok"}
         self._notify()
-        return {"ok": True, "pulseS": pulse_s}
+        return {"ok": True, "pulseS": pulse_s, "hold": bool(hold)}
 
     def cmd_pf(self, action: str, **kwargs) -> dict:
         if action == "materialist":

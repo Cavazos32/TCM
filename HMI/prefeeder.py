@@ -118,13 +118,16 @@ class PreFeederClient(ModuleTcpClient):
             command="setInProcess", value="1" if on else "0", **extra
         )
 
-    def cmd_refill(self, channel: str, on: bool, side: str) -> bool:
-        """Refill Materialista por lado (HTML L/R). Pulso vive en el esclavo."""
+    def cmd_refill(
+        self, channel: str, on: bool, side: str, *, hold: bool = False
+    ) -> bool:
+        """Refill Materialista por lado. hold=True mantiene ON hasta recibir OFF."""
+        prefix = "refillHold" if hold else "refill"
         cmd = {
-            "material": "refillMaterial",
-            "dereeler": "refillDereeler",
-            "servo": "refillServo",
-            "feeder": "refillFeeder",
+            "material": f"{prefix}Material",
+            "dereeler": f"{prefix}Dereeler",
+            "servo": f"{prefix}Servo",
+            "feeder": f"{prefix}Feeder",
         }.get(channel)
         if not cmd:
             return False

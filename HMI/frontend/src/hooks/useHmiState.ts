@@ -157,9 +157,8 @@ export function useHmiState() {
   const valveOnRef = useRef<Record<string, boolean>>({});
   const valveLockRef = useRef<Record<string, boolean>>({});
   const [valveBusy, setValveBusy] = useState<Record<string, boolean>>({});
-  const pfPulseSRef = useRef<{ L: number; R: number }>({ L: 1, R: 1 });
-  const pfJogHoldOffRef = useRef<Record<'L' | 'R', boolean>>({ L: false, R: false });
-  const pfJogSeqRef = useRef<Record<'L' | 'R', number>>({ L: 0, R: 0 });
+  // JOG Materialista: la duración la determina el estado ON/OFF de la HMI.
+  // No existe auto-off local por pulseS; el PF central recibe un comando hold.
 
   const applySnapshot = useCallback((snap: BackendSnapshot) => {
     const prevFlow = snapRef.current?.cycle.flow;
@@ -186,23 +185,6 @@ export function useHmiState() {
     const targetQty = targetQtyRef.current;
     const plc = mapPlcState(snap);
     const pfState = mapPreFeederState(snap);
-    pfPulseSRef.current.L = pfState.refillL.pulseS || 1;
-    pfPulseSRef.current.R = pfState.refillR.pulseS || 1;
-    (['L', 'R'] as const).forEach((side) => {
-      const key = side === 'L' ? 'refillL' : 'refillR';
-      if (!pfJogHoldOffRef.current[side]) return;
-      if (!pfState[key].material) {
-        pfJogHoldOffRef.current[side] = false;
-        return;
-      }
-      pfState[key] = {
-        ...pfState[key],
-        material: false,
-        dereeler: false,
-        servo: false,
-        feeder: false,
-      };
-    });
     // Sincronizar lectura ON/OFF desde servidor solo si la válvula no está bloqueada.
     for (const v of plc.valves) {
       if (!valveLockRef.current[v.id]) {
@@ -705,19 +687,6 @@ export function useHmiState() {
     }).catch(() => {});
   }, []);
 
-  const pfRefillOffRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
-
-  const pfRefillClearTimers = useCallback((side: 'L' | 'R', channel: PfRefillChannel) => {
-    const chans: PfRefillChannel[] =
-      channel === 'material' ? ['material', 'dereeler', 'servo', 'feeder'] : [channel];
-    for (const ch of chans) {
-      const id = `${side}-${ch}`;
-      const t = pfRefillOffRef.current[id];
-      if (t) clearTimeout(t);
-      delete pfRefillOffRef.current[id];
-    }
-  }, []);
-
   const pfRefillPaint = useCallback(
     (side: 'L' | 'R', channel: PfRefillChannel, on: boolean) => {
       const key = side === 'L' ? 'refillL' : 'refillR';
@@ -742,48 +711,16 @@ export function useHmiState() {
   );
 
   const pfRefill = useCallback((side: 'L' | 'R', channel: PfRefillChannel, on: boolean) => {
-    const seq = (pfJogSeqRef.current[side] = (pfJogSeqRef.current[side] || 0) + 1);
-    pfJogHoldOffRef.current[side] = !on;
-    pfRefillClearTimers(side, channel);
     pfRefillPaint(side, channel, on);
-    const pulseS = pfPulseSRef.current[side] || 1;
-    if (on) {
-      const chans: PfRefillChannel[] =
-        channel === 'material' ? ['material', 'dereeler', 'servo', 'feeder'] : [channel];
-      const ms = Math.round(Math.max(0.2, Math.min(10, pulseS)) * 1000);
-      for (const ch of chans) {
-        const id = `${side}-${ch}`;
-        pfRefillOffRef.current[id] = setTimeout(() => {
-          delete pfRefillOffRef.current[id];
-          pfRefillPaint(side, ch, false);
-        }, ms);
-      }
-    }
     api.prefeederAction('refill', { side, channel, on }).then((res) => {
-      if (pfJogSeqRef.current[side] !== seq) return;
       if (res.ok === false && res.error) {
-        pfJogHoldOffRef.current[side] = false;
-        pfRefillClearTimers(side, channel);
         pfRefillPaint(side, channel, false);
         window.alert(res.error);
-        return;
       }
-      if (on && typeof res.pulseS === 'number' && Number.isFinite(res.pulseS)) {
-        pfPulseSRef.current[side] = res.pulseS;
-        pfRefillClearTimers(side, channel);
-        const ms = Math.round(Math.max(0.2, Math.min(10, res.pulseS)) * 1000);
-        const chans: PfRefillChannel[] =
-          channel === 'material' ? ['material', 'dereeler', 'servo', 'feeder'] : [channel];
-        for (const ch of chans) {
-          const id = `${side}-${ch}`;
-          pfRefillOffRef.current[id] = setTimeout(() => {
-            delete pfRefillOffRef.current[id];
-            pfRefillPaint(side, ch, false);
-          }, ms);
-        }
-      }
-    }).catch(() => {});
-  }, [pfRefillClearTimers, pfRefillPaint]);
+    }).catch(() => {
+      pfRefillPaint(side, channel, false);
+    });
+  }, [pfRefillPaint]);
 
   const andonSetOut = useCallback((out: 'green' | 'yellow' | 'red' | 'buzzer', on: boolean) => {
     api.andonAction('set_out', { out, on }).catch(() => {});
