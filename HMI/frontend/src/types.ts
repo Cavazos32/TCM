@@ -31,7 +31,7 @@ export interface CycleConfig {
   pieceWatchTimeoutS?: number;
   /** Feed / Stage2 OM: 'L' | 'R' | 'LR' */
   feedSides: 'L' | 'R' | 'LR';
-  /** Tfeed entre piezas (paso 3). false = omitir; solo helper holgura. */
+  /** Tfeed tras el corte (paso 18). false = omitir; solo helper holgura. */
   pfTriggerEnabled?: boolean;
   /** Longitud de purga/refill (mm). Retry = este valor; Long feed = REFILL_LONG_FEED_MM. */
   refillMm?: number;

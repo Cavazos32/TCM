@@ -117,8 +117,8 @@
 #define FEED_HALT_DECEL_PP          8000000u
 
 // ≥ ENC_SETTLE_MS (250): si es menor, R (y a veces L) lee OM antes de settle → solo approach.
-#define FEED_OM_SETTLE_MS           280
-#define FEED_OM_HALT_SETTLE_MS      500  // post-halt láser: ENC_SETTLE + rebote
+#define FEED_OM_SETTLE_MS           200 /// antes 280
+#define FEED_OM_HALT_SETTLE_MS      150 /// antes 500
 #define FEED_OM_TARGET_TOL_MM       0.5f   // legacy overview; Feed usa ventanas abajo
 #define FEED_OM_CORR_RETRY_MAX      1      // 1 corrección (aprox. no cuenta)
 #define FEED_OM_READ_RETRY_MAX      3
@@ -215,6 +215,9 @@ enum FeedSidePhase : uint8_t {
   FSP_VEL_SLOW,         // PV: 0x60FF slow; hunt si LR-X OFF al start; tope = GPIO
   FSP_VEL_STOPPING,     // CW Halt ya emitido; TVel=0 + espera 0x606C~0
   FSP_VEL_SETTLE,       // OM final + restaurar PP
+  FSP_OFFSET,           // ciclo: tras FEED_OK, offL/offR relativo
+  FSP_WAIT_SERVO_OFFSET,
+  FSP_SETTLE_OFFSET,
   FSP_DONE_OK,
   FSP_DONE_NG
 };

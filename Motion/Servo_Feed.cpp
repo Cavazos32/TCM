@@ -650,6 +650,7 @@ struct FeedSideRt {
   bool huntLaser = false;      // láser OFF al start → creep, sin approach rápido
   // Halt en approach solo en flanco OFF→ON (prefetch: láser ya ON, no parar en 0).
   bool haltOnLaserRise = false;
+  bool offsetApplied = false;  // ciclo: offL/offR ya mandado tras FEED_OK
   FeedValResult result = FVR_NONE;
   uint16_t errByte = 0;
   char fault[FEED_FAULT_REASON_MAX] = "";
@@ -919,6 +920,9 @@ static const char* feedSidePhaseName(FeedSidePhase p)
     case FSP_VEL_SLOW: return "VEL_SLOW";
     case FSP_VEL_STOPPING: return "VEL_STOPPING";
     case FSP_VEL_SETTLE: return "VEL_SETTLE";
+    case FSP_OFFSET: return "OFFSET";
+    case FSP_WAIT_SERVO_OFFSET: return "WAIT_SERVO_OFFSET";
+    case FSP_SETTLE_OFFSET: return "SETTLE_OFFSET";
     case FSP_DONE_OK: return "DONE_OK";
     case FSP_DONE_NG: return "DONE_NG";
     default: return "IDLE";
@@ -1040,6 +1044,7 @@ static void feedSideClearDiag(FeedSideRt& s)
   s.laserSeekDone = false;
   s.huntLaser = false;
   s.haltOnLaserRise = false;
+  s.offsetApplied = false;
   s.lastLaserPollMs = 0;
   s.seekDeadlineMs = 0;
   s.result = FVR_NONE;
@@ -1082,9 +1087,31 @@ static void feedSideLogVelocityMetrology(bool sideR, const FeedSideRt& s)
                 (double)s.finalOmMm);
 }
 
+static bool feedSideBeginPostOkOffset(bool sideR)
+{
+  FeedSideRt& s = feedSideAt(sideR);
+  if (s.skipValidate || s.offsetApplied)
+    return false;
+  const float offset = sideR ? feedOffsetMmB : feedOffsetMm;
+  if (fabsf(offset) < 0.05f)
+    return false;
+  s.offsetApplied = true;
+  if (s.velModeActive) {
+    feedVelocityRestorePp(sideR);
+    s.velModeActive = false;
+  }
+  s.correctionMm = offset;
+  s.phase = FSP_OFFSET;
+  s.moveStartMs = 0;
+  s.absDueMs = 0;
+  return true;
+}
+
 static void feedSideFinish(bool sideR, FeedValResult result, uint8_t errByte, const char* reason)
 {
   FeedSideRt& s = feedSideAt(sideR);
+  if (result == FVR_OK && feedSideBeginPostOkOffset(sideR))
+    return;
   const uint32_t gen = s.gen;
   if (s.velModeActive) {
     feedVelocityRestorePp(sideR);
@@ -1773,6 +1800,35 @@ static void feedSideService(bool sideR, uint32_t now)
         }
         s.phase = FSP_WAIT_SERVO_CORR;
       }
+      break;
+
+    case FSP_OFFSET:
+      {
+        const int32_t steps = feedMmToCmdStepsSigned(s.correctionMm, sideR);
+        if (steps == 0) {
+          feedSideFinish(sideR, FVR_OK, 0, "FEED_OK");
+          break;
+        }
+        Serial.printf("FEED %c OFFSET %.2fmm steps=%ld\n",
+                      sideR ? 'R' : 'L', (double)s.correctionMm, (long)steps);
+        if (!feedSideIssueMove(sideR, steps, now)) {
+          feedSideFinish(sideR, FVR_NG, feedSideNoFbErr(sideR), "FEED: sin feedback 6064");
+          break;
+        }
+        s.phase = FSP_WAIT_SERVO_OFFSET;
+      }
+      break;
+
+    case FSP_WAIT_SERVO_OFFSET:
+      if (feedSidePollServoDone(sideR, now)) {
+        s.phase = FSP_SETTLE_OFFSET;
+        s.settleUntilMs = now + FEED_OM_SETTLE_MS;
+      }
+      break;
+
+    case FSP_SETTLE_OFFSET:
+      if (now < s.settleUntilMs) break;
+      feedSideFinish(sideR, FVR_OK, 0, "FEED_OK_OFFSET");
       break;
 
     default:

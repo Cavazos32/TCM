@@ -6,7 +6,7 @@
 |----------|----------------|----------|
 | Preparación | **No** | `prepareBeforeCut`, ASDA→0, PreFeeder In process ON, espera Buffer Full (Start, Resume y Continuar ciclo) |
 | Holgura pre-pieza | **No** | El ciclo no fuerza Tfeed; holgura la recupera el helper PF |
-| Secuencia productiva | **Sí** | Holder ON (1ª) → Tfeed (piezas 2…N si `pfTriggerEnabled`; 1ª, C2 y OFF omiten) → feed → pinzas → lineal → corte → depósito → WIP/HOME → feed siguiente (si ASDA=0) → asentar |
+| Secuencia productiva | **Sí** | Holder ON (1ª) → feed → pinzas → lineal → corte → Tfeed (cada pieza si `pfTriggerEnabled`; C2 omite si ya se mandó) → depósito → WIP/HOME → feed siguiente (si ASDA=0) → asentar |
 | Holgura post-pieza | **No** | El ciclo no manda Tfeed extra; holgura la recupera el helper PF |
 | Pause | **No** | excluido del reloj |
 | Fin de lote | **No** | Finish tools, espera PF settled, In process OFF |
@@ -41,7 +41,6 @@ BusyState
 ```
 Holder+Encoder ON (inicio pieza 1)          # solo 1ª
 Delay · Delay Holder ON: …
-trigger PreFeeder: omitido (1ª pieza)       # Tfeed desde pieza 2; última sí manda
 Feed: validar referencia láser lados=…      # live/caché
 Feed omitido (referencia láser visible) …   # si ya ON al Start; si no:
 Feed start lados=…
@@ -60,6 +59,7 @@ Cortador ON (Set) …
 Delay · Delay entre Set y Res cortador: …
 Cortador OFF (Res) …
 Delay · Delay post-corte: …
+trigger PreFeeder Tfeed lados=…             # tras el corte; 1ª también manda
 Depósito MOVE → …                           # ← CMD
 Depósito MOVE ok → … (WIP start ref …)      # ← RX
 Delay · Delay tras depósito: …
@@ -72,7 +72,7 @@ WIP Delivery MOVE continuo → HOME=0.0 mm …
 WIP Delivery blower ON @ HOME en vuelo hold=Xs (≡ |L|; PLC apaga)
 WIP Delivery move ok @ HOME=0.0 mm (continuo)
 ASDA en 0 confirmado (pos=… mm) — feed permitido
-Feed post-HOME: omitido (última pieza)     # si hay más: Tfeed + Feed start/OK
+Feed post-HOME: omitido (última pieza)     # si hay más: Feed start/OK (Tfeed ya fue post-corte)
 Delay · Delay asentar: …
 Pieza 1/1 OK · 7.0s
 ```

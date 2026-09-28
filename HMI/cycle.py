@@ -93,23 +93,23 @@ ASDA_HOME_EPS_MM = 0.5
 FLOW_STEPS: list[dict[str, Any]] = [
     {"id": 1, "key": "holder_on", "label": "Holder+Encoder ON (solo 1ª pieza)", "kind": "action", "sbsPause": False},
     {"id": 2, "key": "wait_holder_on", "label": "Delay Holder ON", "kind": "wait", "delayKey": "holderOnMs", "sbsPause": True},
-    # Tfeed ANTES del feed (contrato Review / secuencia productiva).
-    {"id": 3, "key": "pf_trigger", "label": "Trigger PreFeeder (Tfeed)", "kind": "action", "sbsPause": False},
-    {"id": 4, "key": "feed", "label": "Alimentación (feed / ya listo post-HOME)", "kind": "action", "sbsPause": True},
-    {"id": 5, "key": "offset", "label": "Offset alimentación (Motion, paso lógico)", "kind": "action", "sbsPause": False},
-    {"id": 6, "key": "grippers_on", "label": "Pinzas cierran", "kind": "action", "sbsPause": False},
-    {"id": 7, "key": "wait_grippers_on", "label": "Delay tras cerrar pinzas", "kind": "wait", "delayKey": "grippersOnMs", "sbsPause": False},
-    {"id": 8, "key": "enc_set0", "label": "OM ref (no usado por lineal TCP)", "kind": "action", "sbsPause": True},
-    {"id": 9, "key": "holder_off", "label": "Holder+Encoder OFF (abre para lineal)", "kind": "action", "sbsPause": False},
-    {"id": 10, "key": "wait_holder_open", "label": "Delay Holder/Encoder OFF", "kind": "wait", "delayKey": "holderOpenMs", "sbsPause": True},
-    {"id": 11, "key": "lineal_fwd", "label": "Lineal ASDA MOVE TCP (0→ABS)", "kind": "action", "sbsPause": False},
-    {"id": 12, "key": "wait_linear_done", "label": "Delay antes del corte", "kind": "wait", "delayKey": "linearDoneMs", "sbsPause": True},
-    {"id": 13, "key": "holder_precut", "label": "Holder ON / Encoder ON (pre-corte)", "kind": "action", "sbsPause": False},
-    {"id": 14, "key": "wait_holder_precut", "label": "Delay tras cerrar holder", "kind": "wait", "delayKey": "holderOnMs", "sbsPause": True},
-    {"id": 15, "key": "cutter_on", "label": "Cortador ON (+ All OK PreFeeder)", "kind": "action", "sbsPause": False},
-    {"id": 16, "key": "wait_cutter_pulse", "label": "Delay entre Set y Res cortador", "kind": "wait", "delayKey": "cutterPulseMs", "sbsPause": False, "delayEditable": False},
-    {"id": 17, "key": "cutter_off", "label": "Cortador OFF", "kind": "action", "sbsPause": False},
-    {"id": 18, "key": "wait_cutter_post", "label": "Delay post-corte", "kind": "wait", "delayKey": "cutterPostMs", "sbsPause": True},
+    {"id": 3, "key": "feed", "label": "Alimentación (feed / ya listo post-HOME)", "kind": "action", "sbsPause": True},
+    {"id": 4, "key": "offset", "label": "Offset alimentación (Motion, paso lógico)", "kind": "action", "sbsPause": False},
+    {"id": 5, "key": "grippers_on", "label": "Pinzas cierran", "kind": "action", "sbsPause": False},
+    {"id": 6, "key": "wait_grippers_on", "label": "Delay tras cerrar pinzas", "kind": "wait", "delayKey": "grippersOnMs", "sbsPause": False},
+    {"id": 7, "key": "enc_set0", "label": "OM ref (no usado por lineal TCP)", "kind": "action", "sbsPause": True},
+    {"id": 8, "key": "holder_off", "label": "Holder+Encoder OFF (abre para lineal)", "kind": "action", "sbsPause": False},
+    {"id": 9, "key": "wait_holder_open", "label": "Delay Holder/Encoder OFF", "kind": "wait", "delayKey": "holderOpenMs", "sbsPause": True},
+    {"id": 10, "key": "lineal_fwd", "label": "Lineal ASDA MOVE TCP (0→ABS)", "kind": "action", "sbsPause": False},
+    {"id": 11, "key": "wait_linear_done", "label": "Delay antes del corte", "kind": "wait", "delayKey": "linearDoneMs", "sbsPause": True},
+    {"id": 12, "key": "holder_precut", "label": "Holder ON / Encoder ON (pre-corte)", "kind": "action", "sbsPause": False},
+    {"id": 13, "key": "wait_holder_precut", "label": "Delay tras cerrar holder", "kind": "wait", "delayKey": "holderOnMs", "sbsPause": True},
+    {"id": 14, "key": "cutter_on", "label": "Cortador ON (+ All OK PreFeeder)", "kind": "action", "sbsPause": False},
+    {"id": 15, "key": "wait_cutter_pulse", "label": "Delay entre Set y Res cortador", "kind": "wait", "delayKey": "cutterPulseMs", "sbsPause": False, "delayEditable": False},
+    {"id": 16, "key": "cutter_off", "label": "Cortador OFF", "kind": "action", "sbsPause": False},
+    {"id": 17, "key": "wait_cutter_post", "label": "Delay post-corte", "kind": "wait", "delayKey": "cutterPostMs", "sbsPause": True},
+    # Tfeed DESPUÉS del corte: rellena buffer en paralelo con depósito/HOME.
+    {"id": 18, "key": "pf_trigger", "label": "Trigger PreFeeder (Tfeed)", "kind": "action", "sbsPause": False},
     {"id": 19, "key": "deposit", "label": "Extra / depósito lineal", "kind": "action", "sbsPause": False},
     {"id": 20, "key": "wait_deposit_dwell", "label": "Delay tras depósito", "kind": "wait", "delayKey": "dwellAtDestMs", "sbsPause": True},
     {"id": 21, "key": "grippers_off", "label": "Pinzas abren", "kind": "action", "sbsPause": False},
@@ -188,8 +188,8 @@ class CycleConfig:
     piece_watch_timeout_s: float = 20.0
     # Feed / Stage2 OM: "L" | "R" | "LR" (producción = ambos)
     feed_sides: str = "LR"
-    # Tfeed entre piezas (paso 3). False = omitir siempre; solo helper holgura.
-    # 1ª pieza y recovery ya omiten aunque esté True. Default ON (producción).
+    # Tfeed tras el corte (paso 18). False = omitir siempre; solo helper holgura.
+    # C2 omite si esa pieza ya mandó Tfeed. Default ON (producción).
     pf_trigger_enabled: bool = True
     # Refill / purga: Retry = refill_mm (55). Long feed = 100 mm (skipValidate).
     refill_mm: float = 55.0
@@ -497,6 +497,7 @@ class CycleRunner:
         self._restart_piece = False
         self._recovery_skip_feed = False
         self._recovery_skip_pf_trigger = False
+        self._pf_trigger_sent_this_piece = False
         self._flow_interrupt = threading.Event()
         # In process OFF por Pause/Error; Resume/Busy rearma. Evita doble OFF/ON.
         self._pf_held_idle = False
@@ -665,6 +666,7 @@ class CycleRunner:
         self._restart_piece = False
         self._recovery_skip_feed = False
         self._recovery_skip_pf_trigger = False
+        self._pf_trigger_sent_this_piece = False
         self._stop.clear()
         self._pause.clear()
         self._flow_interrupt.clear()
@@ -1595,7 +1597,7 @@ class CycleRunner:
         if not self._restart_piece:
             return False
         self._restart_piece = False
-        self._recovery_skip_pf_trigger = True
+        self._recovery_skip_pf_trigger = bool(self._pf_trigger_sent_this_piece)
         self._flow_interrupt.clear()
         return True
 
@@ -1944,6 +1946,7 @@ class CycleRunner:
             "lineal_cmd",
             "lineal",
             "corte",
+            "pf_trigger",
             "depósito_cmd",
             "depósito",
             "despeje_cmd",
@@ -1951,7 +1954,6 @@ class CycleRunner:
             "home_cmd",
             "home",
             "feed_next",
-            "pf_trigger",
         )
         parts: list[str] = []
         delay_sum = 0.0
@@ -2116,7 +2118,6 @@ class CycleRunner:
                     keys.append(n)
         # Columnas prioritarias primero.
         preferred = [
-            "pf_trigger",
             "feed_cmd",
             "feed",
             "grippers_on",
@@ -2124,6 +2125,7 @@ class CycleRunner:
             "lineal_cmd",
             "lineal",
             "corte",
+            "pf_trigger",
             "depósito_cmd",
             "depósito",
             "grippers_off",
@@ -2592,19 +2594,12 @@ class CycleRunner:
             return ["R"]
         return ["L", "R"]
 
-    def _pf_side_omits_tfeed(self, side: str) -> str | None:
-        """Holgura ausente o helper/Tfeed activo: holgura gana. None = puede mandar."""
-        if self._host.pf_holgura_present(side) is False:
-            return "holgura"
-        if self._host.pf_trigger_active(side) is True:
-            return "holgura"
-        return None
-
     def _do_pf_trigger(self, rep: int) -> bool:
         """Tfeed a lados de feedSides. True = OK / omitido; False = fault.
 
-        Contrato Doc/pf_trigger.md: omite si pfTriggerEnabled=False, 1ª pieza
-        o recovery; holgura ausente/activa gana.
+        Contrato Doc/pf_trigger.md: omite si pfTriggerEnabled=False o C2
+        (Tfeed ya mandado en esta pieza). Con helper holgura activo el
+        esclavo encola el Tfeed.
         """
         c2_skip = self._recovery_skip_pf_trigger
         self._recovery_skip_pf_trigger = False
@@ -2616,12 +2611,8 @@ class CycleRunner:
         if not self._use_prefeeder():
             self._host.cycle_log("trigger PreFeeder: omitido (sin enlace)")
             return True
-        if int(rep) <= 1:
-            self._host.cycle_log(
-                "trigger PreFeeder: omitido (1ª pieza — feed de referencia)"
-            )
-            return True
         if c2_skip:
+            self._pf_trigger_sent_this_piece = True
             self._host.cycle_log(
                 "trigger PreFeeder: omitido (recovery — Tfeed ya mandado)"
             )
@@ -2629,20 +2620,10 @@ class CycleRunner:
         sides = CycleConfig.normalize_feed_sides(self.get_config().feed_sides)
         want_r = "R" in sides
         want_l = "L" in sides
-        why_r = self._pf_side_omits_tfeed("R") if want_r else "lado"
-        why_l = self._pf_side_omits_tfeed("L") if want_l else "lado"
-        send_r = want_r and why_r is None
-        send_l = want_l and why_l is None
-        if not send_r and not send_l:
-            bits = []
-            if want_r:
-                bits.append(f"R={why_r}")
-            if want_l:
-                bits.append(f"L={why_l}")
-            self._host.cycle_log(
-                "trigger PreFeeder: omitido (" + ", ".join(bits) + ")"
-            )
-            return True
+        send_r = want_r
+        send_l = want_l
+        why_r = None if want_r else "lado"
+        why_l = None if want_l else "lado"
         op = self._begin_op("pf_trigger")
         ok_r = self._host.cmd_pf_trigger_r() if send_r else True
         ok_l = self._host.cmd_pf_trigger_l() if send_l else True
@@ -2664,9 +2645,10 @@ class CycleRunner:
                 f"R(0x4C)={r_txt} L(0x51)={l_txt}"
             )
             return False
+        self._pf_trigger_sent_this_piece = True
         sec = self._end_op(op, ok=True)
         self._host.cycle_log(
-            f"trigger PreFeeder Tfeed lados={sides} — "
+            f"trigger PreFeeder Tfeed lados={sides} pieza={rep} — "
             f"R(0x4C)={r_txt} L(0x51)={l_txt} · {self._fmt_op(sec)}"
         )
         return True
@@ -2953,7 +2935,7 @@ class CycleRunner:
         return self._ensure_asda_at_zero(reason="post-HOME")
 
     def _run_feed_after_home(self, rep: int, qty: int) -> bool:
-        """Feed de la *siguiente* pieza. Exige ASDA en 0. Tfeed sigue en el paso 3."""
+        """Feed de la *siguiente* pieza. Exige ASDA en 0. Tfeed ya fue (post-corte)."""
         if not self._confirm_asda_at_zero_for_feed():
             return False
         if int(rep) >= int(qty):
@@ -3462,6 +3444,7 @@ class CycleRunner:
             completed = 0
             handoff_ready = False
             for rep in range(1, qty + 1):
+                self._pf_trigger_sent_this_piece = False
                 while True:
                     early_exit = True
                     materialist_only = False
@@ -3496,14 +3479,7 @@ class CycleRunner:
                                 break
                             if self._do_wait(rep, qty, "wait_holder_on", "holder_on_ms"):
                                 break
-                        # 3 Tfeed (1ª omite; 2…N incluido última = lote siguiente)
-                        if self._enter(rep, qty, "pf_trigger"):
-                            break
-                        if not self._do_pf_trigger(rep):
-                            break
-                        if self._after_step("pf_trigger"):
-                            break
-                        # 4 Feed / ya listo post-HOME
+                        # 3 Feed / ya listo post-HOME
                         if self._enter(rep, qty, "feed"):
                             break
                         if handoff_ready:
@@ -3544,12 +3520,12 @@ class CycleRunner:
                                 break
                         if self._after_step("feed"):
                             break
-                        # 5 Offset (placeholder)
+                        # 4 Offset (placeholder)
                         if self._enter(rep, qty, "offset"):
                             break
                         if self._after_step("offset"):
                             break
-                        # 6–8 Pinzas + delay + enc set0
+                        # 5–7 Pinzas + delay + enc set0
                         if self._enter(rep, qty, "grippers_on"):
                             break
                         grip_op = self._begin_op("grippers_on")
@@ -3566,7 +3542,7 @@ class CycleRunner:
                         self._host.cycle_log("enc_set0: omitido (lineal TCP no usa OM)")
                         if self._after_step("enc_set0"):
                             break
-                        # 9–12 Holder+Encoder abren para lineal + MOVE TCP + delay
+                        # 8–11 Holder+Encoder abren para lineal + MOVE TCP + delay
                         if self._enter(rep, qty, "holder_off"):
                             break
                         hold_off_op = self._begin_op("holder_off")
@@ -3599,7 +3575,7 @@ class CycleRunner:
                             break
                         if self._do_wait(rep, qty, "wait_linear_done", "linear_done_ms"):
                             break
-                        # 13–14 Cerrar Holder+Encoder de nuevo pre-corte
+                        # 12–13 Cerrar Holder+Encoder de nuevo pre-corte
                         if self._enter(rep, qty, "holder_precut"):
                             break
                         precut_op = self._begin_op("holder_precut")
@@ -3621,7 +3597,7 @@ class CycleRunner:
                             f"− {precut_wait} ms ya esperados)",
                         ):
                             break
-                        # 15–18 Corte solo en lados de feed (evita pulsar el cortador vacío)
+                        # 14–17 Corte solo en lados de feed (evita pulsar el cortador vacío)
                         # force=True: no omitir Set/Res por caché HMI desfasada.
                         # Si abortamos tras Set, Res de emergencia antes del break.
                         cut_sides = CycleConfig.normalize_feed_sides(self.get_config().feed_sides)
@@ -3680,6 +3656,13 @@ class CycleRunner:
                         if self._after_step("cutter_off"):
                             break
                         if self._do_wait(rep, qty, "wait_cutter_post", "cutter_post_ms"):
+                            break
+                        # 18 Tfeed post-corte (todas las piezas; C2 omite si ya se mandó)
+                        if self._enter(rep, qty, "pf_trigger"):
+                            break
+                        if not self._do_pf_trigger(rep):
+                            break
+                        if self._after_step("pf_trigger"):
                             break
                         # No mover ASDA (depósito ni despeje) hasta KEEP asentado.
                         if self._ensure_cutter_settled_before_travel(cut_sides):
@@ -3758,7 +3741,7 @@ class CycleRunner:
                             break
                         if self._do_wait(rep, qty, "wait_gripper_release", "gripper_release_ms"):
                             break
-                        # 24 Despeje ASDA tras abrir pinzas → actualiza ref WIP (soplo fin)
+                        # 23 Despeje ASDA tras abrir pinzas → actualiza ref WIP (soplo fin)
                         if self._enter(rep, qty, "gripper_clearance"):
                             break
                         clr = abs(float(self.get_config().gripper_clearance_mm))
@@ -3890,7 +3873,9 @@ class CycleRunner:
                     ):
                         handoff_ready = False
                         self._recovery_skip_feed = True
-                        self._recovery_skip_pf_trigger = True
+                        self._recovery_skip_pf_trigger = bool(
+                            self._pf_trigger_sent_this_piece
+                        )
                         continue
                     break  # fallo / abort → salir del while
                 # Critico: el break anterior solo sale del while; sin esto el for

@@ -207,17 +207,17 @@ Stop del lote solo si el operador pulsa Stop **o** Purge (caso E050 anterior). N
 
 ### Feed / láser (Motion) — aceptación y post-corrección
 
-El láser es el **tope de feed** (L y R): no alimentar más allá de su referencia. ON → **FEED_OK**, sin otro movimiento (p. ej. OM 53 + láser ON → ya está). OM > **58 mm** → ya pasó → LengthNG. OM ≤ 0 → NG. Láser OFF tras approach → **LASER_SEEK** hasta flanco ON / E004/E005. No hay corrección ciega a 55 mm: ese movimiento pasaba la referencia si el halt llegaba tarde.
+El láser es el **tope de feed** (L y R): no alimentar más allá de su referencia. ON → **FEED_OK**. Si `offL`/`offR` ≠ 0, Motion hace **después** un relativo de ese offset (negativo = recula) y recién entonces LengthOK. No infla el approach ni el seek. OM > **58 mm** → ya pasó → LengthNG. OM ≤ 0 → NG. Láser OFF tras approach → **LASER_SEEK** hasta flanco ON / E004/E005. No hay corrección ciega a 55 mm: ese movimiento pasaba la referencia si el halt llegaba tarde.
 
 **Start y tras error (HMI):** antes de mandar Feed (1ª pieza al Start, misma pieza tras error, o siguiente tras Continuar ciclo), Main **valida la referencia** (GET `/api/status` una vez; si falla, caché TCP). Si el láser de todos los `feedSides` está ON, **omite el feed**. Feed ya hecho post-HOME (handoff) no revalida. No es sondeo de ciclo.
 
-**Feed entre piezas:** no hay prefetch en paralelo con depósito/despeje/HOME. Tras HOME, Main confirma ASDA en 0 (caché Reached, ±0.5 mm; si no, MOVE_ZERO) y entonces Feed de la siguiente. Tfeed sigue en el paso 3. Última pieza: sin feed post-HOME.
+**Feed entre piezas:** no hay prefetch en paralelo con depósito/despeje/HOME. Tras HOME, Main confirma ASDA en 0 (caché Reached, ±0.5 mm; si no, MOVE_ZERO) y entonces Feed de la siguiente. Tfeed va **después del corte** (paso 18), para rellenar el buffer durante depósito/HOME. Última pieza: sin feed post-HOME.
 
 **Corte antes de depósito/despeje:** el KEEP del cortador (Set/Res) debe quedar procesado y asentado en el PLC antes de cualquier MOVE ASDA post-corte. Holder+Encoder precut ocupan el ESP (~150 ms cada uno); no encolar el Set de corte encima ni arrancar depósito/despeje durante ese pulso. Si ASDA se mueve antes, el corte cae en el extra (despeje ~18 mm) y la pieza sale larga.
 
 Si el láser está **OFF al iniciar** el feed (hunt / 1ª carga): no hay approach rápido a 44–55 mm. **LASER_SEEK** avanza a trozos cortos (~1.5 mm, ~25 mm/s) hasta flanco ON. Al ON: CW Halt + **congelar destino = posición actual** (el Halt solo no cancela el perfil largo). GPIO crudo, sin debounce HMI de 150 ms. Tras halt → **FEED_OK** sin ventana PHYS OM (50–58).
 
-Láser ya ON al iniciar (cuerpo de manguera / remanente): approach normal, sin halt por nivel (evitar parar en 0). Al terminar, si sigue ON, no hay seek. Purga (`skipValidate`) no usa el tope láser. El offset de comando (`offL`/`offR`) aplica en purga, no infla el approach de ciclo.
+Láser ya ON al iniciar (cuerpo de manguera / remanente): approach normal, sin halt por nivel (evitar parar en 0). Al terminar, si sigue ON, no hay seek. Purga (`skipValidate`) no usa el tope láser: el offset va en el único movimiento (`target + offset`). En ciclo, `offL`/`offR` se aplican **tras** FEED_OK, no en el approach.
 
 Si el seek no ve el láser a tiempo → E004/E005. El seek puede sacar el encoder de rango; eso no es LengthNG.
 

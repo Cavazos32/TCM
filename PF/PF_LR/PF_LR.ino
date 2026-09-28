@@ -44,6 +44,13 @@ static void triggerIdRemember(uint16_t id)
   triggerDoneNext = (uint8_t)((triggerDoneNext + 1) % TRIGGER_ID_HIST);
   if (triggerDoneCount < TRIGGER_ID_HIST) triggerDoneCount++;
 }
+
+// Master reinicia cmdId en 1 al bootear: ids viejos no deben tragarse triggers nuevos.
+static void triggerIdClear()
+{
+  triggerDoneCount = 0;
+  triggerDoneNext = 0;
+}
 static String peerLastCmd = "";
 static uint32_t peerLastCmdMs = 0;
 static bool peerLastCmdOk = false;
@@ -1978,9 +1985,7 @@ static void motor2HolguraTask(void* /*param*/)
         motor2TcpTriggerRequest = false;
       else if (motor2Phase == M2_PHASE_TIMED_FEED && motor2FeedSource == M2_FEED_HOLGURA)
       {
-        // Helper holgura en curso: no cortar ni reiniciar; descartar trigger TCP.
-        motor2TcpTriggerRequest = false;
-        Serial.println("M2: trigger TCP ignorado — helper holgura activo");
+        // Helper holgura en curso: no cortarlo; el Tfeed queda pendiente y arranca al terminar.
       }
       else if (motor2Phase == M2_PHASE_TIMED_FEED && motor2FeedSource == M2_FEED_TCP)
       {
@@ -3177,6 +3182,7 @@ static void peerOnClientAccepted()
 {
   peerClient.setNoDelay(true);
   peerRxLen = 0;
+  triggerIdClear();
   lastPeerHome = bufferFullActive();
   lastPeerEndstop = bufferMaxActive();
   lastPeerTension = tensionSensorActive();
