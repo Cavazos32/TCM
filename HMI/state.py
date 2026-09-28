@@ -1518,8 +1518,16 @@ class HmiState:
         ASDA → posición 0 + encoders Set0 L/R + All Off neumática.
         No es Buscar HOME (0x01) ni Reset HMI.
         """
+        recovery_mode = bool(
+            self._error_policy.latch.active
+            or self._cycle.snapshot().get("recoveryAfterError")
+        )
         if self._cycle.is_active():
-            return {"ok": False, "error": "Ciclo activo — detén o Reset antes de Home"}
+            if not recovery_mode:
+                return {"ok": False, "error": "Ciclo activo — detén o Reset antes de Home"}
+            released = self._cycle.release_for_manual_refill()
+            if not released.get("ok"):
+                return released
 
         home_ok = self.cmd_motion_move_zero()
         enc_r = bool(self.cmd_motion_enc_set0_r())
@@ -1575,6 +1583,25 @@ class HmiState:
         """Machine RESET: reset source, validate source, never HOME."""
         latch = self._error_policy.latch
 
+        # Reset de máquina también reinicia el PLC y refleja sus válvulas en OFF.
+        if self._plc_client.connected:
+            if not self._plc_reset_reflect_off(log_label="Reset PLC"):
+                self._notify()
+                return {
+                    "ok": False,
+                    "error": "PLC no aceptó Reset",
+                    "cleared": None,
+                    "homeOk": None,
+                }
+        else:
+            self._notify()
+            return {
+                "ok": False,
+                "error": "PLC sin enlace — Reset no ejecutado",
+                "cleared": None,
+                "homeOk": None,
+            }
+
         # Reset HMI siempre manda Reset PF (0x2C) si hay enlace — igual que Start manda 0x2A.
         if self._pf_client.connected:
             if not self._pf_send_reset():
@@ -1604,7 +1631,7 @@ class HmiState:
         if "motion" in module:
             module_reset_ok = bool(self._client.cmd_reset_errors())
         elif "plc" in module:
-            module_reset_ok = bool(self._plc_reset_reflect_off(log_label="Reset PLC"))
+            module_reset_ok = bool(self._plc_client.connected)
         elif "pre" in module or "feeder" in module:
             # Ya enviado arriba si había enlace; sin enlace no se valida el EXXX de PF.
             module_reset_ok = bool(self._pf_client.connected)
@@ -1832,7 +1859,15 @@ class HmiState:
         OFF: si no hay enlace PF, igual se sale del interlock HMI.
         """
         if on and self._cycle.is_active() and not self._cycle.is_e050_materialist_wait():
-            return {"ok": False, "error": "No Materialist con ciclo activo"}
+            recovery_mode = bool(
+                self._error_policy.latch.active
+                or self._cycle.snapshot().get("recoveryAfterError")
+            )
+            if not recovery_mode:
+                return {"ok": False, "error": "No Materialist con ciclo activo"}
+            released = self._cycle.release_for_manual_refill()
+            if not released.get("ok"):
+                return released
         pf_ok = self._manual_pf(lambda: self._pf_client.cmd_materialist(bool(on)))
         if on and pf_ok:
             self._manual_pf(lambda: self._pf_client.cmd_in_process(False))
@@ -1898,17 +1933,21 @@ class HmiState:
         Start/Resume siguen bloqueados; el EXXX no se borra.
         """
         with self._lock:
-            e050 = self._e050_latched()
-            if not e050:
-                blocked = self._work_blocked_error()
-                if blocked:
-                    return {"ok": False, "error": blocked}
+            recovery_mode = bool(
+                self._error_policy.latch.active
+                or self._cycle.snapshot().get("recoveryAfterError")
+            )
             rpm = self._rpm
-        if e050:
+        if not recovery_mode:
+            with self._lock:
+                blocked = self._work_blocked_error()
+            if blocked:
+                return {"ok": False, "error": blocked}
+        if recovery_mode:
             released = self._cycle.release_for_manual_refill()
             if not released.get("ok"):
                 return released
-            _append_log(self._main_log, "E050: Purge / Refill con latch activo")
+            _append_log(self._main_log, "Recovery: Purge / Refill manual")
         return self._cycle.request_refill(rpm, feed_mm=feed_mm, asda_mm=asda_mm)
 
     def cmd_cycle_refill_confirm(self, ok: bool = True) -> dict:
