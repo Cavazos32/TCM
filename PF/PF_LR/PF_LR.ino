@@ -280,6 +280,27 @@ static void servoWriteUsForced(uint16_t us)
   ledcWrite(PIN_SERVO_PWM, duty);
 }
 
+// Corte físico a neutro: Detach+Attach+1500 siempre (no confiar en cache LEDC).
+// Tras RMT el canal puede “leer” 1500 y el pin seguir con el pulso de marcha.
+static void servoHardStopNeutral(bool force)
+{
+  static uint32_t lastHardMs = 0;
+  const uint32_t now = millis();
+  const bool immediate = force || servoPinDirty || servoRunning
+      || servoLastOutputUs != SERVO_PWM_NEUTRAL_US;
+  if (!immediate && (uint32_t)(now - lastHardMs) < SERVO_STOP_REASSERT_MS)
+    return;
+
+  const uint32_t duty = servoUsToDuty(SERVO_PWM_NEUTRAL_US);
+  servoPinDirty = false;
+  servoLastOutputUs = SERVO_PWM_NEUTRAL_US;
+  servoRunning = false;
+  ledcDetach(PIN_SERVO_PWM);
+  ledcAttachChannel(PIN_SERVO_PWM, 50, SERVO_LEDC_BITS, SERVO_LEDC_CHANNEL);
+  ledcWrite(PIN_SERVO_PWM, duty);
+  lastHardMs = now;
+}
+
 // No reescribir LEDC si ya está: ledcWrite repetido glitchea el RC (vibra).
 static void servoWriteUsIfChanged(uint16_t us)
 {
@@ -300,17 +321,13 @@ static void servoAssertNeutral(bool force)
   lastNeutralMs = millis();
 }
 
-// Arduino no genera prototipos de funciones static: debe ir antes de servoAssertRun.
 static bool bufferFullStopNow();
 
-// Reafirma cada ~20 ms. Si RMT ensució el pin, remux + 1500/marcha en este frame.
 static void servoAssertRun(bool force)
 {
-  // Buffer Full es un enclavamiento directo: ningún caller puede reactivar
-  // el RC mientras el sensor indique Full durante operación automática.
   if (!idleMode && bufferFullStopNow())
   {
-    servoAssertNeutral(true);
+    servoHardStopNeutral(true);
     return;
   }
 
@@ -339,7 +356,6 @@ static void applyServoActivePwmUs(uint16_t us)
     servoWriteUsForced(servoActivePwmUs);
 }
 
-// Ventana de relleno: In process (TCM ciclo/settle) o fillUntilReady (one-shot Iniciar).
 static bool sensorsMotionArmed()
 {
   return !idleMode && (tcmInProcess || fillUntilReady);
@@ -352,6 +368,7 @@ static void serviceFillUntilReady();
 static bool bufferFullStopNow();
 static bool bufferFullAllowsMotion();
 static void forceStopDereelerAndServo();
+static void servoServiceBufferFullCut();
 static void dereelerDirCw();
 static void dereelerDirReverse();
 static void dereelerDirApply(bool reverse);
@@ -361,7 +378,6 @@ static bool refillMaterialAllOn()
   return refillDereelerOn && refillServoOn && refillFeederOn;
 }
 
-// Servo ON solo mientras rellena (lead/CW/CCW); HOME_HOLD = Buffer Full estable.
 static bool servoShouldRunAuto()
 {
   return systemFault == FAULT_NONE
@@ -389,8 +405,6 @@ static void syncServoToAutoState()
     servoStop();
 }
 
-// Auto: misma reafirmación de siempre. JOG Materialista: el feeder RMT suelta
-// LEDC al parar; hay que reescribir marcha o 1500 o el RC sigue solo.
 static void serviceServoPwm()
 {
   if (idleMode)
@@ -399,6 +413,12 @@ static void serviceServoPwm()
       servoAssertRun(true);
     else
       servoAssertNeutral(false);
+    return;
+  }
+  // Buffer Full: flanco → remux ya; mientras Full reafirma 1500.
+  if (bufferFullStopNow())
+  {
+    servoServiceBufferFullCut();
     return;
   }
   if (servoShouldRunAuto())
@@ -429,6 +449,20 @@ static bool bufferFullActive()
 static bool bufferFullStopNow()
 {
   return bufferFullStable || bufferFullRaw();
+}
+
+// Flanco Full → remux ya (aunque el cache diga 1500). Mientras Full, reafirma.
+static void servoServiceBufferFullCut()
+{
+  static bool latched = false;
+  if (!bufferFullStopNow())
+  {
+    latched = false;
+    return;
+  }
+  const bool edge = !latched;
+  latched = true;
+  servoHardStopNeutral(edge);
 }
 
 // Rearrancar solo tras Full OFF sostenido (~200 ms). No rearrancar en rebote al soltar.
@@ -484,7 +518,7 @@ static void updateBufferFullFilter()
 
 // Corta DeReeler+servo. Un Stop() por consigna; si el RMT ignora, reintenta cada 250 ms.
 // Stop() cada loop con currentRPM()>1 → vibración / “trabado”.
-// RC: neutro ANTES y DESPUÉS del Stop() — el RMT suelta LEDC y el pin se queda
+// RC: remux+1500 ANTES y DESPUÉS del Stop() — el RMT suelta LEDC y el pin se queda
 // en el último PWM de marcha si solo se escribe 1500 una vez (cache “ya parado”).
 static void forceStopDereelerAndServo()
 {
@@ -492,14 +526,15 @@ static void forceStopDereelerAndServo()
   const bool commanded = motor && fabsf(commandedRpm) > 0.01f;
   const bool stillSpinning = motor && fabsf(motor->currentRPM()) > 1.0f;
 
-  servoAssertNeutral(true);
+  // Remux ya si aún marcha/dirty; si no, reafirma 1500 cada ~20 ms.
+  servoHardStopNeutral(false);
 
   if (commanded || (stillSpinning && (uint32_t)(millis() - lastStopMs) >= 250u))
   {
     motor->Stop();
     lastStopMs = millis();
     servoMarkPinDirty();
-    servoAssertNeutral(true);
+    servoHardStopNeutral(true);
   }
   commandedRpm = 0.0f;
   tensionReverseUntilMs = 0;
@@ -964,7 +999,7 @@ static void beginAutoCwWithServoLead()
   if (!idleMode && bufferFullStopNow())
   {
     autoState = AUTO_HOME_HOLD;
-    servoAssertNeutral(true);
+    servoHardStopNeutral(true);
     return;
   }
 
@@ -3710,6 +3745,8 @@ void loop()
     }
     else if (bufferFullStopNow())
     {
+      // Primero el RC (flanco Full → Detach+Attach+1500), luego DeReeler.
+      servoServiceBufferFullCut();
       forceStopDereelerAndServo();
       if (autoEnabled && systemFault == FAULT_NONE
           && (autoState == AUTO_SERVO_LEAD || autoState == AUTO_CW || autoState == AUTO_CCW))
