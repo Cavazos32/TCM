@@ -50,6 +50,8 @@ interface MaquinaTabProps {
   preFeederState: PreFeederState;
   models: { name: string; mm?: number; rpm?: number; qty?: number }[];
   selectedModelIndex: number;
+  /** Lados de feed; L+R = espejo (comentario de cantidad). */
+  feedSides?: 'L' | 'R' | 'LR';
   resumeEnabled?: boolean;
   onModelSelect: (index: number) => void;
   onTargetPiecesChange: (target: number) => void;
@@ -83,6 +85,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
   preFeederState,
   models,
   selectedModelIndex,
+  feedSides = 'LR',
   resumeEnabled = false,
   onModelSelect,
   onTargetPiecesChange,
@@ -619,6 +622,15 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                   />
                   <span className="absolute right-3 text-xs font-mono text-slate-400 pointer-events-none">pz</span>
                 </div>
+                {feedSides === 'LR' && (machineState.targetPieces || 0) >= 1 && (
+                  <p className="text-[10px] leading-tight text-slate-400 dark:text-slate-500 pl-0.5">
+                    {(machineState.targetPieces || 0) % 2 === 0
+                      ? t('target_pieces_mirror', {
+                          n: Math.floor((machineState.targetPieces || 0) / 2),
+                        })
+                      : t('target_pieces_mirror_even')}
+                  </p>
+                )}
               </div>
             </div>
 

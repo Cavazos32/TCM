@@ -20,9 +20,12 @@ StepperRMT* motor2 = nullptr;
 
 static volatile bool motor2TcpTriggerRequest = false;
 static volatile float motor2TcpTriggerSecRequest = 0.0f;  // 0 = usar motor2TriggerFeedSec
+static volatile uint16_t motor2TcpTriggerPendingId = 0;   // id del Tfeed pendiente (0 = sin id)
 static volatile float motor2TriggerActiveSec = 0.0f;      // duración del trigger en curso
 
 // Dedup: retries TCM reutilizan el mismo cmd id; ACK sin re-alimentar.
+// Solo se marca hecho al ARRANCAR el feed (no al encolar): si el request se
+// descarta antes de mover, un id nuevo del ciclo siguiente no queda “tragado”.
 static uint16_t triggerDoneIds[TRIGGER_ID_HIST] = {};
 static uint8_t triggerDoneCount = 0;
 static uint8_t triggerDoneNext = 0;
@@ -50,6 +53,9 @@ static void triggerIdClear()
 {
   triggerDoneCount = 0;
   triggerDoneNext = 0;
+  motor2TcpTriggerRequest = false;
+  motor2TcpTriggerSecRequest = 0.0f;
+  motor2TcpTriggerPendingId = 0;
 }
 static String peerLastCmd = "";
 static uint32_t peerLastCmdMs = 0;
@@ -118,12 +124,14 @@ bool      autoEnabled    = true;
 AutoState autoState      = AUTO_OFF;
 float     autoRpm        = AUTO_RPM_DEFAULT;
 float     autoReverseSec = AUTO_REVERSE_DEFAULT;
-float     tensionBoostRpm = TENSION_BOOST_RPM_DEFAULT;
+float     tensionReverseRpm = TENSION_REVERSE_RPM_DEFAULT;
 float     tensionCooldownSec = TENSION_COOLDOWN_DEFAULT;
+float     tensionFaultSec = TENSION_FAULT_SEC_DEFAULT;
 uint32_t  servoLeadStartMs = 0;
 uint32_t  tensionLastRoutineMs = 0;
 uint32_t  tensionActiveSinceMs = 0;
-uint32_t  tensionReverseHighSinceMs = 0;  // debounce para inversión AUTO
+uint32_t  tensionReverseUntilMs = 0;      // fin de pulso CCW por tensión
+uint32_t  tensionReverseHighSinceMs = 0;  // debounce GPIO 23
 static bool tensionReverseStable = false;
 uint32_t  bufferEmptySinceMs = 0;
 uint32_t  bufferFullRecoverSinceMs = 0;  // Buffer Full estable antes de cancelar timeout
@@ -172,8 +180,9 @@ static void saveSettings()
   prefs.putFloat("h_help_s", (float)holguraHelperSec);
   prefs.putUInt("h_help_ms", (uint32_t)holguraHelperAbsentMs);
   prefs.putFloat("h_fault_s", (float)holguraFaultSec);
-  prefs.putFloat("tens_boost", tensionBoostRpm);
+  prefs.putFloat("tens_rev", tensionReverseRpm);
   prefs.putFloat("tens_cd", tensionCooldownSec);
+  prefs.putFloat("tens_fault", tensionFaultSec);
   prefs.putUInt("servo_pwm", (uint32_t)servoActivePwmUs);
   prefs.putUInt("refill_ms", refillPulseMs);
   prefs.end();
@@ -193,8 +202,15 @@ static void loadSettings()
   holguraHelperSec = prefs.getFloat("h_help_s", M2_HOLGURA_HELPER_SEC_DEFAULT);
   holguraHelperAbsentMs = prefs.getUInt("h_help_ms", M2_HOLGURA_HELPER_ABSENT_MS);
   holguraFaultSec = prefs.getFloat("h_fault_s", M2_HOLGURA_FAULT_SEC);
-  tensionBoostRpm = prefs.getFloat("tens_boost", TENSION_BOOST_RPM_DEFAULT);
+  // Migración: NVS "tens_boost" (offset boost) → "tens_rev" (RPM inversión).
+  {
+    float tr = prefs.getFloat("tens_rev", -1.0f);
+    if (tr < 0.0f)
+      tr = prefs.getFloat("tens_boost", TENSION_REVERSE_RPM_DEFAULT);
+    tensionReverseRpm = tr;
+  }
   tensionCooldownSec = prefs.getFloat("tens_cd", TENSION_COOLDOWN_DEFAULT);
+  tensionFaultSec = prefs.getFloat("tens_fault", TENSION_FAULT_SEC_DEFAULT);
   servoActivePwmUs = (uint16_t)prefs.getUInt("servo_pwm", (uint32_t)SERVO_PWM_ACTIVE_US);
   refillPulseMs = prefs.getUInt("refill_ms", REFILL_PULSE_MS_DEFAULT);
   if (refillPulseMs < REFILL_PULSE_MS_MIN) refillPulseMs = REFILL_PULSE_MS_MIN;
@@ -222,8 +238,9 @@ static void loadSettings()
   if (holguraHelperAbsentMs > M2_HOLGURA_HELPER_ABSENT_MS_MAX)
     holguraHelperAbsentMs = M2_HOLGURA_HELPER_ABSENT_MS_MAX;
   holguraFaultSec = constrain(holguraFaultSec, M2_HOLGURA_FAULT_SEC_MIN, M2_HOLGURA_FAULT_SEC_MAX);
-  tensionBoostRpm = constrain(tensionBoostRpm, TENSION_BOOST_RPM_MIN, TENSION_BOOST_RPM_MAX);
+  tensionReverseRpm = constrain(tensionReverseRpm, TENSION_REVERSE_RPM_MIN, TENSION_REVERSE_RPM_MAX);
   tensionCooldownSec = constrain(tensionCooldownSec, TENSION_COOLDOWN_MIN, TENSION_COOLDOWN_MAX);
+  tensionFaultSec = constrain(tensionFaultSec, TENSION_FAULT_SEC_MIN, TENSION_FAULT_SEC_MAX);
   servoActivePwmUs = constrain(servoActivePwmUs, SERVO_PWM_MIN_US, SERVO_PWM_MAX_US);
 }
 
@@ -335,20 +352,23 @@ static void serviceFillUntilReady();
 static bool bufferFullStopNow();
 static bool bufferFullAllowsMotion();
 static void forceStopDereelerAndServo();
+static void dereelerDirCw();
+static void dereelerDirReverse();
+static void dereelerDirApply(bool reverse);
 
 static bool refillMaterialAllOn()
 {
   return refillDereelerOn && refillServoOn && refillFeederOn;
 }
 
-// Servo ON solo mientras rellena (lead/CW/inversión); HOME_HOLD = Buffer Full estable.
+// Servo ON solo mientras rellena (lead/CW/CCW); HOME_HOLD = Buffer Full estable.
 static bool servoShouldRunAuto()
 {
   return systemFault == FAULT_NONE
       && autoEnabled
       && sensorsMotionArmed()
       && !bufferFullStopNow()
-      && (autoState == AUTO_SERVO_LEAD || autoState == AUTO_CW);
+      && (autoState == AUTO_SERVO_LEAD || autoState == AUTO_CW || autoState == AUTO_CCW);
 }
 
 static void syncServoToAutoState()
@@ -482,6 +502,8 @@ static void forceStopDereelerAndServo()
     servoAssertNeutral(true);
   }
   commandedRpm = 0.0f;
+  tensionReverseUntilMs = 0;
+  dereelerDirCw();
 }
 
 static bool bufferMaxActive()
@@ -576,6 +598,49 @@ static bool tensionRoutineBlocked()
   return tensionSensorActive() && !tensionCooldownReady();
 }
 
+static bool tensionReverseIsActive()
+{
+  return tensionReverseUntilMs != 0;
+}
+
+// DeReeler debe estar (o querer estar) en marcha: auto, Materialista refill o jog.
+static bool dereelerWantedRunning()
+{
+  if (systemFault != FAULT_NONE)
+    return false;
+  if (idleMode)
+    return refillDereelerOn;
+  if (!autoEnabled)
+    return fabsf(commandedRpm) > 0.01f;
+  if (!sensorsMotionArmed())
+    return false;
+  if (bufferFullStopNow())
+    return false;
+  return autoState == AUTO_SERVO_LEAD || autoState == AUTO_CW || autoState == AUTO_CCW
+      || fabsf(commandedRpm) > 0.01f;
+}
+
+static bool dereelerIsSpinning()
+{
+  if (fabsf(commandedRpm) > 0.01f)
+    return true;
+  return motor && fabsf(motor->currentRPM()) > 1.0f;
+}
+
+static bool tensionCanTriggerReverse()
+{
+  return !tensionReverseIsActive()
+      && tensionReverseStable
+      && tensionCooldownReady()
+      && dereelerWantedRunning()
+      && dereelerIsSpinning();
+}
+
+static void tensionMarkReverseTriggered()
+{
+  tensionLastRoutineMs = millis();
+}
+
 static void stopAllMotors();
 static void enterSystemFault(SystemFault fault, bool pushPeer = true);
 static void peerPushNow(bool fullStatus);
@@ -645,6 +710,36 @@ static float* commandedRpmByIndex(uint8_t idx)
 static int motorPinStep(uint8_t idx)  { return (idx == 0) ? PIN_DEREELER_PUL  : PIN_FEEDER_PUL; }
 static int motorPinDir(uint8_t idx)   { return (idx == 0) ? PIN_DEREELER_MOSFET : -1; }
 
+// GPIO33 fuera de StepperRMT: CW=LOW; inversión por tensión=HIGH.
+static bool dereelerDirIsReverse = false;
+
+static void dereelerDirApply(bool reverse)
+{
+  const uint8_t level = reverse ? DEREELER_DIR_CCW_LEVEL : DEREELER_DIR_CW_LEVEL;
+  pinMode(PIN_DEREELER_MOSFET, OUTPUT);
+  digitalWrite(PIN_DEREELER_MOSFET, level);
+  if (dereelerDirIsReverse != reverse)
+  {
+    dereelerDirIsReverse = reverse;
+    Serial.printf("DeReeler DIR GPIO%u → %s (%s)\n",
+                  (unsigned)PIN_DEREELER_MOSFET,
+                  level == HIGH ? "HIGH" : "LOW",
+                  reverse ? "inversion" : "CW");
+  }
+  else
+    dereelerDirIsReverse = reverse;
+}
+
+static void dereelerDirCw()
+{
+  dereelerDirApply(false);
+}
+
+static void dereelerDirReverse()
+{
+  dereelerDirApply(true);
+}
+
 static const char* motorDirName(uint8_t idx)
 {
   const float rpm = *commandedRpmByIndex(idx);
@@ -664,20 +759,14 @@ static bool motorWaitStopped(uint8_t idx, uint16_t timeoutMs = 200)
   return fabsf(m->currentRPM()) <= 1.0f;
 }
 
-// StepperRMT DM556: convención fija UI→setSpeed (no es “invertir giro”; sentido físico = bobinas).
+// StepperRMT: signo → DIR interno. DeReeler: DIR físico lo pone GPIO33 a mano
+// (pins.dir = -1); el signo de drive solo mantiene el mismo sentido de pulsos CW.
 static float uiSignedToDriveRpm(float uiSigned, uint8_t idx = 1)
 {
-  (void)idx;
   const float mag = fabsf(uiSigned);
+  if (idx == 0)
+    return -mag;  // pulsos como el CW histórico; sentido = GPIO33
   return (uiSigned > 0.0f) ? -mag : mag;
-}
-
-// DeReeler: firmware solo RPM+ (nunca manda sentido contrario). Tensión = más RPM, no otro giro.
-static float dereelerUiRpmOnlyCw(float signedRpm)
-{
-  if (signedRpm < -0.01f)
-    return fabsf(signedRpm);
-  return signedRpm;
 }
 
 static void motorHardStop(uint8_t idx)
@@ -687,13 +776,12 @@ static void motorHardStop(uint8_t idx)
   servoMarkPinDirty();
   motorWaitStopped(idx);
   *commandedRpmByIndex(idx) = 0.0f;
+  if (idx == 0)
+    dereelerDirCw();
 }
 
 static bool motorStartSigned(uint8_t idx, float uiSignedRpm)
 {
-  if (idx == 0)
-    uiSignedRpm = dereelerUiRpmOnlyCw(uiSignedRpm);
-
   StepperRMT* m = motorByIndex(idx);
   const float driveRpm = uiSignedToDriveRpm(uiSignedRpm, idx);
 
@@ -703,10 +791,22 @@ static bool motorStartSigned(uint8_t idx, float uiSignedRpm)
     delay(MOTOR_DIR_SETUP_MS);
   }
 
+  // DeReeler: fijar DIR antes de pulsos (para → DIR → gira).
+  if (idx == 0)
+  {
+    dereelerDirApply(uiSignedRpm < -0.01f);
+    delay(MOTOR_DIR_SETUP_MS);
+  }
+
   if (!m->setSpeed(driveRpm, MOTOR_ACCEL))
   {
     motorHardStop(idx);
     delay(MOTOR_DIR_SETUP_MS);
+    if (idx == 0)
+    {
+      dereelerDirApply(uiSignedRpm < -0.01f);
+      delay(MOTOR_DIR_SETUP_MS);
+    }
     if (!m->setSpeed(driveRpm, MOTOR_ACCEL))
       return false;
   }
@@ -729,9 +829,6 @@ static bool motorStartSigned(uint8_t idx, float uiSignedRpm)
 
 static bool motorRun(uint8_t idx, float signedRpm)
 {
-  if (idx == 0)
-    signedRpm = dereelerUiRpmOnlyCw(signedRpm);
-
   if (fabsf(signedRpm) < 0.01f)
   {
     // Evitar Stop/Brake repetidos: el driver RMT spamea errores si ya está idle.
@@ -775,24 +872,85 @@ static bool motorRun(float signedRpm)
   return motorRun(0, signedRpm);
 }
 
-// RPM UI + boost; no cambia sentido (solo velocidad).
-static float autoRpmTensionBoost()
+// RPM UI de inversión (CCW = negativo). Parar→DIR→girar vía motorStartSigned.
+static float autoDereelerReverseRpm()
 {
-  float rpm = autoRpm + tensionBoostRpm;
-  if (rpm > MOTOR_RPM_MAX) rpm = MOTOR_RPM_MAX;
+  float rpm = tensionReverseRpm;
   if (rpm < MOTOR_RPM_MIN) rpm = MOTOR_RPM_MIN;
-  return rpm;
+  if (rpm > MOTOR_RPM_MAX) rpm = MOTOR_RPM_MAX;
+  return -rpm;
 }
 
-// DeReeler ya en marcha: tensión estable → +boost RPM continuo; si suelta → nominal.
+// Refill / CW nominal: siempre sentido normal (positivo).
 static float autoDereelerTargetRpm()
 {
-  return tensionReverseStable ? autoRpmTensionBoost() : autoRpm;
+  return autoRpm;
 }
 
 static void motorRunAutoDereeler()
 {
   motorRun(autoDereelerTargetRpm());
+}
+
+static void motorRunAutoDereelerReverse()
+{
+  motorRun(autoDereelerReverseRpm());
+}
+
+static void beginTensionReverse()
+{
+  const uint32_t now = millis();
+  tensionReverseUntilMs = now + (uint32_t)(autoReverseSec * 1000.0f);
+  tensionMarkReverseTriggered();
+  motorRunAutoDereelerReverse();
+  if (!idleMode && (autoState == AUTO_CW || autoState == AUTO_SERVO_LEAD || autoState == AUTO_CCW))
+    autoState = AUTO_CCW;
+  Serial.printf("TENSION: inversion ON GPIO%u HIGH · %.0f RPM · %.1fs (%s)\n",
+                (unsigned)PIN_DEREELER_MOSFET, tensionReverseRpm, autoReverseSec,
+                idleMode ? "Materialista" : "Auto");
+}
+
+static void endTensionReverseToCw()
+{
+  const bool was = tensionReverseIsActive();
+  tensionReverseUntilMs = 0;
+  if (!dereelerWantedRunning())
+  {
+    if (fabsf(commandedRpm) > 0.01f)
+      motorRun(0.0f);
+    else
+      dereelerDirCw();
+    if (!idleMode && autoState == AUTO_CCW)
+      autoState = AUTO_HOME_HOLD;
+    if (was)
+      Serial.println("TENSION: inversion OFF GPIO33 LOW (DeReeler parado)");
+    return;
+  }
+  motorRunAutoDereeler();
+  if (!idleMode && autoState == AUTO_CCW)
+    autoState = AUTO_CW;
+  if (was)
+    Serial.println("TENSION: inversion OFF GPIO33 LOW -> CW");
+}
+
+// Independiente del modo: si DeReeler gira y hay tensión → GPIO33 HIGH / CCW.
+// Fin: tiempo agotado o tensión suelta → GPIO33 LOW / CW (sigue girando si aplica).
+static void serviceTensionReverse()
+{
+  if (tensionReverseIsActive())
+  {
+    const bool timeUp = (int32_t)(millis() - tensionReverseUntilMs) >= 0;
+    if (!tensionSensorActive() || timeUp || !dereelerWantedRunning())
+    {
+      endTensionReverseToCw();
+      return;
+    }
+    motorRunAutoDereelerReverse();
+    return;
+  }
+
+  if (tensionCanTriggerReverse())
+    beginTensionReverse();
 }
 
 // Secuencia fija (Start / Resume / buffer vacío mid-ciclo):
@@ -844,7 +1002,7 @@ static void resumeAutoFromSensors()
   }
   // Ya rellenando (HTML Iniciar o Start HMI): In process no debe restart/forceStop.
   // Eso apagaba el servo y dejaba el DeReeler.
-  if (autoState == AUTO_SERVO_LEAD || autoState == AUTO_CW)
+  if (autoState == AUTO_SERVO_LEAD || autoState == AUTO_CW || autoState == AUTO_CCW)
   {
     syncServoToAutoState();
     return;
@@ -939,15 +1097,19 @@ static void applyRefillOutputs()
 
   if (refillDereelerOn)
   {
-    const float want = autoDereelerTargetRpm();
+    const float want = tensionReverseIsActive()
+      ? autoDereelerReverseRpm()
+      : autoDereelerTargetRpm();
     if (fabsf(commandedRpm - want) > 0.5f)
       motorRun(want);
   }
-  else if (fabsf(commandedRpm) > 0.01f)
+  else if (fabsf(commandedRpm) > 0.01f || tensionReverseIsActive())
   {
+    tensionReverseUntilMs = 0;
     if (motor)
       motor->Stop();
     commandedRpm = 0.0f;
+    dereelerDirCw();
     servoMarkPinDirty();
   }
 
@@ -1281,9 +1443,14 @@ static void serviceAuto()
   if (idleMode)
   {
     if (refillOverrideActive())
+    {
       applyRefillOutputs();
+      serviceTensionReverse();
+    }
     else
     {
+      if (tensionReverseIsActive())
+        endTensionReverseToCw();
       if (fabsf(commandedRpm) > 0.01f)
         motorRun(0.0f);
       syncServoToAutoState();
@@ -1322,7 +1489,7 @@ static void serviceAuto()
   if (!sensorsMotionArmed())
   {
     forceStopDereelerAndServo();
-    if (autoState == AUTO_SERVO_LEAD || autoState == AUTO_CW)
+    if (autoState == AUTO_SERVO_LEAD || autoState == AUTO_CW || autoState == AUTO_CCW)
       autoState = AUTO_HOME_HOLD;
     syncServoToAutoState();
     serviceFillUntilReady();
@@ -1333,7 +1500,7 @@ static void serviceAuto()
   if (!sensorsMotionArmed())
   {
     forceStopDereelerAndServo();
-    if (autoState == AUTO_SERVO_LEAD || autoState == AUTO_CW)
+    if (autoState == AUTO_SERVO_LEAD || autoState == AUTO_CW || autoState == AUTO_CCW)
       autoState = AUTO_HOME_HOLD;
     syncServoToAutoState();
     return;
@@ -1353,7 +1520,7 @@ static void serviceAuto()
   if (bufferFullStopNow())
   {
     forceStopDereelerAndServo();
-    if (autoState == AUTO_SERVO_LEAD || autoState == AUTO_CW
+    if (autoState == AUTO_SERVO_LEAD || autoState == AUTO_CW || autoState == AUTO_CCW
         || autoState == AUTO_HOME_HOLD)
     {
       if (autoState != AUTO_HOME_HOLD)
@@ -1363,6 +1530,9 @@ static void serviceAuto()
     syncServoToAutoState();
     return;
   }
+
+  // Tensión ↔ GPIO33 en cualquier fase con DeReeler en marcha (antes del switch).
+  serviceTensionReverse();
 
   switch (autoState)
   {
@@ -1398,8 +1568,17 @@ static void serviceAuto()
       break;
 
     case AUTO_CW:
-      motorRunAutoDereeler();
+      if (!tensionReverseIsActive())
+        motorRunAutoDereeler();
       servoAssertRun(true);
+      break;
+
+    case AUTO_CCW:
+      servoAssertRun(true);
+      if (tensionReverseIsActive())
+        motorRunAutoDereelerReverse();
+      else
+        motorRunAutoDereeler();
       break;
 
     default:
@@ -1654,7 +1833,7 @@ static void enterSystemFault(SystemFault fault, bool pushPeer)
   else if (fault == FAULT_HOLGURA_TIMEOUT)
     Serial.printf("Sin holgura > %.1fs\n", (float)holguraFaultSec);
   else if (fault == FAULT_TENSION_TIMEOUT)
-    Serial.printf("Tension > %.1fs\n", TENSION_FAULT_SEC);
+    Serial.printf("Tension > %.1fs\n", tensionFaultSec);
   else if (fault == FAULT_HOSE_ABSENT)
     Serial.println("GPIO27 manguera ausente");
   else if (fault == FAULT_OPERATOR_STOP)
@@ -1717,7 +1896,7 @@ static void updateTensionFaultMonitor()
 
   if (tensionActiveSinceMs == 0)
     tensionActiveSinceMs = millis();
-  else if ((uint32_t)(millis() - tensionActiveSinceMs) >= (uint32_t)(TENSION_FAULT_SEC * 1000.0f))
+  else if ((uint32_t)(millis() - tensionActiveSinceMs) >= (uint32_t)(tensionFaultSec * 1000.0f))
     enterSystemFault(FAULT_TENSION_TIMEOUT);
 }
 
@@ -1891,7 +2070,17 @@ static void motor2StartTriggerFeed(uint32_t now)
                 ? (float)motor2TcpTriggerSecRequest
                 : (float)motor2TriggerFeedSec;
   motor2TcpTriggerSecRequest = 0.0f;
+  const uint16_t trigId = motor2TcpTriggerPendingId;
+  motor2TcpTriggerPendingId = 0;
   motor2StartTimedFeed(now, M2_FEED_TCP, (float)motor2RpmSetting, sec);
+  triggerIdRemember(trigId);
+}
+
+static void motor2ClearPendingTrigger()
+{
+  motor2TcpTriggerRequest = false;
+  motor2TcpTriggerSecRequest = 0.0f;
+  motor2TcpTriggerPendingId = 0;
 }
 
 static void serviceTimedFeeder()
@@ -1994,6 +2183,7 @@ static void motor2HolguraTask(void* /*param*/)
 
     if (motor2AbortRequested)
     {
+      motor2ClearPendingTrigger();
       motor2DisarmFeedCycle();
       motor2AbortRequested = false;
     }
@@ -2008,7 +2198,7 @@ static void motor2HolguraTask(void* /*param*/)
     // DeReeler/servo los mueve solo loop() — RMT no es thread-safe (dos cores = vibra).
     if (refillManualActive())
     {
-      motor2TcpTriggerRequest = false;
+      motor2ClearPendingTrigger();
       if (refillFeederOn)
         motor2EnsureFeeding();
       vTaskDelay(pdMS_TO_TICKS(5));
@@ -2017,7 +2207,7 @@ static void motor2HolguraTask(void* /*param*/)
 
     if (systemFault != FAULT_NONE)
     {
-      motor2TcpTriggerRequest = false;
+      motor2ClearPendingTrigger();
       if (motor2Phase != M2_PHASE_IDLE || fabsf(commandedRpm2) > 0.01f
           || (motor2 && fabsf(motor2->currentRPM()) > 1.0f))
         motor2DisarmFeedCycle();
@@ -2028,7 +2218,7 @@ static void motor2HolguraTask(void* /*param*/)
     // Buffer Max: cortar feeder. DeReeler/servo los para loop() en el mismo criterio.
     if (bufferMaxActive())
     {
-      motor2TcpTriggerRequest = false;
+      motor2ClearPendingTrigger();
       if (motor2Phase != M2_PHASE_IDLE || fabsf(commandedRpm2) > 0.01f
           || (motor2 && fabsf(motor2->currentRPM()) > 1.0f))
         motor2DisarmFeedCycle();
@@ -2038,9 +2228,10 @@ static void motor2HolguraTask(void* /*param*/)
 
     // Trigger TCP: requiere ventana armada + Auto ON.
     // Timed feed ya iniciado: seguir hasta fin aunque In process OFF / sin armado.
+    // Tfeed pendiente se conserva (como holgura): arranca al rearmar — no perder
+    // el de un lado si el otro ya estaba idle.
     if (!sensorsMotionArmed() || !autoEnabled)
     {
-      motor2TcpTriggerRequest = false;
       if (motor2Phase == M2_PHASE_TIMED_FEED)
       {
         serviceTimedFeeder();
@@ -2062,15 +2253,11 @@ static void motor2HolguraTask(void* /*param*/)
     if (motor2TcpTriggerRequest)
     {
       if (!peerLinkOk || bufferMaxActive())
-        motor2TcpTriggerRequest = false;
-      else if (motor2Phase == M2_PHASE_TIMED_FEED && motor2FeedSource == M2_FEED_HOLGURA)
+        motor2ClearPendingTrigger();
+      else if (motor2Phase == M2_PHASE_TIMED_FEED)
       {
-        // Helper holgura en curso: no cortarlo; el Tfeed queda pendiente y arranca al terminar.
-      }
-      else if (motor2Phase == M2_PHASE_TIMED_FEED && motor2FeedSource == M2_FEED_TCP)
-      {
-        // Ya en Tfeed TCM: no reiniciar fin (reintentos TCP).
-        motor2TcpTriggerRequest = false;
+        // Holgura o Tfeed TCM en curso: no cortar ni reiniciar timer;
+        // el Tfeed pendiente arranca al terminar (evita L/R asimétrico en lote).
       }
       else
       {
@@ -2104,12 +2291,14 @@ static void appendAutoObject(String& json)
   json += servoRunning ? "true" : "false";
   json += ",\"servo_pin\":";
   jsonAppendUInt(json, PIN_SERVO_PWM);
-  json += ",\"tension_boost_rpm\":";
-  jsonAppendFloat(json, tensionBoostRpm, 1);
+  json += ",\"tension_reverse_rpm\":";
+  jsonAppendFloat(json, tensionReverseRpm, 1);
+  json += ",\"tension_boost_rpm\":";  // alias legacy UI
+  jsonAppendFloat(json, tensionReverseRpm, 1);
   json += ",\"tension_cooldown_s\":";
   jsonAppendFloat(json, tensionCooldownSec, 1);
   json += ",\"tension_fault_s\":";
-  jsonAppendFloat(json, TENSION_FAULT_SEC, 1);
+  jsonAppendFloat(json, tensionFaultSec, 1);
   json += ",\"buffer_refill_fault_s\":";
   jsonAppendFloat(json, BUFFER_REFILL_FAULT_SEC, 1);
   json += ",\"dereeler_lead_ms\":";
@@ -2197,10 +2386,12 @@ void handleStatus()
   json += tensionRoutineBlocked() ? "true" : "false";
   json += ",\"cooldown_s\":";
   jsonAppendFloat(json, tensionCooldownSec, 1);
-  json += ",\"boost_rpm\":";
-  jsonAppendFloat(json, tensionBoostRpm, 1);
+  json += ",\"reverse_rpm\":";
+  jsonAppendFloat(json, tensionReverseRpm, 1);
+  json += ",\"boost_rpm\":";  // alias legacy
+  jsonAppendFloat(json, tensionReverseRpm, 1);
   json += ",\"fault_s\":";
-  jsonAppendFloat(json, TENSION_FAULT_SEC, 1);
+  jsonAppendFloat(json, tensionFaultSec, 1);
   json += "},\"cylinder\":{\"raw\":";
   json += (digitalRead(PIN_SENSOR_CILINDRO) == HIGH) ? "true" : "false";
   json += ",\"open\":";
@@ -2405,14 +2596,25 @@ void handleAuto()
     if (v > AUTO_REVERSE_MAX) v = AUTO_REVERSE_MAX;
     autoReverseSec = v;
   }
-  if (server.hasArg("tension_boost_rpm"))
+  if (server.hasArg("tension_reverse_rpm") || server.hasArg("tension_boost_rpm"))
   {
-    float v = server.arg("tension_boost_rpm").toFloat();
-    if (v < TENSION_BOOST_RPM_MIN) v = TENSION_BOOST_RPM_MIN;
-    if (v > TENSION_BOOST_RPM_MAX) v = TENSION_BOOST_RPM_MAX;
-    tensionBoostRpm = v;
+    const String& raw = server.hasArg("tension_reverse_rpm")
+      ? server.arg("tension_reverse_rpm") : server.arg("tension_boost_rpm");
+    float v = raw.toFloat();
+    if (v < TENSION_REVERSE_RPM_MIN) v = TENSION_REVERSE_RPM_MIN;
+    if (v > TENSION_REVERSE_RPM_MAX) v = TENSION_REVERSE_RPM_MAX;
+    tensionReverseRpm = v;
   }
-  // dereeler_lead_ms / tension_fault / buffer_refill_fault: fijos en firmware
+  if (server.hasArg("tension_fault") || server.hasArg("tension_fault_s"))
+  {
+    const String& raw = server.hasArg("tension_fault_s")
+      ? server.arg("tension_fault_s") : server.arg("tension_fault");
+    float v = raw.toFloat();
+    if (v < TENSION_FAULT_SEC_MIN) v = TENSION_FAULT_SEC_MIN;
+    if (v > TENSION_FAULT_SEC_MAX) v = TENSION_FAULT_SEC_MAX;
+    tensionFaultSec = v;
+  }
+  // buffer_refill_fault / dereeler_lead_ms: fijos en firmware
   if (server.hasArg("tension_cooldown"))
   {
     float v = server.arg("tension_cooldown").toFloat();
@@ -2720,12 +2922,14 @@ static String peerStatusJson(const char* type)
   jsonAppendFloat(j, autoReverseSec, 1);
   j += ",\"motor2Rpm\":";
   jsonAppendFloat(j, motor2RpmSetting, 1);
-  j += ",\"tensionBoostRpm\":";
-  jsonAppendFloat(j, tensionBoostRpm, 1);
+  j += ",\"tensionReverseRpm\":";
+  jsonAppendFloat(j, tensionReverseRpm, 1);
+  j += ",\"tensionBoostRpm\":";  // alias legacy
+  jsonAppendFloat(j, tensionReverseRpm, 1);
   j += ",\"tensionCooldownS\":";
   jsonAppendFloat(j, tensionCooldownSec, 1);
   j += ",\"tensionFaultS\":";
-  jsonAppendFloat(j, TENSION_FAULT_SEC, 1);
+  jsonAppendFloat(j, tensionFaultSec, 1);
   j += ",\"bufferRefillFaultS\":";
   jsonAppendFloat(j, BUFFER_REFILL_FAULT_SEC, 1);
   j += ",\"servoPwmUs\":";
@@ -2881,7 +3085,7 @@ static bool peerDoCmd(const String& cmd, const String& val, int id)
   {
     const uint16_t trigId = (id > 0 && id <= 65535) ? (uint16_t)id : 0;
 
-    // Mismo id ya ejecutado (reintento): no re-alimentar.
+    // Mismo id ya ejecutado (reintento tras arranque real): no re-alimentar.
     if (trigId && triggerIdAlreadyDone(trigId))
     {
       ok = true;
@@ -2896,27 +3100,20 @@ static bool peerDoCmd(const String& cmd, const String& val, int id)
       if (systemFault == FAULT_NONE && peerLinkOk && sensorsMotionArmed() && autoEnabled
           && !bufferMaxActive())
       {
-        // Ya en Tfeed: no reiniciar timer; marcar id como hecho.
-        if (motor2Phase == M2_PHASE_TIMED_FEED && motor2FeedSource == M2_FEED_TCP)
+        // Encolar siempre. Si hay timed feed (holgura o Tfeed) en curso, la tarea
+        // M2 lo deja pendiente y arranca al terminar — no marcar id hecho aquí.
+        if (val.length())
         {
-          ok = true;
-          triggerIdRemember(trigId);
+          float v = val.toFloat();
+          if (v < 0.05f) v = 0.05f;
+          if (v > M2_TRIGGER_FEED_MAX) v = M2_TRIGGER_FEED_MAX;
+          motor2TcpTriggerSecRequest = v;
         }
         else
-        {
-          if (val.length())
-          {
-            float v = val.toFloat();
-            if (v < 0.05f) v = 0.05f;
-            if (v > M2_TRIGGER_FEED_MAX) v = M2_TRIGGER_FEED_MAX;
-            motor2TcpTriggerSecRequest = v;
-          }
-          else
-            motor2TcpTriggerSecRequest = 0.0f;  // default triggerFeedS
-          motor2TcpTriggerRequest = true;
-          ok = true;
-          triggerIdRemember(trigId);
-        }
+          motor2TcpTriggerSecRequest = 0.0f;  // default triggerFeedS
+        motor2TcpTriggerPendingId = trigId;
+        motor2TcpTriggerRequest = true;
+        ok = true;
       }
       else
       {
@@ -2981,7 +3178,7 @@ static bool peerDoCmd(const String& cmd, const String& val, int id)
       // Ventana pasa a In process. Si Start ya abrió fillUntilReady (HTML/HMI),
       // no picar resume: clear+restart cortaba el servo y dejaba el DeReeler.
       const bool alreadyFilling =
-          autoState == AUTO_SERVO_LEAD || autoState == AUTO_CW;
+          autoState == AUTO_SERVO_LEAD || autoState == AUTO_CW || autoState == AUTO_CCW;
       clearFillUntilReady("inProcess-on");
       if (!idleMode && autoEnabled && systemFault == FAULT_NONE
           && !refillOverrideActive())
@@ -3103,7 +3300,7 @@ static bool peerDoCmd(const String& cmd, const String& val, int id)
   else if (cmd == "setAllCfg" || cmd == "applyAllCfg")
   {
     // CSV: autoRpm,reverse,servo,m2Rpm,tensCd,tensFault,holguraExtra,triggerFeed[,dereelerLeadMs]
-    // tensFault / holguraExtra / dereelerLead: fijos o ignorados.
+    // holguraExtra / dereelerLead: fijos o ignorados.
     float parts[9];
     int n = 0;
     int start = 0;
@@ -3122,6 +3319,7 @@ static bool peerDoCmd(const String& cmd, const String& val, int id)
       applyServoActivePwmUs((uint16_t)parts[2]);
       motor2RpmSetting = constrain(parts[3], MOTOR_RPM_MIN, MOTOR_RPM_MAX);
       tensionCooldownSec = constrain(parts[4], TENSION_COOLDOWN_MIN, TENSION_COOLDOWN_MAX);
+      tensionFaultSec = constrain(parts[5], TENSION_FAULT_SEC_MIN, TENSION_FAULT_SEC_MAX);
       applyTriggerFeedSec(parts[7]);
       if (autoEnabled) syncServoToAutoState();
       if (cmd == "setAllCfg")
@@ -3424,9 +3622,9 @@ void setup()
   loadSettings();
   if (!motor2BufferActiveHigh)
     Serial.println("AVISO M2: holgura en LOW; contrato actual: HIGH=OK / LOW=helper (active HIGH).");
-  Serial.printf("NVS: auto %s, %.0f RPM, boost tensión +%.0f RPM, rev %.1fs, tensión espera %.1fs, error tensión %.1fs, buffer refill %.1fs, servo %u us, M2 feed %.0f RPM\n",
-                autoEnabled ? "ON" : "OFF", autoRpm, tensionBoostRpm, autoReverseSec, tensionCooldownSec,
-                TENSION_FAULT_SEC, BUFFER_REFILL_FAULT_SEC, servoActivePwmUs, (float)motor2RpmSetting);
+  Serial.printf("NVS: auto %s, %.0f RPM, inversion tension %.0f RPM x %.1fs, espera %.1fs, timeout tension %.1fs, buffer refill %.1fs, servo %u us, M2 feed %.0f RPM\n",
+                autoEnabled ? "ON" : "OFF", autoRpm, tensionReverseRpm, autoReverseSec, tensionCooldownSec,
+                tensionFaultSec, BUFFER_REFILL_FAULT_SEC, servoActivePwmUs, (float)motor2RpmSetting);
 
   // Red ANTES de motores/RMT: HTTP/TCP deben quedar listos aunque el driver falle.
   server.on("/", handleRoot);
@@ -3448,7 +3646,10 @@ void setup()
   // LEDC ya inicializado al inicio de setup(); reafirma neutral tras WiFi.
   servoStop();
 
-  StepperRMT::Pins pins = { PIN_DEREELER_PUL, PIN_DEREELER_MOSFET, -1, -1, -1, -1, -1 };
+  // DIR DeReeler lo maneja firmware (CW=LOW / inversión=HIGH), no StepperRMT.
+  StepperRMT::Pins pins = { PIN_DEREELER_PUL, -1, -1, -1, -1, -1, -1 };
+  pinMode(PIN_DEREELER_MOSFET, OUTPUT);
+  dereelerDirCw();
   motor = new StepperRMT(DRIVER_DM556T, pins);
   if (!motor->begin())
   {
@@ -3511,7 +3712,7 @@ void loop()
     {
       forceStopDereelerAndServo();
       if (autoEnabled && systemFault == FAULT_NONE
-          && (autoState == AUTO_SERVO_LEAD || autoState == AUTO_CW))
+          && (autoState == AUTO_SERVO_LEAD || autoState == AUTO_CW || autoState == AUTO_CCW))
         autoState = AUTO_HOME_HOLD;
     }
   }

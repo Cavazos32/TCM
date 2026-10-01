@@ -8,7 +8,7 @@ Va **después del corte** (paso 18: post-corte, antes del depósito). Así el Pr
 
 **Regla de lote:** la 1ª pieza ya trae feed de referencia (el operador lo dejó, o el Tfeed de la última pieza del lote anterior). El Tfeed **tras el corte** de esa 1ª (y de las demás) reponen para la siguiente. La última también **manda**, para que el lote siguiente arranque sin otra referencia.
 
-Si **holgura** está ausente o choca con un Tfeed, holgura va primero: el helper no se corta. El Tfeed de ciclo **no se pierde**: Main lo manda igual y el esclavo lo deja pendiente hasta que termine el helper. El ciclo no manda triggers extra para “arreglar” holgura.
+Si **holgura** está ausente o choca con un Tfeed, holgura va primero: el helper no se corta. El Tfeed de ciclo **no se pierde**: Main lo manda igual y el esclavo lo deja pendiente hasta que termine el helper. Igual si el lado **ya está en un Tfeed TCP**: el nuevo queda pendiente y arranca al terminar (no se marca “hecho” ni se descarta). Así L y R no quedan asimétricos cuando un lado aún alimenta y el otro ya idle. El ciclo no manda triggers extra para “arreglar” holgura.
 
 ---
 
@@ -47,6 +47,7 @@ Holgura ausente = aviso de que algo va mal. Se le hace caso. Si choca con un tri
 | Sensor de holgura **ON** (presente / OK) | El helper no corre. El Tfeed de ciclo, si toca, puede pasar. |
 | Sensor **OFF** (ausente) ≥ umbral | Lanza helper holgura con sus settings. El ciclo **no** manda Tfeed para “arreglarlo”. |
 | Tfeed llega **mientras** el helper corre | Queda pendiente; arranca al terminar el helper. Holgura no se corta ni se reinicia. |
+| Tfeed llega **mientras** otro Tfeed TCP corre | Queda pendiente; arranca al terminar (mismo criterio que holgura). No se reinicia el timer en curso. |
 | Tfeed y holgura coinciden (choque) | **Holgura** primero, luego Tfeed. |
 | Holgura ausente en paso 18 | Main manda Tfeed igual; el esclavo lo ejecuta tras el helper. |
 | Relleno (Buffer Full **aún no visto**, p. ej. Start esperando Full) | Helper puede correr. **No** enclava E057/E063: aún no hay lazo y la máquina no está produciendo. |
@@ -72,4 +73,4 @@ El ciclo **no** tiene un Tfeed extra “si falta holgura” (pre-pieza / post-pi
 
 ---
 
-**Regla corta:** Con `pfTriggerEnabled` ON, Tfeed **tras el corte** de cada pieza (incluida la 1ª y la última). C2 omite solo si esa pieza ya mandó Tfeed. Con OFF, el paso 18 siempre omite. Holgura en curso va primero; el Tfeed espera y no se pierde.
+**Regla corta:** Con `pfTriggerEnabled` ON, Tfeed **tras el corte** de cada pieza (incluida la 1ª y la última). C2 omite solo si esa pieza ya mandó Tfeed. Con OFF, el paso 18 siempre omite. Holgura o Tfeed en curso van primero; el Tfeed nuevo espera y no se pierde. Opcodes: `0x4C` = R, `0x51` = L (ciclo manda ambos si `feedSides` = LR; no hay opcode único L+R).

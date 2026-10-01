@@ -69,6 +69,10 @@
 #define CAN_SDO_RX_TIMEOUT_MS       2
 #define CAN_STATUS_RX_TIMEOUT_MS    5
 #define CAN_HALT_TX_RETRIES         3
+// Reintentos SDO dentro del mismo presupuesto (lote largo: 6064 intermitente → E026/E027).
+#define CAN_SDO_READ_ATTEMPTS       3
+#define CAN_TWAI_RX_QUEUE_LEN       32
+#define CAN_TWAI_TX_QUEUE_LEN       16
 
 // ====================== Setup / NMT delays ======================
 #define CAN_FAULT_RESET_DELAY_MS    300
@@ -122,6 +126,8 @@
 #define FEED_OM_TARGET_TOL_MM       0.5f   // legacy overview; Feed usa ventanas abajo
 #define FEED_OM_CORR_RETRY_MAX      1      // 1 corrección (aprox. no cuenta)
 #define FEED_OM_READ_RETRY_MAX      3
+// issueMove falló (SDO 6064): reintentar en siguientes ticks de feedLoop antes de E026/E027.
+#define FEED_ISSUE_MOVE_RETRY_MAX   3
 #define FEED_WAIT_TIMEOUT_MS        5000
 #define FEED_OM_FEED_POLL_MS        40
 #define FEED_OM_REQUIRE_NEGATIVE    1

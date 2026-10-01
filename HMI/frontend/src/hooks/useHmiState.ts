@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { BackendFlowStep, BackendSnapshot } from '../api/backendTypes';
 import * as api from '../api/hmiApi';
 import {
+  logKey,
   mapAndonConnection,
   mapAndonState,
   mapAppConfig,
@@ -10,6 +11,7 @@ import {
   mapMotionState,
   mapPlcState,
   mapPreFeederState,
+  mergeAllLogs,
   mergeLogTail,
   parseLogs,
   valveByteFromId,
@@ -152,6 +154,8 @@ export function useHmiState() {
   const lastModelIdxRef = useRef<number | null>(null);
   const snapRef = useRef<BackendSnapshot | null>(null);
   const logsRef = useRef<LogEntry[]>([]);
+  /** Claves de líneas ya limpiadas: evita que un SSE en vuelo las vuelva a sembrar. */
+  const blockedLogKeysRef = useRef<Set<string>>(new Set());
   const lastSseAtRef = useRef(0);
   const encPollRef = useRef(false);
   /** Estado lógico local por válvula (fuente de verdad entre clicks). */
@@ -171,7 +175,7 @@ export function useHmiState() {
       snap = { ...snap, cycle: { ...snap.cycle, flow } };
     }
     snapRef.current = snap;
-    const logs = mergeLogTail(logsRef.current, snap);
+    const logs = mergeLogTail(logsRef.current, snap, blockedLogKeysRef.current);
     logsRef.current = logs;
     const model = snap.models[snap.selectedModel];
     // Al cambiar de modelo (o primera carga), tomar qty del modelo.
@@ -740,8 +744,41 @@ export function useHmiState() {
   }, []);
 
   const clearLogs = useCallback((target: 'main' | 'motion' | 'plc' | 'prefeeder' | 'andon' | 'all') => {
-    setView((prev) => ({ ...prev, logs: [] }));
-    api.clearLog(target).catch(() => {});
+    const moduleOf = {
+      main: 'MAQUINA',
+      motion: 'MOTION',
+      plc: 'PLC',
+      prefeeder: 'PREFEEDER',
+      andon: 'ANDON',
+    } as const;
+
+    const matchesTarget = (mod: LogEntry['module']) =>
+      target === 'all' || (target in moduleOf && mod === moduleOf[target as keyof typeof moduleOf]);
+
+    const blockEntries = (entries: LogEntry[]) => {
+      const blocked = blockedLogKeysRef.current;
+      for (const e of entries) {
+        if (matchesTarget(e.module)) blocked.add(logKey(e));
+      }
+      if (blocked.size > 4000) blocked.clear();
+    };
+
+    const applyLocalClear = () => {
+      const next =
+        target === 'all'
+          ? []
+          : logsRef.current.filter((l) => !matchesTarget(l.module));
+      logsRef.current = next;
+      setView((prev) => ({ ...prev, logs: next }));
+    };
+
+    blockEntries(logsRef.current);
+    if (snapRef.current) blockEntries(mergeAllLogs(snapRef.current));
+    applyLocalClear();
+    void api.clearLog(target).then(() => {
+      if (snapRef.current) blockEntries(mergeAllLogs(snapRef.current));
+      applyLocalClear();
+    }).catch(() => {});
   }, []);
 
   const setAndonBuzzerMute = useCallback(async (mute: boolean) => {

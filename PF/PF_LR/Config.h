@@ -9,17 +9,15 @@
 #ifndef PREFEEDER_SIDE_RIGHT
 #define PREFEEDER_SIDE_TAG  "L"
 #define PREFEEDER_SIDE_ROLE "prefeeder_L"
-// .30 estaba ocupada / conflictiva en la LAN (ping sin TCP). L usa .101.
 static const IPAddress STA_IP(10, 10, 32, 101);
 constexpr uint16_t SERVO_PWM_ACTIVE_US = 800;
-constexpr uint8_t  FAULT_CODE_BASE     = 20;  // wire: base+PfErrorId → ver Status_Mode.h
+constexpr uint8_t  FAULT_CODE_BASE     = 20;  
 #else
 #define PREFEEDER_SIDE_TAG  "R"
 #define PREFEEDER_SIDE_ROLE "prefeeder_R"
-// .40 intermitente (posible conflicto DHCP/ARP). R usa .102.
 static const IPAddress STA_IP(10, 10, 32, 102);
 constexpr uint16_t SERVO_PWM_ACTIVE_US = 2000;
-constexpr uint8_t  FAULT_CODE_BASE     = 30;  // wire: base+PfErrorId → ver Status_Mode.h
+constexpr uint8_t  FAULT_CODE_BASE     = 30;  
 #endif
 
 // ====================== DEBUG ======================
@@ -37,7 +35,6 @@ constexpr uint8_t  FAULT_CODE_BASE     = 30;  // wire: base+PfErrorId → ver St
 #endif
 
 // ====================== GPIO ======================
-// Holgura GPIO22: HIGH=OK; LOW=sin holgura → helper. Cilindro: opto 24V→3.3V HIGH=abierto.
 constexpr uint8_t PIN_SENSOR_BUFFER_FULL = 19;  // HIGH = activo
 constexpr uint8_t PIN_SENSOR_TENSION     = 23;  // HIGH = activo
 constexpr uint8_t PIN_SENSOR_BUFFER_MAX  = 21;  // HIGH = activo
@@ -45,7 +42,9 @@ constexpr uint8_t PIN_SENSOR_HOLGURA     = 22;  // HIGH = OK; LOW = helper
 constexpr uint8_t PIN_SENSOR_CILINDRO    = 25;
 constexpr uint8_t PIN_SENSOR_HOSE_BELT   = 27;  // HIGH = cinta/manguera ausente
 constexpr int PIN_DEREELER_PUL           = 32;
-constexpr int PIN_DEREELER_MOSFET        = 33;  // DIR; EN fijo en driver
+constexpr int PIN_DEREELER_MOSFET        = 33;
+constexpr uint8_t DEREELER_DIR_CW_LEVEL  = LOW;
+constexpr uint8_t DEREELER_DIR_CCW_LEVEL = HIGH;
 constexpr int PIN_FEEDER_PUL             = 18;  // DIR/EN fijos en driver
 constexpr uint8_t PIN_SERVO_PWM          = 26;
 
@@ -54,18 +53,13 @@ constexpr uint16_t SERVO_PWM_MIN_US       = 500;
 constexpr uint16_t SERVO_PWM_MAX_US       = 2500;
 constexpr uint16_t SERVO_PWM_NEUTRAL_US     = 1500;
 constexpr uint8_t  SERVO_LEDC_BITS        = 14;
-// Canal fijo: ledcAttach() auto-elige y el RMT del DeReeler lo suelta;
-// sin canal fijo el RC a veces no recupera y solo gira el DeReeler.
 constexpr uint8_t  SERVO_LEDC_CHANNEL     = 7;
 constexpr uint32_t DEREELER_START_DELAY_MS = 100;
-// Tras Stop() RMT el LEDC se suelta: reafirmar 1500 cada frame RC, no cada 250 ms.
 constexpr uint32_t SERVO_STOP_REASSERT_MS = 20;
 
 // ====================== RED / WiFi ======================
 // L: http://10.10.32.101 | R: http://10.10.32.102 | Master: http://10.10.32.100
 // Master TCP → L/R :8765 (esclavos independientes; ver PreFeeder_Master/master_cmds.h)
-//   Globales (Master→L+R): start/stop/reset, Materialista, In process, refill manual, …
-//   Volátiles (Master→L o R): trigger, settings, Tfeed, …
 static const char* const WIFI_SSID = "R&D_TCM";
 static const char* const WIFI_PASS = "TCM2026!r&d";
 static const IPAddress STA_GW(10, 10, 32, 72);
@@ -95,13 +89,14 @@ constexpr float AUTO_REVERSE_MAX         = 60.0f;
 constexpr float TENSION_COOLDOWN_DEFAULT = 0.0f;
 constexpr float TENSION_COOLDOWN_MIN     = 0.0f;
 constexpr float TENSION_COOLDOWN_MAX     = 60.0f;
-constexpr float TENSION_FAULT_SEC        = 10.0f;
-constexpr float TENSION_BOOST_RPM_DEFAULT = 30.0f;
-constexpr float TENSION_BOOST_RPM_MIN     = 0.0f;
-constexpr float TENSION_BOOST_RPM_MAX     = MOTOR_RPM_MAX;
+constexpr float TENSION_FAULT_SEC_DEFAULT = 10.0f;
+constexpr float TENSION_FAULT_SEC_MIN     = 1.0f;
+constexpr float TENSION_FAULT_SEC_MAX     = 60.0f;
+constexpr float TENSION_REVERSE_RPM_DEFAULT = 30.0f;
+constexpr float TENSION_REVERSE_RPM_MIN     = MOTOR_RPM_MIN;
+constexpr float TENSION_REVERSE_RPM_MAX     = MOTOR_RPM_MAX;
 
 // ====================== BUFFER / HOLGURA ======================
-// Legacy UI/JSON: el monitor ya no enclava FAULT_BUFFER_TIMEOUT.
 constexpr float BUFFER_REFILL_FAULT_SEC = 10.0f;
 constexpr float M2_HOLGURA_FAULT_SEC      = 1.5f;   // ausencia acumulada tras Full visto → PF_ERR_HOLGURA
 constexpr float M2_HOLGURA_FAULT_SEC_MIN  = 0.3f;

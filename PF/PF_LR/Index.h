@@ -561,12 +561,12 @@ const char index_html[] PROGMEM = R"rawliteral(
           <li>Feeder en Tfeed no pausa DeReeler/servo (relleno en paralelo)</li>
           <li>Buffer Full OFF sostenido (~200 ms) → servo primero · DeReeler CW tras <span class="info-param">100</span> ms · <span class="info-param" data-info-key="autoRpm">60 RPM</span></li>
           <li>Servo GPIO 26 gira en CW e inversión → PWM <span class="info-param" data-info-key="servoPwm">800 µs</span> (ajustable · neutro 1500)</li>
-          <li>DeReeler en marcha + tensión GPIO 23 → +<span class="info-param" data-info-key="tensionBoostRpm">30 RPM</span> continuo (mismo sentido). Al soltar → RPM nominal</li>
-          <li>Vuelve a CW si Buffer Full sigue inactivo</li>
+          <li>DeReeler en marcha (Auto o Materialista/refill) + tensión GPIO 23 → GPIO 33 HIGH (inversión) · <span class="info-param" data-info-key="tensionReverseRpm">30 RPM</span> × máx <span class="info-param" data-info-key="autoRev">2.0 s</span> (para→DIR→gira). Cae a LOW al fin de tiempo o si suelta tensión → CW otra vez; no para por fin de inversión</li>
+          <li>Quién para DeReeler/servo: Buffer Full GPIO 19 HIGH</li>
           <li class="info-step-note"><strong>Fallas enclavadas</strong> hasta Reset + Iniciar (se reportan al TCM por TCP)</li>
           <li>Buffer Max GPIO 21 → para todo</li>
           <li>Cilindro abierto GPIO 25 → para todo</li>
-          <li>Tensión GPIO 23 &gt; <span class="info-param">10 s</span> → para todo</li>
+          <li>Tensión GPIO 23 &gt; <span class="info-param" data-info-key="tensionFault">10 s</span> → para todo</li>
         </ol>
 
         <p class="info-section-title">Núcleo 0 · Feeder (automático, con Iniciar)</p>
@@ -756,22 +756,27 @@ const char index_html[] PROGMEM = R"rawliteral(
     <div class="card">
       <h2>CW - CCW Settings</h2>
       <p class="meta compact">
-        DeReeler en marcha + GPIO 23 tensión: incrementa RPM (mismo sentido) con el valor de esta página.
-        Al soltar → RPM nominal del DeReeler. Timeout tensión fijo: 10 s.
+        Con DeReeler girando (Auto o Materialista): GPIO 23 tensión → GPIO 33 HIGH (inversión).
+        CW normal = LOW. Cae a LOW al fin de duración o si suelta tensión; vuelve a CW. Solo Buffer Full detiene el motor.
       </p>
       <div class="form-group">
-        <label for="tension-boost-rpm">Boost tensión (RPM)</label>
-        <p class="field-desc">Se suma a la velocidad del DeReeler mientras GPIO 23 esté activo. 0 = sin incremento. El total no pasa de 600 RPM.</p>
-        <input type="number" id="tension-boost-rpm" min="0" max="600" step="1" value="30">
-      </div>
-      <div class="form-group">
-        <label for="auto-rev">Boost tensión (s)</label>
-        <p class="field-desc">Reservado (NVS). El boost ya no es por tiempo: dura mientras haya tensión y el DeReeler gire.</p>
+        <label for="auto-rev">Duración inversión (s)</label>
+        <p class="field-desc">Tiempo en sentido contrario al detectar tensión. Al acabar → CW (no se detiene).</p>
         <input type="number" id="auto-rev" min="0.1" max="60" step="0.1" value="2.0">
       </div>
       <div class="form-group">
-        <label for="tension-cooldown">Espera entre rutinas (s)</label>
-        <p class="field-desc">Reservado (NVS). El boost continuo no usa esta espera.</p>
+        <label for="tension-reverse-rpm">Velocidad inversión (RPM)</label>
+        <p class="field-desc">RPM del DeReeler durante la inversión (CCW). Rango 1–600.</p>
+        <input type="number" id="tension-reverse-rpm" min="1" max="600" step="1" value="30">
+      </div>
+      <div class="form-group">
+        <label for="tension-fault-s">Timeout tensión (s)</label>
+        <p class="field-desc">Si GPIO 23 permanece activo este tiempo → falla (E054/E060). Independiente de la inversión.</p>
+        <input type="number" id="tension-fault-s" min="1" max="60" step="0.1" value="10">
+      </div>
+      <div class="form-group">
+        <label for="tension-cooldown">Espera entre inversiones (s)</label>
+        <p class="field-desc">Tiempo mínimo entre el inicio de una inversión y la siguiente. 0 = puede reinvertir al instante si sigue la tensión.</p>
         <input type="number" id="tension-cooldown" min="0" max="60" step="0.1" value="0">
       </div>
       <div class="form-group">
@@ -800,8 +805,9 @@ const char index_html[] PROGMEM = R"rawliteral(
     var routineInfoKeys = {
       autoRpm: { id: 'auto-rpm', suffix: ' RPM' },
       autoRev: { id: 'auto-rev', suffix: ' s' },
-      tensionBoostRpm: { id: 'tension-boost-rpm', suffix: ' RPM' },
+      tensionReverseRpm: { id: 'tension-reverse-rpm', suffix: ' RPM' },
       tensionCooldown: { id: 'tension-cooldown', suffix: ' s' },
+      tensionFault: { id: 'tension-fault-s', suffix: ' s' },
       servoPwm: { id: 'servo-pwm', suffix: ' µs' },
       rpm2: { id: 'rpm2', suffix: ' RPM' },
       triggerFeed: { id: 'trigger-feed-sec', suffix: ' s' },
@@ -845,7 +851,7 @@ const char index_html[] PROGMEM = R"rawliteral(
     var cfgDirty = false;
     var cfgFieldIds = [
       'auto-rpm', 'auto-rev', 'rpm2', 'trigger-feed-sec',
-      'tension-boost-rpm', 'tension-cooldown', 'servo-pwm', 'refill-pulse-s',
+      'tension-reverse-rpm', 'tension-fault-s', 'tension-cooldown', 'servo-pwm', 'refill-pulse-s',
       'holgura-helper-rpm', 'holgura-helper-s', 'holgura-helper-absent-ms', 'holgura-fault-s'
     ];
     function markCfgDirty() { cfgDirty = true; }
@@ -899,9 +905,12 @@ const char index_html[] PROGMEM = R"rawliteral(
       var rev = parseFloat(document.getElementById('auto-rev').value);
       if (isNaN(rev) || rev < 0.1) rev = 2.0;
       if (rev > 60) rev = 60;
-      var boostRpm = parseFloat(document.getElementById('tension-boost-rpm').value);
-      if (isNaN(boostRpm) || boostRpm < 0) boostRpm = 30;
-      if (boostRpm > 600) boostRpm = 600;
+      var revRpm = parseFloat(document.getElementById('tension-reverse-rpm').value);
+      if (isNaN(revRpm) || revRpm < 1) revRpm = 30;
+      if (revRpm > 600) revRpm = 600;
+      var faultS = parseFloat(document.getElementById('tension-fault-s').value);
+      if (isNaN(faultS) || faultS < 1) faultS = 10;
+      if (faultS > 60) faultS = 60;
       var cd = parseFloat(document.getElementById('tension-cooldown').value);
       if (isNaN(cd) || cd < 0) cd = 0;
       var servoPwm = parseInt(document.getElementById('servo-pwm').value, 10);
@@ -925,7 +934,8 @@ const char index_html[] PROGMEM = R"rawliteral(
       if (hFault > 30) hFault = 30;
       var autoUrl = '/api/auto?rpm=' + encodeURIComponent(rpm)
         + '&reverse=' + encodeURIComponent(rev)
-        + '&tension_boost_rpm=' + encodeURIComponent(boostRpm)
+        + '&tension_reverse_rpm=' + encodeURIComponent(revRpm)
+        + '&tension_fault_s=' + encodeURIComponent(faultS)
         + '&tension_cooldown=' + encodeURIComponent(cd)
         + '&servo_pwm=' + encodeURIComponent(servoPwm);
       var pulseS = parseFloat(document.getElementById('refill-pulse-s').value);
@@ -1095,8 +1105,10 @@ const char index_html[] PROGMEM = R"rawliteral(
         txt = 'Detenido · falta Iniciar';
       } else if (a.state === 'cw') {
         txt = 'Girando CW';
+      } else if (a.state === 'ccw') {
+        txt = 'Inversión tensión (CCW)';
       } else if (a.state === 'servo_lead') {
-        txt = 'Servo ON · DeReeler en 350 ms';
+        txt = 'Servo ON · DeReeler en 100 ms';
       } else if (a.state === 'home_hold') {
         txt = inProc ? 'Buffer Full · espera' : 'Listo · sensores congelados';
       } else if (a.state === 'endstop_fault') { ok = false; txt = 'Buffer Max'; }
@@ -1124,7 +1136,9 @@ const char index_html[] PROGMEM = R"rawliteral(
       if (!autoInit || !cfgDirty) {
         syncCfg('auto-rpm', a.rpm);
         syncCfg('auto-rev', a.reverse_s);
-        if (a.tension_boost_rpm !== undefined) syncCfg('tension-boost-rpm', a.tension_boost_rpm);
+        var revRpmVal = (a.tension_reverse_rpm !== undefined) ? a.tension_reverse_rpm : a.tension_boost_rpm;
+        if (revRpmVal !== undefined) syncCfg('tension-reverse-rpm', revRpmVal);
+        if (a.tension_fault_s !== undefined) syncCfg('tension-fault-s', a.tension_fault_s);
         if (a.servo_pwm_us !== undefined) syncCfg('servo-pwm', a.servo_pwm_us);
         autoInit = true;
       }
@@ -1138,15 +1152,19 @@ const char index_html[] PROGMEM = R"rawliteral(
       if (isNaN(rpm) || rpm < 1) rpm = 60;
       var rev = parseFloat(document.getElementById('auto-rev').value);
       if (isNaN(rev) || rev < 0.1) rev = 2.0;
-      var boostRpm = parseFloat(document.getElementById('tension-boost-rpm').value);
-      if (isNaN(boostRpm) || boostRpm < 0) boostRpm = 30;
-      if (boostRpm > 600) boostRpm = 600;
+      var revRpm = parseFloat(document.getElementById('tension-reverse-rpm').value);
+      if (isNaN(revRpm) || revRpm < 1) revRpm = 30;
+      if (revRpm > 600) revRpm = 600;
+      var faultS = parseFloat(document.getElementById('tension-fault-s').value);
+      if (isNaN(faultS) || faultS < 1) faultS = 10;
+      if (faultS > 60) faultS = 60;
       var servoPwm = parseInt(document.getElementById('servo-pwm').value, 10);
       if (isNaN(servoPwm) || servoPwm < 500) servoPwm = 500;
       if (servoPwm > 2500) servoPwm = 2500;
       var url = '/api/auto?rpm=' + encodeURIComponent(rpm)
         + '&reverse=' + encodeURIComponent(rev)
-        + '&tension_boost_rpm=' + encodeURIComponent(boostRpm)
+        + '&tension_reverse_rpm=' + encodeURIComponent(revRpm)
+        + '&tension_fault_s=' + encodeURIComponent(faultS)
         + '&servo_pwm=' + encodeURIComponent(servoPwm);
       if (action === 'start') url += '&enable=1';
       else if (action === 'stop') url += '&enable=0';
@@ -1218,8 +1236,14 @@ const char index_html[] PROGMEM = R"rawliteral(
         syncCfg('tension-cooldown', data.tension.cooldown_s);
         tensionInit = true;
       }
-      if (data.tension && data.tension.boost_rpm !== undefined)
-        syncCfg('tension-boost-rpm', data.tension.boost_rpm);
+      {
+        var rRpm = (data.tension && data.tension.reverse_rpm !== undefined)
+          ? data.tension.reverse_rpm
+          : (data.tension && data.tension.boost_rpm);
+        if (rRpm !== undefined) syncCfg('tension-reverse-rpm', rRpm);
+      }
+      if (data.tension && data.tension.fault_s !== undefined)
+        syncCfg('tension-fault-s', data.tension.fault_s);
       if (data.error) {
         var active = data.error.active;
         var reason = 'Ninguno';

@@ -134,24 +134,32 @@ bool canReadSdoI32(uint8_t nodeId, uint16_t index, uint8_t subIndex, int32_t& va
     0x00, 0x00, 0x00, 0x00
   };
   const unsigned long txId = CAN_SDO_TX_BASE + nodeId;
-  sendCANMessage(txId, 8, data, "SDO read", false);
   const unsigned long expectedRx = CAN_SDO_RX_BASE + nodeId;
-  const uint32_t start = millis();
-  while (millis() - start < timeoutMs)
+  const uint8_t attempts = (CAN_SDO_READ_ATTEMPTS < 1) ? 1 : CAN_SDO_READ_ATTEMPTS;
+  // Presupuesto total ≈ timeoutMs (no alargar el loop en el caso feliz).
+  const uint32_t perAttemptMs = (timeoutMs < attempts) ? 1u : (timeoutMs / attempts);
+
+  for (uint8_t attempt = 0; attempt < attempts; attempt++)
   {
-    uint32_t rxId = 0;
-    uint8_t len = 0;
-    byte rxBuf[8];
-    if (canMutex) xSemaphoreTake(canMutex, portMAX_DELAY);
-    const bool got = canTwaiReceive(rxId, len, rxBuf, CAN_SDO_RX_TIMEOUT_MS);
-    if (canMutex) xSemaphoreGive(canMutex);
-    if (!got) continue;
-    if (rxId != expectedRx || len < 8) continue;
-    if (rxBuf[0] != 0x43) continue;
-    if (rxBuf[1] != (byte)(index & 0xFF) || rxBuf[2] != (byte)((index >> 8) & 0xFF) || rxBuf[3] != subIndex)
+    if (!sendCANMessage(txId, 8, data, "SDO read", false))
       continue;
-    valOut = (int32_t)((uint32_t)rxBuf[4] | ((uint32_t)rxBuf[5] << 8) | ((uint32_t)rxBuf[6] << 16) | ((uint32_t)rxBuf[7] << 24));
-    return true;
+    const uint32_t start = millis();
+    while ((millis() - start) < perAttemptMs)
+    {
+      uint32_t rxId = 0;
+      uint8_t len = 0;
+      byte rxBuf[8];
+      if (canMutex) xSemaphoreTake(canMutex, portMAX_DELAY);
+      const bool got = canTwaiReceive(rxId, len, rxBuf, CAN_SDO_RX_TIMEOUT_MS);
+      if (canMutex) xSemaphoreGive(canMutex);
+      if (!got) continue;
+      if (rxId != expectedRx || len < 8) continue;
+      if (rxBuf[0] != 0x43) continue;
+      if (rxBuf[1] != (byte)(index & 0xFF) || rxBuf[2] != (byte)((index >> 8) & 0xFF) || rxBuf[3] != subIndex)
+        continue;
+      valOut = (int32_t)((uint32_t)rxBuf[4] | ((uint32_t)rxBuf[5] << 8) | ((uint32_t)rxBuf[6] << 16) | ((uint32_t)rxBuf[7] << 24));
+      return true;
+    }
   }
   return false;
 }
@@ -178,8 +186,11 @@ bool initCANBus(uint8_t maxRetries)
 
   canTwaiShutdown();
 
-  const twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(
+  twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT(
       (gpio_num_t)CAN_TX_PIN, (gpio_num_t)CAN_RX_PIN, TWAI_MODE_NORMAL);
+  // Default RX=5 se llena con confirms Vel/Acc/Dec + HaltOpt antes del 6064 → drop → E026/E027.
+  g_config.rx_queue_len = CAN_TWAI_RX_QUEUE_LEN;
+  g_config.tx_queue_len = CAN_TWAI_TX_QUEUE_LEN;
   const twai_timing_config_t t_config = TWAI_TIMING_CONFIG_500KBITS();
   const twai_filter_config_t f_config = TWAI_FILTER_CONFIG_ACCEPT_ALL();
 
@@ -662,6 +673,7 @@ struct FeedSideRt {
   uint32_t seekDeadlineMs = 0;
   uint32_t settleUntilMs = 0;
   uint8_t omReadMiss = 0;
+  uint8_t issueMoveMiss = 0;
   bool dirChecked = false;
   int32_t moveSteps = 0;
   // Velocity + Sensor (ciclo de producción; purga no entra aquí)
@@ -1051,6 +1063,7 @@ static void feedSideClearDiag(FeedSideRt& s)
   s.errByte = 0;
   s.fault[0] = '\0';
   s.omReadMiss = 0;
+  s.issueMoveMiss = 0;
   s.dirChecked = false;
   s.moveSteps = 0;
   s.velModeActive = false;
@@ -1181,6 +1194,25 @@ static bool feedSideIssueMove(bool sideR, int32_t steps, uint32_t now, uint32_t 
   s.absDueMs = now + feedSsCmdTimeMs(steps, vel, decMs) + FEED_SS_ABS_MARGIN_MS;
   s.lastTrPollMs = 0;
   return true;
+}
+
+// true = movimiento emitido. false = miss (reintento en siguiente tick) o ya cerró con E026/E027.
+static bool feedSideIssueMoveOrRetry(bool sideR, int32_t steps, uint32_t now, uint32_t velPp = 0)
+{
+  FeedSideRt& s = feedSideAt(sideR);
+  if (feedSideIssueMove(sideR, steps, now, velPp)) {
+    s.issueMoveMiss = 0;
+    return true;
+  }
+  if (++s.issueMoveMiss < FEED_ISSUE_MOVE_RETRY_MAX) {
+    Serial.printf("FEED %c issueMove miss %u/%u (6064) — retry\n",
+                  sideR ? 'R' : 'L',
+                  (unsigned)s.issueMoveMiss, (unsigned)FEED_ISSUE_MOVE_RETRY_MAX);
+    s.settleUntilMs = now + FEED_OM_READ_RETRY_DELAY_MS;
+    return false;
+  }
+  feedSideFinish(sideR, FVR_NG, feedSideNoFbErr(sideR), "FEED: sin feedback 6064");
+  return false;
 }
 
 static uint8_t feedSideNoFbErr(bool sideR)
@@ -1467,10 +1499,8 @@ static void feedSideService(bool sideR, uint32_t now)
         // Láser ya ON (prefetch): no armar halt — hay que completar el tramo.
         s.haltOnLaserRise = !s.skipValidate && !feedLaserMaterialPresentRaw(sideR);
         feedCanPrimeHaltDecelSide(sideR);
-        if (!feedSideIssueMove(sideR, steps, now)) {
-          feedSideFinish(sideR, FVR_NG, feedSideNoFbErr(sideR), "FEED: sin feedback 6064");
+        if (!feedSideIssueMoveOrRetry(sideR, steps, now))
           break;
-        }
         s.phase = FSP_WAIT_SERVO;
       }
       break;
@@ -1632,6 +1662,8 @@ static void feedSideService(bool sideR, uint32_t now)
         // Trozo en curso: solo vigilar láser (arriba). No SDO TargetReached.
         if (s.moveStartMs != 0 && now < s.absDueMs)
           break;
+        if (now < s.settleUntilMs)
+          break;
         s.moveStartMs = 0;
         if (feedLaserMaterialPresentRaw(sideR)) {
           s.laserState = true;
@@ -1645,10 +1677,8 @@ static void feedSideService(bool sideR, uint32_t now)
           feedSideFinish(sideR, FVR_INCONSISTENT, laserErr, "FEED_INCONSISTENT");
           break;
         }
-        if (!feedSideIssueMove(sideR, steps, now, feedSideCreepPp(sideR))) {
-          feedSideFinish(sideR, FVR_NG, feedSideNoFbErr(sideR), "FEED: sin feedback 6064");
+        if (!feedSideIssueMoveOrRetry(sideR, steps, now, feedSideCreepPp(sideR)))
           break;
-        }
       }
       break;
 
@@ -1787,6 +1817,7 @@ static void feedSideService(bool sideR, uint32_t now)
 
     case FSP_CORRECTION:
       {
+        if (now < s.settleUntilMs) break;
         const int32_t steps = feedMmToCmdStepsSigned(s.correctionMm, sideR);
         if (steps == 0) {
           feedSideFinish(sideR, FVR_NG, MOT_ERR_TOLERANCE_WINDOW, "FEED: corr steps=0");
@@ -1794,16 +1825,15 @@ static void feedSideService(bool sideR, uint32_t now)
         }
         Serial.printf("FEED %c CORR %.2fmm steps=%ld\n",
                       sideR ? 'R' : 'L', (double)s.correctionMm, (long)steps);
-        if (!feedSideIssueMove(sideR, steps, now)) {
-          feedSideFinish(sideR, FVR_NG, feedSideNoFbErr(sideR), "FEED: sin feedback 6064");
+        if (!feedSideIssueMoveOrRetry(sideR, steps, now))
           break;
-        }
         s.phase = FSP_WAIT_SERVO_CORR;
       }
       break;
 
     case FSP_OFFSET:
       {
+        if (now < s.settleUntilMs) break;
         const int32_t steps = feedMmToCmdStepsSigned(s.correctionMm, sideR);
         if (steps == 0) {
           feedSideFinish(sideR, FVR_OK, 0, "FEED_OK");
@@ -1811,10 +1841,8 @@ static void feedSideService(bool sideR, uint32_t now)
         }
         Serial.printf("FEED %c OFFSET %.2fmm steps=%ld\n",
                       sideR ? 'R' : 'L', (double)s.correctionMm, (long)steps);
-        if (!feedSideIssueMove(sideR, steps, now)) {
-          feedSideFinish(sideR, FVR_NG, feedSideNoFbErr(sideR), "FEED: sin feedback 6064");
+        if (!feedSideIssueMoveOrRetry(sideR, steps, now))
           break;
-        }
         s.phase = FSP_WAIT_SERVO_OFFSET;
       }
       break;

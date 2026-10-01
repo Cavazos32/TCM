@@ -1745,10 +1745,6 @@ float feedOmGetOffsetMmSide(bool sideR)
 
 bool feedLaserMaterialPresent(bool sideR)
 {
-  // Keyence NPN/OC + pull-up: GPIO LOW = sensor ON = material presente.
-  // Debounced (HMI status): evita parpadeo fuera de seek.
-  // GPIO HIGH / Active=false = sin material → E004/E005 en FSP_VALIDATE*
-  // (salvo modo gated FSP_LASER_SEEK post-corrección).
   return sideR ? ioLaserRActive : ioLaserLActive;
 }
 

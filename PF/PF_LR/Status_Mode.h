@@ -53,7 +53,7 @@ static const PfErrorEntry PF_ERROR_TABLE[] = {
 };
 
 static const char* const PF_AUTO_PHASE_NAMES[] = {
-  "off", "home_hold", "servo_lead", "cw",
+  "off", "home_hold", "servo_lead", "cw", "ccw",
   "endstop_fault", "tension_fault", "cylinder_fault", "hose_fault",
   "buffer_fault", "holgura_fault", "operator_stop"
 };

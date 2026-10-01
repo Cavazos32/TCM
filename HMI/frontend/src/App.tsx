@@ -168,6 +168,7 @@ function AppMain() {
             preFeederState={view.preFeederState}
             models={view.models}
             selectedModelIndex={view.selectedModelIndex}
+            feedSides={view.cycleConfig?.feedSides === 'L' || view.cycleConfig?.feedSides === 'R' || view.cycleConfig?.feedSides === 'LR' ? view.cycleConfig.feedSides : 'LR'}
             resumeEnabled={view.resumeEnabled}
             onModelSelect={hmi.selectModel}
             onTargetPiecesChange={hmi.setTargetQty}

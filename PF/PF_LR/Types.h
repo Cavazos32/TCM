@@ -32,6 +32,7 @@ enum AutoState : uint8_t {
   AUTO_HOME_HOLD,      // Buffer Full activo
   AUTO_SERVO_LEAD,     // Buffer Full inactivo: servo ON, DeReeler espera
   AUTO_CW,
+  AUTO_CCW,            // Inversión por tensión (GPIO 23); al terminar → AUTO_CW
   AUTO_ENDSTOP_FAULT,
   AUTO_TENSION_FAULT,
   AUTO_CYLINDER_FAULT,

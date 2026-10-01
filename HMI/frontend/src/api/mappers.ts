@@ -95,13 +95,20 @@ export function mergeAllLogs(snap: BackendSnapshot): LogEntry[] {
 
 const MAX_UI_LOGS = 400;
 
-function logKey(e: LogEntry): string {
+export function logKey(e: LogEntry): string {
   return `${e.timestamp}|${e.module}|${e.message}`;
 }
 
 /** Une cola SSE/poll (tail) con lo ya mostrado. Misma ref si no hay líneas nuevas. */
-export function mergeLogTail(prev: LogEntry[], snap: BackendSnapshot): LogEntry[] {
-  const incoming = mergeAllLogs(snap);
+export function mergeLogTail(
+  prev: LogEntry[],
+  snap: BackendSnapshot,
+  blockedKeys?: Set<string>
+): LogEntry[] {
+  let incoming = mergeAllLogs(snap);
+  if (blockedKeys?.size) {
+    incoming = incoming.filter((e) => !blockedKeys.has(logKey(e)));
+  }
   if (!prev.length) return incoming;
   const seen = new Set(prev.map(logKey));
   const added = incoming.filter((e) => !seen.has(logKey(e)));

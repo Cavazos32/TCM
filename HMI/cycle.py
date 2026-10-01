@@ -4,10 +4,11 @@ configurables (cycle_config.json). Estado máquina bytes 0x40–0x49.
 """
 from __future__ import annotations
 import json
+import shutil
 import threading
 import time
 from dataclasses import asdict, dataclass, fields
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Protocol
 from machine_states import (
@@ -37,6 +38,29 @@ TIMING_GAP_REPORT_S = 0.050
 TIMING_DELAY_OVERSHOOT_MS = 15
 # cmd/ACK lento (ciclo bloqueado esperando respuesta, no el movimiento).
 TIMING_CMD_SLOW_S = 0.080
+# Encoder feed típico ~55 mm; |valor| ≥ esto → anomalía en el resumen.
+TIMING_ENCODER_OUTLIER_MM = 120.0
+# Reescribe el resumen del .md cada N piezas (sobrevive a un cierre abrupto).
+TIMING_SUMMARY_EVERY_PIECES = 100
+TIMING_OP_ORDER = (
+    "feed_cmd",
+    "feed",
+    "grippers_on",
+    "holder_off",
+    "lineal_cmd",
+    "lineal",
+    "corte",
+    "pf_trigger",
+    "depósito_cmd",
+    "depósito",
+    "grippers_off",
+    "despeje_cmd",
+    "despeje",
+    "home_cmd",
+    "home",
+    "feed_next_cmd",
+    "feed_next",
+)
 
 # Lineal producción: CMD_MOVE TCP abs(model.mm)+cutOffset vigente (carrera ABS).
 # cutOffset no se congela al Start: cada lineal / depósito relee cycle_config.
@@ -221,6 +245,30 @@ class CycleConfig:
         if has_r:
             return "R"
         return "LR"
+
+    @staticmethod
+    def mirror_cycle_qty(order_qty: int, feed_sides: Any) -> tuple[int, int, str | None]:
+        """Cantidad de ciclos y piezas físicas por ciclo (espejo L+R).
+
+        En L+R cada corte produce 1 pz derecha + 1 pz izquierda: pedir 50 → 25 ciclos.
+        Solo L o solo R: 1 ciclo = 1 pieza.
+        Returns (cycle_qty, pieces_per_rep, error_or_None).
+        """
+        sides = CycleConfig.normalize_feed_sides(feed_sides)
+        n = int(order_qty)
+        if n < 1:
+            return 0, 1, "Cantidad inválida"
+        if sides == "LR":
+            if n < 2:
+                return 0, 2, "En L+R se necesitan al menos 2 piezas (1 por lado)"
+            if n % 2 != 0:
+                return (
+                    0,
+                    2,
+                    "En L+R la cantidad debe ser par (ej. 50 → 25 R y 25 L)",
+                )
+            return n // 2, 2, None
+        return n, 1, None
 
     @staticmethod
     def _key_map() -> dict[str, str]:
@@ -485,6 +533,8 @@ class CycleRunner:
         self._rep = 0
         self._pieces_done = 0
         self._total_reps = 0
+        # 2 en L+R (espejo): cada ciclo cuenta 2 piezas físicas en la UI.
+        self._pieces_per_rep = 1
         self._progress = 0
         self._last_ok = False
         self._abort_needs_ack = False
@@ -544,6 +594,17 @@ class CycleRunner:
         self._timing_lot_meta: dict[str, Any] = {}
         self._timing_last_end: float | None = None
         self._timing_last_end_pause: float = 0.0
+        # Diagnóstico de lote: eventos (error / stop / pausa) con hora de pared,
+        # agregados por pieza y archivos temporales de índice/detalle (streaming).
+        self._timing_events: list[dict[str, Any]] = []
+        self._timing_agg: dict[str, Any] = {}
+        self._timing_index_path: Path | None = None
+        self._timing_detail_path: Path | None = None
+        self._timing_piece_pause_n = 0
+        self._timing_piece_pause_sec = 0.0
+        self._pause_reason_hint: str = ""
+        self._pause_reason_cur: str = ""
+        self._pause_rep: int | None = None
         self._on_machine_state: Callable[[int], None] | None = None
 
     def set_machine_state_hook(self, cb: Callable[[int], None] | None) -> None:
@@ -578,8 +639,9 @@ class CycleRunner:
                 ),
                 "parallelGroup": self._parallel_group,
                 "rep": self._rep,
-                "piecesDone": self._pieces_done,
-                "totalReps": self._total_reps,
+                # UI en piezas físicas: L+R → ×2 (espejo).
+                "piecesDone": int(self._pieces_done) * max(1, int(self._pieces_per_rep)),
+                "totalReps": int(self._total_reps) * max(1, int(self._pieces_per_rep)),
                 "progress": self._progress,
                 "elapsedSec": self._ct_elapsed_locked(),
                 "lastPieceSec": float(self._last_piece_sec),
@@ -698,6 +760,14 @@ class CycleRunner:
                 "error": "Desactiva el modo Materialist para iniciar el ciclo",
             }
         self.reload_config()
+        order_qty = int(qty)
+        sides = CycleConfig.normalize_feed_sides(self.get_config().feed_sides)
+        cycle_qty, pieces_per_rep, mirror_err = CycleConfig.mirror_cycle_qty(
+            order_qty, sides
+        )
+        if mirror_err:
+            self._host.cycle_log(f"Cycle Start rechazado: {mirror_err}")
+            return {"ok": False, "error": mirror_err}
         tray_batches, travel_err = self._deposit_tray_capacity(float(length_mm))
         if travel_err:
             self._host.cycle_log(f"Cycle Start rechazado: {travel_err}")
@@ -706,12 +776,13 @@ class CycleRunner:
         if tray_batches is not None:
             batch = max(1, int(self.get_config().deposit_batch_size))
             per_tray = tray_batches * batch
-            if int(qty) > per_tray:
-                n_trays = (int(qty) + per_tray - 1) // per_tray
+            if int(cycle_qty) > per_tray:
+                n_trays = (int(cycle_qty) + per_tray - 1) // per_tray
                 self._host.cycle_log(
-                    f"Tray: caben {tray_batches} batch(es) / {per_tray} piezas "
-                    f"(L={abs(float(length_mm)):g}) — lote {qty} → {n_trays} trays, "
-                    f"pausa para vaciar cada {per_tray} piezas"
+                    f"Tray: caben {tray_batches} batch(es) / {per_tray} depósitos "
+                    f"(L={abs(float(length_mm)):g}) — lote {order_qty} pz "
+                    f"({cycle_qty} ciclos) → {n_trays} trays, "
+                    f"pausa para vaciar cada {per_tray} ciclos"
                 )
         self._stop.clear()
         self._pause.clear()
@@ -739,12 +810,22 @@ class CycleRunner:
             self._refill_mode = False
             self._refill_awaiting_confirm = False
             self._refill_prompt = ""
+            self._pieces_per_rep = int(pieces_per_rep)
             self._reset_ct_clocks_locked()
         self._set_state(TX_BUSY)
-        self._host.cycle_log(
-            f"Cycle Start (0x040) length={length_mm} mm qty={qty}"
-        )
-        args = (float(length_mm), int(qty), float(rpm))
+        if pieces_per_rep > 1:
+            half = cycle_qty
+            self._host.cycle_log(
+                f"Cycle Start (0x040) length={length_mm} mm "
+                f"pedido={order_qty} pz → {cycle_qty} ciclos "
+                f"({half} R · {half} L, espejo)"
+            )
+        else:
+            self._host.cycle_log(
+                f"Cycle Start (0x040) length={length_mm} mm qty={order_qty} "
+                f"lado={sides}"
+            )
+        args = (float(length_mm), int(cycle_qty), float(rpm))
         self._thread = threading.Thread(
             target=self._run_lot, args=args, daemon=True, name="CycleRunner"
         )
@@ -777,12 +858,14 @@ class CycleRunner:
         self._host.cmd_pf_stop()
         self._resume_need_buffer_full = False
         # Stop no toca PLC (válvulas: All Off / Reset PLC propios).
+        self._timing_note_event("stop", "Stop operador", "0x041")
         self._set_state(TX_STOP, "Stop (0x042)")
         self._host.cycle_log("Cycle Stop (0x041)")
         return {"ok": True}
     def request_pause(self) -> dict[str, Any]:
         if not self.is_active():
             return {"ok": False, "error": "Sin ciclo activo"}
+        self._pause_reason_hint = "operator"
         self._pause.set()
         with self._lock:
             if self._pause_t0 is None:
@@ -1051,6 +1134,7 @@ class CycleRunner:
             self._host.cycle_log("Purga (lote) OK — lote en Pause (Reset → Resume)")
         if self._should_abort():
             return
+        self._pause_reason_hint = "lot_purge"
         self._pause.set()
         with self._lock:
             if self._pause_t0 is None:
@@ -1402,6 +1486,7 @@ class CycleRunner:
 
     def _wait_paused_for_resume(self, reason: str) -> bool:
         """Pausa cooperativa hasta Resume/Stop. True = abortar."""
+        self._pause_reason_hint = "hold"
         self._pause.set()
         with self._lock:
             if self._pause_t0 is None:
@@ -1674,6 +1759,7 @@ class CycleRunner:
             if self._host.apply_detail_error(slug_or_code):
                 return
         self._fault = format_ui(slug_or_code, fallback=slug_or_code)
+        self._timing_note_event("error", self._fault, str(slug_or_code))
 
     def apply_error_policy(
         self,
@@ -1685,7 +1771,11 @@ class CycleRunner:
         self._recovery = recovery
         self._recovery_after_error = self.is_active()
         self._resume_need_buffer_full = False
+        self._timing_note_event("error", ui, recovery or "error_state")
         self._pause.set()
+        with self._lock:
+            if self._pause_t0 is None:
+                self._pause_t0 = time.monotonic()
         self._cancel_wip_blower()
 
         # Stop current Motion activity, but do not kill the CycleRunner thread.
@@ -1721,6 +1811,7 @@ class CycleRunner:
         with self._lock:
             self._recovery_prompt = "e050_materialist"
             self._recovery_awaiting = True
+        self._timing_note_event("error", ui, "e050")
         if self.is_active():
             self._pause.set()
             with self._lock:
@@ -1841,6 +1932,7 @@ class CycleRunner:
         if self._step_by_step_should_pause(step_key) and not self._e050_finishing_piece():
             meta = STEP_BY_KEY.get(step_key, {})
             label = meta.get("label", step_key)
+            self._pause_reason_hint = f"paso_a_paso:{step_key}"
             self._pause.set()
             self._host.cycle_log(f"Paso a paso — {label}")
             self._enter_pause_andon()
@@ -2047,10 +2139,89 @@ class CycleRunner:
         if self._pause.is_set():
             if self._pause_t0 is None:
                 self._pause_t0 = now
+            if not self._pause_reason_cur:
+                self._pause_reason_cur = self._pause_reason_derive_locked()
+                self._pause_rep = int(self._rep or 0) or None
             return
         if self._pause_t0 is not None:
-            self._pause_excluded_sec += max(0.0, now - self._pause_t0)
+            dur = max(0.0, now - self._pause_t0)
+            self._pause_excluded_sec += dur
+            self._timing_note_pause_locked(dur)
             self._pause_t0 = None
+            self._pause_reason_cur = ""
+            self._pause_rep = None
+
+    def _pause_reason_derive_locked(self) -> str:
+        """Motivo de la pausa en curso (prompt activo > hint de quien pausó > EXXX)."""
+        hint = self._pause_reason_hint
+        self._pause_reason_hint = ""
+        if self._recovery_awaiting and self._recovery_prompt:
+            return f"recovery:{self._recovery_prompt}"
+        if self._refill_awaiting_confirm and self._refill_prompt:
+            return f"refill:{self._refill_prompt}"
+        if hint:
+            return hint
+        if self._fault:
+            code = str(self._fault).split(":", 1)[0].strip()
+            return f"error:{code}" if code else "error"
+        return "pause"
+
+    def _timing_note_pause_locked(self, dur: float) -> None:
+        """Pausa cerrada → evento cronológico + fila en la pieza (caller con _lock)."""
+        if self._timing_md_path is None or dur < TIMING_GAP_REPORT_S:
+            return
+        reason = self._pause_reason_cur or self._pause_reason_derive_locked()
+        wall_end = datetime.now()
+        wall_start = wall_end - timedelta(seconds=dur)
+        rep = self._pause_rep or (int(self._rep or 0) or None)
+        self._timing_events.append(
+            {
+                "kind": "pause",
+                "t_start": wall_start,
+                "t_end": wall_end,
+                "rep": rep,
+                "code": reason,
+                "note": "",
+                "sec": dur,
+            }
+        )
+        self._timing_piece_pause_n += 1
+        self._timing_piece_pause_sec += dur
+        self._piece_timings.append(
+            {
+                "name": f"wait:pause:{reason}",
+                "sec": dur,
+                "ok": True,
+                "ct_excluded": True,
+                "wall_start": wall_start.strftime("%H:%M:%S"),
+                "wall_end": wall_end.strftime("%H:%M:%S"),
+            }
+        )
+
+    def _timing_note_event(self, kind: str, code: str, note: str = "") -> None:
+        """Error / Stop / fallo de paso con hora de pared (orden cronológico)."""
+        if self._timing_md_path is None:
+            return
+        now = datetime.now()
+        code = str(code or "").strip() or "?"
+        for ev in self._timing_events[-5:]:
+            if (
+                ev.get("kind") == kind
+                and ev.get("code") == code
+                and (now - ev["t_start"]).total_seconds() < 2.0
+            ):
+                return
+        self._timing_events.append(
+            {
+                "kind": str(kind),
+                "t_start": now,
+                "t_end": None,
+                "rep": int(self._rep or 0) or None,
+                "code": code,
+                "note": str(note or ""),
+                "sec": None,
+            }
+        )
 
     def _ct_elapsed_locked(self) -> int:
         """Segundos CT para UI (congelado tras freeze; no infla con Finish)."""
@@ -2070,6 +2241,8 @@ class CycleRunner:
                 self._cycle_t0 = now
             self._piece_t0 = now
             self._piece_pause_base = float(self._pause_excluded_sec)
+            if self._timing_md_path is not None:
+                self._timing_agg.setdefault("first_piece_start", now)
 
     def _piece_elapsed_s(self) -> float | None:
         """CT de la pieza en curso (Pause excluida). None si no hay reloj."""
@@ -2138,10 +2311,17 @@ class CycleRunner:
             return piece_sec
 
     def _log_piece_ok(self, rep: int, qty: int, piece_sec: float) -> None:
-        if piece_sec > 0:
-            self._host.cycle_log(f"Pieza {rep}/{qty} OK · {piece_sec:.1f}s")
+        ppr = max(1, int(self._pieces_per_rep))
+        if ppr > 1:
+            phys = int(rep) * ppr
+            order = int(qty) * ppr
+            base = f"Ciclo {rep}/{qty} OK ({phys}/{order} pz)"
         else:
-            self._host.cycle_log(f"Pieza {rep}/{qty} OK")
+            base = f"Pieza {rep}/{qty} OK"
+        if piece_sec > 0:
+            self._host.cycle_log(f"{base} · {piece_sec:.1f}s")
+        else:
+            self._host.cycle_log(base)
         self._timing_flush_piece(rep, qty, piece_sec)
 
     def _reset_ct_clocks_locked(self) -> None:
@@ -2154,6 +2334,8 @@ class CycleRunner:
         self._pause_t0 = None
         self._pause_excluded_sec = 0.0
         self._piece_pause_base = 0.0
+        self._pause_reason_cur = ""
+        self._pause_rep = None
         self._last_lineal_sec = 0.0
         self._last_lineal_mm = 0.0
 
@@ -2213,6 +2395,8 @@ class CycleRunner:
         if extra:
             row.update(extra)
         self._piece_timings.append(row)
+        if not ok:
+            self._timing_note_event("step_fail", str(op["name"]), "paso fallido")
         self._timing_last_end = now
         self._timing_last_end_pause = pause_now
         return sec
@@ -2264,51 +2448,91 @@ class CycleRunner:
     def _timing_open_session(
         self, *, length_mm: float, qty: int, rpm: float
     ) -> None:
-        """Abre .md de análisis al inicio del lote productivo."""
+        """Abre .md de diagnóstico del lote (índice/detalle van a temporales)."""
         self._lot_timing_pieces = []
         self._piece_timings = []
         self._piece_metro = []
         self._timing_last_end = None
         self._timing_last_end_pause = 0.0
         self._timing_md_path = None
+        self._timing_index_path = None
+        self._timing_detail_path = None
+        self._timing_events = []
+        with self._lock:
+            self._timing_piece_pause_n = 0
+            self._timing_piece_pause_sec = 0.0
+        now_mono = time.monotonic()
+        self._timing_agg = {
+            "pieces": 0,
+            "ct": [0, 0.0, None, None],
+            "real": [0, 0.0, None, None],
+            "unreg_sum": 0.0,
+            "pause_sum": 0.0,
+            "ops": {},
+            "metro_out": [],
+            "metro_out_n": 0,
+        }
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        sides = CycleConfig.normalize_feed_sides(self.get_config().feed_sides)
         self._timing_lot_meta = {
             "started": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "length_mm": float(length_mm),
             "qty": int(qty),
             "rpm": float(rpm),
             "stamp": stamp,
+            "sides": sides,
+            "lot_t0": float(self._started_at)
+            if self._started_at is not None
+            else now_mono,
         }
         try:
             TIMING_LOG_DIR.mkdir(parents=True, exist_ok=True)
             path = TIMING_LOG_DIR / f"cycle_{stamp}.md"
-            sides = CycleConfig.normalize_feed_sides(self.get_config().feed_sides)
-            lines = [
-                f"# Cycle timing — {self._timing_lot_meta['started']}",
-                "",
-                "Duraciones **cmd → fin** (Pause excluida). Una sección por pieza.",
-                "",
-                "## Lote",
-                "",
-                f"- Archivo: `{path.name}`",
-                f"- Longitud modelo: `{length_mm:.1f}` mm",
-                f"- Cantidad: `{qty}`",
-                f"- RPM: `{rpm:g}`",
-                f"- Lados feed: `{sides}`",
-                "",
-                "Metrología: lectura al corte, lectura al llegar a 0, encoder "
-                "(GetMeasured). Encoder = feed, no el largo de corte.",
-                "",
-            ]
-            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            index_path = TIMING_LOG_DIR / f"cycle_{stamp}.index.tmp"
+            detail_path = TIMING_LOG_DIR / f"cycle_{stamp}.detail.tmp"
+            index_path.write_text("", encoding="utf-8")
+            detail_path.write_text("", encoding="utf-8")
             self._timing_md_path = path
+            self._timing_index_path = index_path
+            self._timing_detail_path = detail_path
+            self._timing_write_summary(final=False)
             self._host.cycle_log(f"Timing: análisis → {path}")
         except Exception as exc:
             self._timing_md_path = None
+            self._timing_index_path = None
+            self._timing_detail_path = None
             self._host.cycle_log(f"Timing: no se pudo crear .md ({exc})")
 
-    def _timing_append_md(self, text: str) -> None:
-        path = self._timing_md_path
+    @staticmethod
+    def _fmt_hms(sec: float) -> str:
+        s = max(0, int(round(float(sec))))
+        h, rem = divmod(s, 3600)
+        m, sec_i = divmod(rem, 60)
+        if h > 0:
+            return f"{h}h {m:02d}m {sec_i:02d}s"
+        if m > 0:
+            return f"{m}m {sec_i:02d}s"
+        return f"{sec_i}s"
+
+    @staticmethod
+    def _stat_add(stat: list[Any], v: float) -> None:
+        """stat = [n, sum, min, max]."""
+        stat[0] += 1
+        stat[1] += v
+        stat[2] = v if stat[2] is None else min(stat[2], v)
+        stat[3] = v if stat[3] is None else max(stat[3], v)
+
+    @staticmethod
+    def _stat_txt(stat: list[Any]) -> str:
+        n = int(stat[0])
+        if n <= 0:
+            return "*(n/d)*"
+        return (
+            f"avg **{stat[1] / n:.3f}s** (min {float(stat[2]):.3f} · "
+            f"max {float(stat[3]):.3f} · n={n})"
+        )
+
+    def _timing_append_file(self, path: Path | None, text: str) -> None:
         if path is None:
             return
         try:
@@ -2317,26 +2541,113 @@ class CycleRunner:
                 if not text.endswith("\n"):
                     fh.write("\n")
         except Exception as exc:
-            self._host.cycle_log(f"Timing: error escribiendo .md ({exc})")
+            self._host.cycle_log(f"Timing: error escribiendo {path.name} ({exc})")
 
     def _timing_flush_piece(
         self, rep: int, qty: int, piece_sec: float
     ) -> None:
-        """Log resumen + sección .md al cerrar pieza OK."""
+        """Log compacto de la pieza + registro en el .md del lote."""
         samples = list(self._piece_timings)
         metro = list(self._piece_metro)
-        self._lot_timing_pieces.append(
-            {
-                "rep": int(rep),
-                "piece_sec": float(piece_sec),
-                "samples": samples,
-                "metro": metro,
-            }
-        )
+        self._piece_timings = []
+        self._piece_metro = []
+        if self._timing_md_path is not None:
+            self._timing_record_piece(rep, qty, piece_sec, samples, metro)
         if not samples and piece_sec <= 0:
             return
+        self._timing_log_piece(rep, qty, samples)
 
-        # Resumen compacto en log de ciclo (ops físicas + delays).
+    def _timing_record_piece(
+        self,
+        rep: int,
+        qty: int,
+        piece_sec: float,
+        samples: list[dict[str, Any]],
+        metro: list[dict[str, Any]],
+    ) -> None:
+        """Agregados en memoria + índice/detalle a disco (streaming)."""
+        now = time.monotonic()
+        agg = self._timing_agg
+        prev = agg.get("last_piece_end") or agg.get("first_piece_start") or now
+        real = max(0.0, now - float(prev))
+        agg["last_piece_end"] = now
+        with self._lock:
+            n_pause = int(self._timing_piece_pause_n)
+            pause_sec = float(self._timing_piece_pause_sec)
+            self._timing_piece_pause_n = 0
+            self._timing_piece_pause_sec = 0.0
+        steps_sec = sum(
+            float(s["sec"])
+            for s in samples
+            if not s.get("ct_excluded") and not str(s["name"]).startswith("gap:")
+        )
+        n_fail = sum(1 for s in samples if not s.get("ok", True))
+        unreg = max(0.0, real - steps_sec - pause_sec)
+        clock = datetime.now().strftime("%H:%M:%S")
+
+        agg["pieces"] = int(agg.get("pieces") or 0) + 1
+        if piece_sec > 0:
+            self._stat_add(agg["ct"], float(piece_sec))
+        self._stat_add(agg["real"], real)
+        agg["unreg_sum"] = float(agg.get("unreg_sum") or 0.0) + unreg
+        agg["pause_sum"] = float(agg.get("pause_sum") or 0.0) + pause_sec
+        ops: dict[str, list[Any]] = agg["ops"]
+        for s in samples:
+            name = str(s["name"])
+            if s.get("ct_excluded") or name.startswith("gap:") or not s.get("ok", True):
+                continue
+            self._stat_add(ops.setdefault(name, [0, 0.0, None, None]), float(s["sec"]))
+        r = self._metro_log_readings(metro)
+        if any(
+            r.get(k) is not None and abs(float(r[k])) >= TIMING_ENCODER_OUTLIER_MM
+            for k in ("om_l", "om_r")
+        ):
+            agg["metro_out_n"] = int(agg.get("metro_out_n") or 0) + 1
+            if len(agg["metro_out"]) < 1000:
+                agg["metro_out"].append((int(rep), r))
+
+        self._timing_append_file(
+            self._timing_index_path,
+            f"| {rep} | {piece_sec:.3f} | {real:.3f} | {steps_sec:.3f} | "
+            f"{unreg:.3f} | {n_pause} | {pause_sec:.3f} | {n_fail} | `{clock}` |",
+        )
+        block = [
+            f"### Pieza {rep}/{qty} · CT **{piece_sec:.3f}s** · "
+            f"Real **{real:.3f}s** · `{clock}`",
+            "",
+            "| Paso | Duración | OK |",
+            "|------|---------:|:--:|",
+        ]
+        for s in samples:
+            name = str(s["name"])
+            sec = float(s["sec"])
+            if s.get("ct_excluded"):
+                mark = "pausa"
+            else:
+                mark = "✓" if s.get("ok", True) else "✗"
+            when = ""
+            if s.get("wall_start"):
+                when = f" · {s['wall_start']}→{s.get('wall_end') or ''}"
+            block.append(f"| `{name}` | {sec:.3f}s{when} | {mark} |")
+        block.append("")
+        block.append(
+            f"- Pasos {steps_sec:.3f}s · Pausas {pause_sec:.3f}s ({n_pause}) · "
+            f"Sin registrar {unreg:.3f}s · Metro: corte={self._fmt_mm(r.get('corte'))} "
+            f"en0={self._fmt_mm(r.get('en0'))} encL={self._fmt_mm(r.get('om_l'))} "
+            f"encR={self._fmt_mm(r.get('om_r'))}"
+        )
+        anomalies = self._timing_anomaly_lines(samples)
+        if anomalies:
+            block.extend(anomalies)
+        block.extend(["", ""])
+        self._timing_append_file(self._timing_detail_path, "\n".join(block))
+        if agg["pieces"] % TIMING_SUMMARY_EVERY_PIECES == 0:
+            self._timing_write_summary(final=False)
+
+    def _timing_log_piece(
+        self, rep: int, qty: int, samples: list[dict[str, Any]]
+    ) -> None:
+        """Resumen compacto en log de ciclo (ops físicas + delays)."""
         highlight = (
             "feed_cmd",
             "feed",
@@ -2375,62 +2686,6 @@ class CycleRunner:
                 f"Timing pieza {rep}/{qty}: " + " · ".join(parts)
             )
 
-        # Markdown
-        rows = [
-            f"## Pieza {rep}/{qty}",
-            "",
-            f"- CT pieza: **{piece_sec:.3f}s**"
-            if piece_sec > 0
-            else "- CT pieza: *(n/d)*",
-            f"- Hora: `{datetime.now().strftime('%H:%M:%S')}`",
-            "",
-            "| Paso | Duración | OK |",
-            "|------|---------:|:--:|",
-        ]
-        sum_ops = 0.0
-        for s in samples:
-            name = str(s["name"])
-            sec = float(s["sec"])
-            sum_ops += sec
-            mark = "✓" if s.get("ok", True) else "✗"
-            rows.append(
-                f"| `{name}` | {sec:.3f}s ({self._fmt_op(sec)}) | {mark} |"
-            )
-        rows.extend(
-            [
-                "",
-                f"- Suma pasos registrados: **{sum_ops:.3f}s**",
-                (
-                    f"- CT pieza: **{piece_sec:.3f}s**"
-                    if piece_sec > 0
-                    else ""
-                ),
-                "",
-            ]
-        )
-        anomalies = self._timing_anomaly_lines(samples)
-        rows.append("### Huecos / delays fuera de spec")
-        rows.append("")
-        rows.append(
-            "Solo si el tiempo hasta la siguiente acción supera lo establecido "
-            f"(hueco ≥ {TIMING_GAP_REPORT_S * 1000.0:.0f} ms, o delay > cfg + "
-            f"{TIMING_DELAY_OVERSHOOT_MS} ms). Delays de proceso en spec no se listan."
-        )
-        rows.append("")
-        if anomalies:
-            rows.extend(anomalies)
-        else:
-            rows.append(
-                "_Ninguno — delays de proceso en spec; sin huecos muertos._"
-            )
-        rows.append("")
-        if metro:
-            rows.extend(self._timing_metro_lines(metro))
-            rows.append("")
-        self._timing_append_md("\n".join(rows))
-        self._piece_timings = []
-        self._piece_metro = []
-
     @staticmethod
     def _metro_pick(metro: list[dict[str, Any]], *tags: str) -> dict[str, Any] | None:
         by_tag = {str(s.get("tag") or ""): s for s in metro}
@@ -2453,21 +2708,6 @@ class CycleRunner:
             "om_l": None if enc is None else enc.get("om_l"),
             "om_r": None if enc is None else enc.get("om_r"),
         }
-
-    def _timing_metro_lines(self, metro: list[dict[str, Any]]) -> list[str]:
-        r = self._metro_log_readings(metro)
-        return [
-            "### Metrología",
-            "",
-            "| Corte | En 0 | Encoder L | Encoder R |",
-            "|------:|-----:|----------:|----------:|",
-            "| {corte} | {en0} | {ol} | {or_} |".format(
-                corte=self._fmt_mm(r.get("corte")),
-                en0=self._fmt_mm(r.get("en0")),
-                ol=self._fmt_mm(r.get("om_l")),
-                or_=self._fmt_mm(r.get("om_r")),
-            ),
-        ]
 
     @staticmethod
     def _timing_anomaly_lines(samples: list[dict[str, Any]]) -> list[str]:
@@ -2492,116 +2732,232 @@ class CycleRunner:
                 )
         return lines
 
-    def _timing_close_session(self, *, ok: bool, ct_sec: float) -> None:
-        """Cierra .md con tabla resumen del lote."""
+    def _timing_real_breakdown(self) -> dict[str, float]:
+        """Tiempo de pared del lote: total, prep (Start→pieza 1), piezas, cierre."""
+        meta = self._timing_lot_meta or {}
+        agg = self._timing_agg or {}
+        now = time.monotonic()
+        lot_t0 = float(meta.get("lot_t0") or now)
+        total = max(0.0, now - lot_t0)
+        first = agg.get("first_piece_start")
+        prep = max(0.0, float(first) - lot_t0) if first is not None else total
+        pieces_real = float(agg["real"][1]) if agg.get("real") else 0.0
+        tail = max(0.0, total - prep - pieces_real)
+        return {"total": total, "prep": prep, "pieces": pieces_real, "tail": tail}
+
+    def _timing_summary_lines(self, *, final: bool, ok: bool, ct_sec: float) -> list[str]:
+        meta = self._timing_lot_meta or {}
+        agg = self._timing_agg or {}
+        qty = int(meta.get("qty") or 0)
+        n = int(agg.get("pieces") or 0)
+        rb = self._timing_real_breakdown()
+        if not final:
+            ct_sec = float(agg["ct"][1]) if agg.get("ct") else 0.0
+        diff = max(0.0, rb["total"] - ct_sec)
+        events = list(self._timing_events)
+        pauses = [e for e in events if e.get("kind") == "pause"]
+        errors = [e for e in events if e.get("kind") != "pause"]
+        pause_sum = sum(float(e.get("sec") or 0.0) for e in pauses)
+        per_hour = (n / (rb["total"] / 3600.0)) if rb["total"] > 0 else 0.0
+        now_txt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        status = ("OK" if ok else "NO OK") if final else "EN CURSO"
+
+        lines = [
+            f"# Cycle timing — {meta.get('started', '')}",
+            "",
+            "## Resumen",
+            "",
+            f"- Resultado: **{status}**",
+            f"- Piezas: **{n}**" + (f" / {qty}" if qty > 0 else ""),
+            f"- Inicio: `{meta.get('started', '')}` · "
+            + (f"Fin: `{now_txt}`" if final else f"Actualizado: `{now_txt}`"),
+            f"- **Tiempo REAL** (reloj, Start → fin): **{rb['total']:.1f}s** "
+            f"({self._fmt_hms(rb['total'])})",
+            f"- **CT productivo** (sin pausas): **{ct_sec:.1f}s** "
+            f"({self._fmt_hms(ct_sec)})",
+            f"- Diferencia REAL − CT: **{diff:.1f}s** ({self._fmt_hms(diff)})",
+            f"  - Prep (Start → inicio pieza 1): {rb['prep']:.1f}s "
+            f"({self._fmt_hms(rb['prep'])})",
+            f"  - Pausas: {pause_sum:.1f}s ({self._fmt_hms(pause_sum)})",
+            f"  - Sin registrar entre pasos (comunicación / huecos / esperas no "
+            f"medidas): {float(agg.get('unreg_sum') or 0.0):.1f}s "
+            f"({self._fmt_hms(float(agg.get('unreg_sum') or 0.0))})",
+            f"  - Cierre (última pieza → fin): {rb['tail']:.1f}s",
+            f"- Piezas/hora (real): **{per_hour:.1f}**",
+            f"- CT pieza: {self._stat_txt(agg.get('ct') or [0, 0.0, None, None])}",
+            f"- Real pieza: {self._stat_txt(agg.get('real') or [0, 0.0, None, None])}",
+            f"- Pausas: **{len(pauses)}** · Errores/eventos: **{len(errors)}**",
+            f"- Longitud `{float(meta.get('length_mm') or 0):.1f}` mm · "
+            f"Cantidad `{qty}` · RPM `{float(meta.get('rpm') or 0):g}` · "
+            f"Lados `{meta.get('sides') or '—'}`",
+            "",
+            "CT = suma de tiempos de proceso sin pausas. REAL = reloj de pared: "
+            "incluye pausas, esperas, recovery y tiempo entre pasos no medido.",
+            "",
+            "## Errores y eventos (cronológico)",
+            "",
+        ]
+        if not errors:
+            lines += ["_Ninguno._", ""]
+        else:
+            lines += [
+                "| # | Hora | Pieza | Tipo | Código | Detalle |",
+                "|--:|:-----|------:|:-----|:-------|:--------|",
+            ]
+            for i, e in enumerate(errors, 1):
+                lines.append(
+                    f"| {i} | `{e['t_start'].strftime('%H:%M:%S')}` | "
+                    f"{e.get('rep') or '—'} | {e.get('kind')} | "
+                    f"{e.get('code') or '—'} | {e.get('note') or '—'} |"
+                )
+            lines.append("")
+            by_code: dict[str, int] = {}
+            for e in errors:
+                key = f"{e.get('kind')} · {e.get('code')}"
+                by_code[key] = by_code.get(key, 0) + 1
+            lines += ["### Conteo por tipo", ""]
+            for key, cnt in sorted(by_code.items(), key=lambda kv: (-kv[1], kv[0])):
+                lines.append(f"- {key}: **{cnt}**")
+            lines.append("")
+
+        lines += ["## Pausas (cronológico)", ""]
+        if not pauses:
+            lines += ["_Ninguna._", ""]
+        else:
+            lines += [
+                "| # | Inicio | Fin | Pieza | Motivo | Duración |",
+                "|--:|:-------|:----|------:|:-------|---------:|",
+            ]
+            for i, e in enumerate(pauses, 1):
+                sec = float(e.get("sec") or 0.0)
+                lines.append(
+                    f"| {i} | `{e['t_start'].strftime('%H:%M:%S')}` | "
+                    f"`{e['t_end'].strftime('%H:%M:%S')}` | {e.get('rep') or '—'} | "
+                    f"`{e.get('code')}` | {sec:.1f}s ({self._fmt_hms(sec)}) |"
+                )
+            lines.append("")
+            by_reason: dict[str, list[float]] = {}
+            for e in pauses:
+                by_reason.setdefault(str(e.get("code")), []).append(
+                    float(e.get("sec") or 0.0)
+                )
+            lines += ["### Pausas por motivo", ""]
+            for reason, vals in sorted(by_reason.items(), key=lambda kv: -sum(kv[1])):
+                lines.append(
+                    f"- `{reason}`: n={len(vals)} · total **{sum(vals):.1f}s** "
+                    f"({self._fmt_hms(sum(vals))}) · max {max(vals):.1f}s"
+                )
+            lines.append("")
+
+        metro_out = list(agg.get("metro_out") or [])
+        if metro_out:
+            lines += [
+                f"## Anomalías encoder (|valor| ≥ {TIMING_ENCODER_OUTLIER_MM:.0f} mm) "
+                f"— {int(agg.get('metro_out_n') or 0)}",
+                "",
+                "| Pieza | Corte | En 0 | Encoder L | Encoder R |",
+                "|------:|------:|-----:|----------:|----------:|",
+            ]
+            for rep, r in metro_out:
+                lines.append(
+                    f"| {rep} | {self._fmt_mm(r.get('corte'))} | "
+                    f"{self._fmt_mm(r.get('en0'))} | {self._fmt_mm(r.get('om_l'))} | "
+                    f"{self._fmt_mm(r.get('om_r'))} |"
+                )
+            lines.append("")
+
+        ops: dict[str, list[Any]] = agg.get("ops") or {}
+        if ops:
+            order = [k for k in TIMING_OP_ORDER if k in ops]
+            order += sorted(k for k in ops if k not in order)
+            lines += [
+                "## Tiempo por paso (lote)",
+                "",
+                "| Paso | avg | min | max | n |",
+                "|------|----:|----:|----:|--:|",
+            ]
+            for k in order:
+                st = ops[k]
+                cnt = int(st[0])
+                if cnt <= 0:
+                    continue
+                lines.append(
+                    f"| `{k}` | {st[1] / cnt:.3f} | {float(st[2]):.3f} | "
+                    f"{float(st[3]):.3f} | {cnt} |"
+                )
+            lines.append("")
+        return lines
+
+    def _timing_write_summary(self, *, final: bool, ok: bool = False, ct_sec: float = 0.0) -> None:
+        """Durante el lote: .md = solo resumen (índice/detalle en .tmp)."""
         path = self._timing_md_path
         if path is None:
             return
-        # Si quedó una pieza a medias sin flush (p.ej. race), volcarla.
+        try:
+            lines = self._timing_summary_lines(final=final, ok=ok, ct_sec=ct_sec)
+            lines += [
+                "_Lote en curso: el índice por pieza y el detalle de pasos se agregan "
+                "a este archivo al cerrar el lote._",
+                "",
+            ]
+            path.write_text("\n".join(lines), encoding="utf-8")
+        except Exception as exc:
+            self._host.cycle_log(f"Timing: error escribiendo resumen ({exc})")
+
+    def _timing_close_session(self, *, ok: bool, ct_sec: float) -> None:
+        """Escribe .md final: resumen + índice por pieza + detalle de pasos."""
+        path = self._timing_md_path
+        if path is None:
+            return
+        with self._lock:
+            self._sync_pause_exclusion_locked(time.monotonic())
         if self._piece_timings:
             self._timing_flush_piece(
                 max(1, int(self._rep or 1)),
                 max(1, int(self._total_reps or 1)),
                 0.0,
             )
-        pieces = list(self._lot_timing_pieces)
-        keys: list[str] = []
-        seen: set[str] = set()
-        for p in pieces:
-            for s in p.get("samples") or []:
-                n = str(s["name"])
-                if n not in seen:
-                    seen.add(n)
-                    keys.append(n)
-        # Columnas prioritarias primero.
-        preferred = [
-            "feed_cmd",
-            "feed",
-            "grippers_on",
-            "holder_off",
-            "lineal_cmd",
-            "lineal",
-            "corte",
-            "pf_trigger",
-            "depósito_cmd",
-            "depósito",
-            "grippers_off",
-            "despeje_cmd",
-            "despeje",
-            "home_cmd",
-            "home",
-            "feed_next_cmd",
-            "feed_next",
-        ]
-        ordered = [k for k in preferred if k in seen]
-        ordered.extend(
-            k for k in keys if k not in ordered and not k.startswith("delay:")
-        )
-        ordered.extend(k for k in keys if k not in ordered)
-
-        lines = [
-            "## Resumen lote",
-            "",
-            f"- Resultado: **{'OK' if ok else 'NO OK'}**",
-            f"- CT lote: **{ct_sec:.3f}s**" if ct_sec > 0 else "- CT lote: *(n/d)*",
-            f"- Piezas con timing: **{len(pieces)}**",
-            "",
-        ]
-        if pieces and ordered:
-            header = "| Pieza | CT |" + "".join(f" {k} |" for k in ordered)
-            sep = "|------:|---:|" + "".join("------:|" for _ in ordered)
-            lines.extend([header, sep])
-            for p in pieces:
-                by_name: dict[str, float] = {}
-                for s in p.get("samples") or []:
-                    n = str(s["name"])
-                    by_name[n] = by_name.get(n, 0.0) + float(s["sec"])
-                ct = float(p.get("piece_sec") or 0.0)
-                cells = [f"| {p.get('rep')} | {ct:.3f} |"]
-                for k in ordered:
-                    v = by_name.get(k)
-                    cells.append(f" {v:.3f} |" if v is not None else " — |")
-                lines.append("".join(cells))
-            lines.append("")
-        # Promedios de ops clave
-        if pieces:
-            lines.append("### Promedios (ops clave)")
-            lines.append("")
-            for k in preferred:
-                vals = []
-                for p in pieces:
-                    for s in p.get("samples") or []:
-                        if str(s["name"]) == k and s.get("ok", True):
-                            vals.append(float(s["sec"]))
-                if vals:
-                    avg = sum(vals) / len(vals)
-                    lines.append(
-                        f"- `{k}`: avg **{avg:.3f}s** "
-                        f"(n={len(vals)}, min={min(vals):.3f}, max={max(vals):.3f})"
-                    )
-            lines.append("")
-        if pieces and any(p.get("metro") for p in pieces):
-            lines.append("### Metrología lote")
-            lines.append("")
-            lines.append("| Pieza | Corte | En 0 | Encoder L | Encoder R |")
-            lines.append("|------:|------:|-----:|----------:|----------:|")
-            for p in pieces:
-                r = self._metro_log_readings(list(p.get("metro") or []))
-                lines.append(
-                    "| {rep} | {corte} | {en0} | {ol} | {or_} |".format(
-                        rep=p.get("rep"),
-                        corte=self._fmt_mm(r.get("corte")),
-                        en0=self._fmt_mm(r.get("en0")),
-                        ol=self._fmt_mm(r.get("om_l")),
-                        or_=self._fmt_mm(r.get("om_r")),
-                    )
+        index_path = self._timing_index_path
+        detail_path = self._timing_detail_path
+        rb = self._timing_real_breakdown()
+        try:
+            lines = self._timing_summary_lines(final=True, ok=ok, ct_sec=ct_sec)
+            with path.open("w", encoding="utf-8") as out:
+                out.write("\n".join(lines) + "\n")
+                out.write(
+                    "## Índice por pieza\n\n"
+                    "Real = reloj entre fin de pieza anterior y fin de esta "
+                    "(incluye pausas). Sin registrar = Real − Pasos − Pausas.\n\n"
+                    "| Pieza | CT | Real | Pasos | Sin registrar | Pausas | "
+                    "T. pausa | Fallos | Hora fin |\n"
+                    "|------:|---:|-----:|------:|--------------:|-------:|"
+                    "---------:|-------:|:---------|\n"
                 )
-            lines.append("")
-        lines.append(f"_Generado: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_")
-        lines.append("")
-        self._timing_append_md("\n".join(lines))
-        self._host.cycle_log(f"Timing: guardado {path}")
+                if index_path is not None and index_path.exists():
+                    with index_path.open("r", encoding="utf-8") as src:
+                        shutil.copyfileobj(src, out)
+                out.write("\n## Detalle por pieza (pasos)\n\n")
+                if detail_path is not None and detail_path.exists():
+                    with detail_path.open("r", encoding="utf-8") as src:
+                        shutil.copyfileobj(src, out)
+                out.write(
+                    f"\n_Generado: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_\n"
+                )
+            for tmp in (index_path, detail_path):
+                if tmp is not None:
+                    try:
+                        tmp.unlink()
+                    except OSError:
+                        pass
+            self._host.cycle_log(
+                f"Timing: guardado {path} · CT={ct_sec:.1f}s · "
+                f"Real={rb['total']:.1f}s ({self._fmt_hms(rb['total'])})"
+            )
+        except Exception as exc:
+            self._host.cycle_log(f"Timing: error cerrando .md ({exc})")
         self._timing_md_path = None
+        self._timing_index_path = None
+        self._timing_detail_path = None
         self._lot_timing_pieces = []
         self._piece_timings = []
 
@@ -3655,6 +4011,7 @@ class CycleRunner:
             self._refill_mode = True
             self._pieces_done = 0
             self._total_reps = 1
+            self._pieces_per_rep = 1
             self._lot_rpm = float(rpm)
             self._started_at = time.monotonic()
             self._finished_elapsed = 0.0
@@ -3838,12 +4195,12 @@ class CycleRunner:
             "Cycle flow: feed post-HOME (ASDA=0) — sin prefetch paralelo"
         )
         try:
-            if not self._prepare_before_cut():
-                self._finish(False)
-                return
             self._timing_open_session(
                 length_mm=length_mm, qty=qty, rpm=rpm
             )
+            if not self._prepare_before_cut():
+                self._finish(False)
+                return
             # Armar PreFeeder: Start + esperar listo (enlace + sin EXXX).
             # ErrorState 0x3C sin errorAny/EXXX no bloquea (HMI vs HTML desfasados).
             if self._use_prefeeder():
@@ -4491,7 +4848,9 @@ class CycleRunner:
                     int(min(100, round(100.0 * self._pieces_done / total))),
                 )
         # Cierra .md de timing (lote productivo; refill no abre sesión).
+        real_sec = 0.0
         if not refill and self._timing_md_path is not None:
+            real_sec = self._timing_real_breakdown()["total"]
             self._timing_close_session(ok=ok, ct_sec=elapsed)
         if self._aborted or self._stop.is_set():
             self._set_state(TX_STOP, self._fault or "aborted")
@@ -4510,9 +4869,21 @@ class CycleRunner:
                 )
             else:
                 ct_txt = f" · CT={elapsed:.1f}s" if elapsed > 0 else ""
+                real_txt = (
+                    f" · Real={real_sec:.1f}s ({self._fmt_hms(real_sec)})"
+                    if real_sec > 0
+                    else ""
+                )
                 self._host.cycle_log(
-                    f"Lote completado — {self._total_reps}/{self._total_reps} piezas"
+                    (
+                        f"Lote completado — "
+                        f"{int(self._total_reps) * max(1, int(self._pieces_per_rep))}/"
+                        f"{int(self._total_reps) * max(1, int(self._pieces_per_rep))} pz"
+                        if max(1, int(self._pieces_per_rep)) > 1
+                        else f"Lote completado — {self._total_reps}/{self._total_reps} piezas"
+                    )
                     + ct_txt
+                    + real_txt
                 )
             # Tras FinishParts: Idle máquina (PF ya Idle por In process OFF).
             self._set_state(TX_IDLE)
