@@ -159,7 +159,7 @@ function AppMain() {
         }}
       />
 
-      <main className="flex-1 px-4 py-3.5 sm:px-6 max-w-7xl mx-auto w-full">
+      <main className="flex-1 px-3 py-3 sm:px-5 w-full">
         {currentTab === 'maquina' && (
           <MaquinaTab
             machineState={view.machineState}

@@ -39,39 +39,39 @@ export const Navigation: React.FC<NavigationProps> = ({
     {
       id: 'maquina',
       label: t('tab_maquina'),
-      icon: <LayoutDashboard className="h-4 w-4" />,
+      icon: <LayoutDashboard className="h-5 w-5" />,
     },
     {
       id: 'cycle',
       label: t('tab_cycle'),
-      icon: <Repeat className="h-4 w-4" />,
+      icon: <Repeat className="h-5 w-5" />,
       debugOnly: true,
     },
     {
       id: 'motion',
       label: t('tab_motion'),
-      icon: <Move className="h-4 w-4" />,
+      icon: <Move className="h-5 w-5" />,
       isConnected: motionConn.connected,
       hasError: hasErrors?.motion,
     },
     {
       id: 'plc',
       label: t('tab_plc'),
-      icon: <CircuitBoard className="h-4 w-4" />,
+      icon: <CircuitBoard className="h-5 w-5" />,
       isConnected: plcConn.connected,
       hasError: hasErrors?.plc,
     },
     {
       id: 'prefeeder',
       label: t('tab_prefeeder'),
-      icon: <Layers className="h-4 w-4" />,
+      icon: <Layers className="h-5 w-5" />,
       isConnected: preFeederConn.connected,
       hasError: hasErrors?.prefeeder,
     },
     {
       id: 'andon',
       label: t('tab_andon'),
-      icon: <Lightbulb className="h-4 w-4" />,
+      icon: <Lightbulb className="h-5 w-5" />,
       isConnected: andonConn.connected,
       debugOnly: true,
     },
@@ -80,8 +80,8 @@ export const Navigation: React.FC<NavigationProps> = ({
   const tabs = allTabs.filter((tab) => debugMode || !tab.debugOnly);
 
   return (
-    <nav className="flex items-center gap-2 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-2 sm:px-6 shadow-2xs transition-colors">
-      <div className="flex flex-wrap items-center gap-2 max-w-7xl mx-auto w-full">
+    <nav className="flex items-center gap-2 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-2.5 sm:px-5 shadow-2xs transition-colors">
+      <div className="flex flex-wrap items-center gap-2.5 w-full">
         {tabs.map((tab) => {
           const isActive = currentTab === tab.id;
           const interactive = debugMode || tab.id === 'maquina';
@@ -91,7 +91,7 @@ export const Navigation: React.FC<NavigationProps> = ({
             : tab.isConnected
               ? t('node_connected')
               : t('node_disconnected');
-          const ledClass = `h-2 w-2 rounded-full ${
+          const ledClass = `h-2.5 w-2.5 rounded-full ${
             tab.hasError
               ? 'bg-red-500 animate-ping'
               : tab.isConnected
@@ -110,7 +110,7 @@ export const Navigation: React.FC<NavigationProps> = ({
                 id={`nav-status-${tab.id}`}
                 role="status"
                 title={ledTitle}
-                className={`flex items-center gap-2 rounded-lg px-3.5 py-2 text-xs sm:text-sm font-medium ${
+                className={`flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium ${
                   problem
                     ? 'bg-red-50 dark:bg-red-950/40 text-red-800 dark:text-red-200 border border-red-300 dark:border-red-800'
                     : 'bg-white dark:bg-slate-800/80 text-slate-700 dark:text-slate-300 border border-slate-200/80 dark:border-slate-700'
@@ -130,7 +130,7 @@ export const Navigation: React.FC<NavigationProps> = ({
               key={tab.id}
               id={`nav-tab-${tab.id}`}
               onClick={() => onSelectTab(tab.id)}
-              className={`group relative flex items-center gap-2 rounded-lg px-3.5 py-2 text-xs sm:text-sm font-medium transition-all duration-150 cursor-pointer ${
+              className={`group relative flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-all duration-150 cursor-pointer ${
                 isActive
                   ? 'bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 shadow-2xs border border-slate-900 dark:border-white font-bold'
                   : problem

@@ -884,7 +884,7 @@ class HmiState:
             return self._pf_materialist_now()
 
     def _pf_materialist_now(self) -> bool:
-        """Materialist HMI o idleMode L/R. Llamar con o sin lock (RLock)."""
+        """Materialista HMI o idleMode L/R. Llamar con o sin lock (RLock)."""
         if self._pf_materialist:
             return True
         sides = self._pf.get("sides") or {}
@@ -1462,7 +1462,7 @@ class HmiState:
             model_qty = int(model.get("qty", model.get("cantidad", 1)))
             use_qty = int(qty) if qty is not None and qty >= 1 else model_qty
             self._progress = 0
-        # Start produce: salir de Materialist (HMI + PF) en vez de quedarse bloqueado.
+        # Start produce: salir de Materialista (HMI + PF) en vez de quedarse bloqueado.
         if self._cycle.snapshot().get("materialist") or self.pf_is_materialist():
             off = self.cmd_cycle_materialist(False)
             if not off.get("ok"):
@@ -1473,7 +1473,7 @@ class HmiState:
         res = self._cycle.request_start(mm, use_qty, rpm)
         if not res.get("ok"):
             err = str(res.get("error") or "Start rechazado")
-            if "Materialist" in err:
+            if "Materialista" in err:
                 with self._lock:
                     self._banner = {"text": err, "kind": "error"}
                     _append_log(self._main_log, f"Start rechazado: {err}")
@@ -1497,7 +1497,7 @@ class HmiState:
         if snap.get("materialist"):
             return {
                 "ok": False,
-                "error": "Desactiva el modo Materialist para reanudar",
+                "error": "Desactiva el modo Materialista para reanudar",
             }
         if snap.get("paused"):
             if self._pf_client.connected:
@@ -1767,7 +1767,7 @@ class HmiState:
             and str(entry.get("code")) == "E050"
             and self._cycle.is_e050_materialist_path()
         ):
-            # Latch ya liberado para Materialist; el sensor PLC sigue activo.
+            # Latch ya liberado para Materialista; el sensor PLC sigue activo.
             return True
 
         result = self._error_policy.set_error(code_or_byte)
@@ -1883,7 +1883,7 @@ class HmiState:
         self._notify()
 
     def clear_e050_latch_for_materialist(self) -> bool:
-        """Limpia solo el latch HMI de E050 para la ruta especial Materialist."""
+        """Limpia solo el latch HMI de E050 para la ruta especial Materialista."""
         latch = self._error_policy.latch
         if not latch.active:
             return True
@@ -1891,13 +1891,13 @@ class HmiState:
             return False
         old = self._error_policy.clear()
         self._cycle.clear_fault_mirror()
-        self._set_banner("E050 → Materialist", "ok")
-        _append_log(self._main_log, f"E050: latch liberado para Materialist · {old.ui_text}")
+        self._set_banner("E050 → Materialista", "ok")
+        _append_log(self._main_log, f"E050: latch liberado para Materialista · {old.ui_text}")
         self._notify()
         return True
 
     def cmd_cycle_materialist(self, on: bool = True) -> dict:
-        """Materialist (0x049) → Andon + PF Materialista; apaga In process.
+        """Materialista (0x049) → Andon + PF Materialista; apaga In process.
 
         El flag HMI solo queda ON si el PreFeeder aceptó 0x3F (HTML local idleMode).
         OFF: si no hay enlace PF, igual se sale del interlock HMI.
@@ -1905,7 +1905,7 @@ class HmiState:
         """
         if on and self._cycle.is_active() and not self._cycle.is_e050_materialist_wait():
             self._cycle.hold_lot_and_restart_piece(
-                "Materialist con lote vivo — Pause (progreso conservado)"
+                "Materialista con lote vivo — Pause (progreso conservado)"
             )
         pf_ok = self._manual_pf(lambda: self._pf_client.cmd_materialist(bool(on)))
         if on and pf_ok:
@@ -1914,7 +1914,7 @@ class HmiState:
             with self._lock:
                 err = str(
                     (self._pf.get("status") or {}).get("text")
-                    or "Materialist no enviado al PreFeeder"
+                    or "Materialista no enviado al PreFeeder"
                 )
             return {"ok": False, "error": err}
         res = self._cycle.set_materialist(on)
@@ -1933,7 +1933,7 @@ class HmiState:
                     runtime["refillServo"] = False
                     runtime["refillFeeder"] = False
                     self._pf_refill_bump_side(sk)
-            if not on and "Materialist" in str(self._banner.get("text") or ""):
+            if not on and "Materialista" in str(self._banner.get("text") or ""):
                 self._banner = {"text": "Listo.", "kind": "ok"}
         self._notify()
         return res
@@ -2280,7 +2280,7 @@ class HmiState:
             (self._pf.get("sides") or {}).get(side_u, {}).get("idleMode")
         )
         if not self._pf_materialist and not side_idle:
-            return {"ok": False, "error": "Refill solo en Materialist"}
+            return {"ok": False, "error": "Refill solo en Materialista"}
         # Serializar ON/OFF del mismo lado: un ON tardío no debe rearmar tras OFF.
         with self._pf_refill_lock:
             ok = self._manual_pf(
@@ -2727,7 +2727,7 @@ class HmiState:
     def _work_blocked_error(self) -> str | None:
         """Motivo para rechazar Start/Resume. Latch EXXX o fallo PLC.
 
-        Purge / Home / Materialist no usan esta puerta.
+        Purge / Home / Materialista no usan esta puerta.
         """
         latch = self._error_policy.latch
         if latch.active:
@@ -2766,7 +2766,7 @@ class HmiState:
 
     def _pf_cached_has_fault(self) -> bool:
         """Fallo PF del lote (EXXX / sensor). 0x3C, PF-007 y lado no alimentado no cuentan."""
-        # Materialist: el esclavo ignora manguera/sensores; no re-pintar E056/E062.
+        # Materialista: el esclavo ignora manguera/sensores; no re-pintar E056/E062.
         if self._pf_materialist_now():
             return False
         if self._pf_is_operator_stop_only():
@@ -4062,7 +4062,7 @@ class HmiState:
                     if ok:
                         if byte_code == PF_CMD_RESET:
                             self._pf_clear_fault_cache()
-                        self._set_pf_status(detail or "Comando PreFeeder OK", "ok")
+                        self._set_pf_status(detail or "PreFeeder OK", "ok")
                     else:
                         text = detail or "Comando rechazado"
                         _append_log(self._pf_log, text)

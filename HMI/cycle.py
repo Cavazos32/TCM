@@ -548,7 +548,7 @@ class CycleRunner:
         self._pending_lot_decision = False
         self._recovery_confirm = threading.Event()
         self._recovery_reject = threading.Event()
-        # E050 + Materialist: terminar pieza en curso si existe, HOME y Materialist.
+        # E050 + Materialista: terminar pieza en curso si existe, HOME y Materialista.
         self._e050_finish_piece = False
         self._e050_materialist_requested = False
         self._e050_materialist_wait = False
@@ -710,7 +710,7 @@ class CycleRunner:
             return bool(self._e050_materialist_wait)
 
     def is_e050_materialist_path(self) -> bool:
-        """Sí Materialist ya decidido: terminar pieza / HOME / espera OFF.
+        """Sí Materialista ya decidido: terminar pieza / HOME / espera OFF.
 
         El PLC sigue reportando EncoderE mientras el sensor esté activo.
         No re-preguntar ni re-latchear E050 hasta salir de esta ruta.
@@ -721,7 +721,7 @@ class CycleRunner:
             )
 
     def _e050_finishing_piece(self) -> bool:
-        """Sí Materialist, aún terminando/parking la pieza (antes del wait)."""
+        """Sí Materialista, aún terminando/parking la pieza (antes del wait)."""
         return bool(
             self._e050_materialist_requested and not self._e050_materialist_wait
         )
@@ -741,7 +741,7 @@ class CycleRunner:
             if self._materialist:
                 return {
                     "ok": False,
-                    "error": "Desactiva el modo Materialist para iniciar el ciclo",
+                    "error": "Desactiva el modo Materialista para iniciar el ciclo",
                 }
             if self._active:
                 return {"ok": False, "error": "Ciclo ocupado (0x045)"}
@@ -754,10 +754,10 @@ class CycleRunner:
         if not self._host.motion_connected() or not self._host.plc_connected():
             return {"ok": False, "error": "Motion/PLC sin enlace"}
         if self._host.pf_is_materialist():
-            self._set_state(TX_MATERIALIST, "PreFeeder Materialist")
+            self._set_state(TX_MATERIALIST, "PreFeeder Materialista")
             return {
                 "ok": False,
-                "error": "Desactiva el modo Materialist para iniciar el ciclo",
+                "error": "Desactiva el modo Materialista para iniciar el ciclo",
             }
         self.reload_config()
         order_qty = int(qty)
@@ -888,7 +888,7 @@ class CycleRunner:
         if self._materialist:
             return {
                 "ok": False,
-                "error": "Desactiva el modo Materialist para reanudar",
+                "error": "Desactiva el modo Materialista para reanudar",
             }
         if not self._pause.is_set():
             return {"ok": False, "error": "Ciclo no está en Pause"}
@@ -909,7 +909,7 @@ class CycleRunner:
     def request_abort_decision(self) -> bool:
         """Tras Reset válido con lote vivo: primero purgar, luego Abortar/Continuar.
 
-        No pisa prompts de recovery en curso (E050 Materialist, review, purga).
+        No pisa prompts de recovery en curso (E050 Materialista, review, purga).
         """
         if not self.is_active() or not self._pause.is_set():
             return False
@@ -988,7 +988,7 @@ class CycleRunner:
                 self._e050_finish_piece = False
                 self._recovery_after_error = False
                 self._recovery = self._e050_normal_recovery
-                self._host.cycle_log("E050: NO Materialist → recuperación normal del error")
+                self._host.cycle_log("E050: NO Materialista → recuperación normal del error")
                 self.apply_error_policy(self._fault, self._e050_normal_recovery)
                 self._host.cycle_notify()
                 return {"ok": True, "materialist": False, "normalRecovery": True}
@@ -1008,7 +1008,7 @@ class CycleRunner:
                 self._e050_finish_piece = False
                 self._recovery_prompt = "e050_materialist"
                 self._recovery_awaiting = True
-                return {"ok": False, "error": "No se pudo liberar E050 para iniciar Materialist"}
+                return {"ok": False, "error": "No se pudo liberar E050 para iniciar Materialista"}
             # clear_fault_mirror no debe borrar la ruta E050 ya decidida.
             self._recovery = "e050_materialist"
             if self._e050_finish_piece:
@@ -1017,7 +1017,7 @@ class CycleRunner:
             with self._lock:
                 self._sync_pause_exclusion_locked(time.monotonic())
             self._leave_pause_andon()
-            self._host.cycle_log("E050: SÍ Materialist → " + ("terminar pieza actual y después HOME" if self._e050_finish_piece else "ir a HOME"))
+            self._host.cycle_log("E050: SÍ Materialista → " + ("terminar pieza actual y después HOME" if self._e050_finish_piece else "ir a HOME"))
             self._host.cycle_notify()
             return {"ok": True, "materialist": True, "finishingPiece": bool(self._e050_finish_piece)}
         if ok:
@@ -1354,17 +1354,17 @@ class CycleRunner:
         self._busy_mode = False
         if self._materialist:
             self._set_state(TX_MATERIALIST)
-            self._host.cycle_log("Cycle Materialist ON (0x049)")
+            self._host.cycle_log("Cycle Materialista ON (0x049)")
         elif self.is_active() and self._pause.is_set():
             if self._fault:
                 self._set_state(TX_ERROR)
                 self._pf_idle_for_hold("Error")
             else:
                 self._enter_pause_andon()
-            self._host.cycle_log("Cycle Materialist OFF → Pause (lote vivo)")
+            self._host.cycle_log("Cycle Materialista OFF → Pause (lote vivo)")
         else:
             self._set_state(TX_BUSY if self.is_active() else TX_IDLE)
-            self._host.cycle_log("Cycle Materialist OFF → " + ("Busy" if self.is_active() else "Idle"))
+            self._host.cycle_log("Cycle Materialista OFF → " + ("Busy" if self.is_active() else "Idle"))
         return {"ok": True, "materialist": self._materialist, "busy": False}
 
     def set_busy(self, on: bool) -> dict[str, Any]:
@@ -1385,7 +1385,7 @@ class CycleRunner:
 
     def set_step_by_step(self, on: bool) -> dict[str, Any]:
         if on and self._materialist:
-            return {"ok": False, "error": "No paso a paso en Materialist (0x049)"}
+            return {"ok": False, "error": "No paso a paso en Materialista (0x049)"}
         if on and self.is_active():
             return {"ok": False, "error": "No cambiar paso a paso con ciclo activo"}
         self._step_by_step = on
@@ -1556,7 +1556,7 @@ class CycleRunner:
         while True:
             if self._should_abort():
                 return False
-            # Home / Purge / Materialist con lote vivo: volver al bucle de piezas.
+            # Home / Purge / Materialista con lote vivo: volver al bucle de piezas.
             if self._restart_piece or self._lot_purge_request is not None:
                 return True
             if not self._pause.is_set():
@@ -1668,7 +1668,7 @@ class CycleRunner:
         return self._recovery_continue_cycle()
 
     def _run_e050_materialist_recovery(self) -> bool:
-        """E050 especial: HOME → Materialist ON → esperar Materialist OFF."""
+        """E050 especial: HOME → Materialista ON → esperar Materialista OFF."""
         if self._should_abort():
             return False
         self._release_e050_finish_pause()
@@ -1686,17 +1686,17 @@ class CycleRunner:
         with self._lock:
             self._e050_materialist_wait = True
             self._recovery_prompt = "e050_materialist_wait"
-        self._host.cycle_log("E050: HOME OK → activar Materialist")
+        self._host.cycle_log("E050: HOME OK → activar Materialista")
         self._host.cycle_notify()
         res = self._host.cmd_cycle_materialist(True)
         if not res.get("ok"):
             with self._lock:
                 self._e050_materialist_wait = False
                 self._recovery_prompt = ""
-            self._raise_fault(str(res.get("error") or "Materialist rechazado"))
+            self._raise_fault(str(res.get("error") or "Materialista rechazado"))
             self._host.cycle_notify()
             return False
-        self._host.cycle_log("E050: Materialist activo — esperar que el operador lo apague")
+        self._host.cycle_log("E050: Materialista activo — esperar que el operador lo apague")
         self._host.cycle_notify()
         while True:
             if self._should_abort():
@@ -1716,7 +1716,7 @@ class CycleRunner:
             self._e050_finish_piece = False
             self._recovery_after_error = False
             self._recovery = ""
-        self._host.cycle_log("E050: Materialist OFF → continuar lote")
+        self._host.cycle_log("E050: Materialista OFF → continuar lote")
         self._host.cycle_notify()
         return True
 
@@ -1793,7 +1793,7 @@ class CycleRunner:
         ui: str,
         recovery: str = "recovery",
     ) -> dict[str, Any]:
-        """E050 durante lote: primero pregunta si requiere Materialist."""
+        """E050 durante lote: primero pregunta si requiere Materialista."""
         if self._e050_materialist_requested or self._e050_materialist_wait:
             return {"ok": True, "action": "e050_path", "e050": True}
         if self._recovery_awaiting and self._recovery_prompt == "e050_materialist":
@@ -1821,7 +1821,7 @@ class CycleRunner:
         if not self.is_active():
             self._last_ok = False
         self._set_state(TX_ERROR, ui)
-        self._host.cycle_log("E050: Pause — ¿Requiere Materialist?")
+        self._host.cycle_log("E050: Pause — ¿Requiere Materialista?")
         self._host.cycle_notify()
         return {"ok": True, "action": "pause", "e050": True}
 
@@ -3727,7 +3727,7 @@ class CycleRunner:
     def _run_feed_after_home(self, rep: int, qty: int) -> bool:
         """Feed de la *siguiente* pieza. Exige ASDA en 0. Tfeed ya fue (post-corte)."""
         if self._e050_materialist_requested:
-            self._host.cycle_log("Feed post-HOME: omitido (ruta E050 Materialist)")
+            self._host.cycle_log("Feed post-HOME: omitido (ruta E050 Materialista)")
             return True
         if self._tray_full_after(rep, qty):
             self._host.cycle_log("Feed post-HOME: omitido (tray lleno — espera vaciado)")

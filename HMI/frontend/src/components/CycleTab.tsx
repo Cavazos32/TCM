@@ -246,19 +246,21 @@ export const CycleTab: React.FC<CycleTabProps> = ({
   const nextFeedLabel = skipCut
     ? t('btn_refill_confirm_continue')
     : t('btn_refill_confirm_next_cut');
+  // Refill manual: solo banner sky. Amber = recovery/E050/tray.
   const showRecoveryActions =
-    recoveryStage === 'await_feed' ||
-    recoveryStage === 'after_feed' ||
-    recoveryStage === 'after_cut' ||
-    (e050Ask && !!machineState.recoveryAwaitingConfirm) ||
-    recoveryStage === 'e050_finishing' ||
-    recoveryStage === 'e050_materialist_wait' ||
-    recoveryStage === 'abort_decide' ||
-    recoveryStage === 'pre_purge_decide' ||
-    recoveryStage === 'review_piece' ||
-    recoveryStage === 'purge_decide' ||
-    recoveryStage === 'continue_cycle' ||
-    trayFull;
+    !showManualRefill &&
+    (recoveryStage === 'await_feed' ||
+      recoveryStage === 'after_feed' ||
+      recoveryStage === 'after_cut' ||
+      (e050Ask && !!machineState.recoveryAwaitingConfirm) ||
+      recoveryStage === 'e050_finishing' ||
+      recoveryStage === 'e050_materialist_wait' ||
+      recoveryStage === 'abort_decide' ||
+      recoveryStage === 'pre_purge_decide' ||
+      recoveryStage === 'review_piece' ||
+      recoveryStage === 'purge_decide' ||
+      recoveryStage === 'continue_cycle' ||
+      trayFull);
 
   const [config, setConfig] = useState<CycleConfig>(cycleConfig || DEFAULT_CYCLE_CONFIG);
   const [configDirty, setConfigDirty] = useState(false);

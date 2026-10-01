@@ -1,10 +1,8 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { translations, Language, TranslationKey } from '../i18n/translations';
+import { translations, TranslationKey } from '../i18n/translations';
 import { unlockDebugMode as apiUnlockDebug } from '../api/hmiApi';
 
 interface AppContextType {
-  language: Language;
-  setLanguage: (lang: Language) => void;
   isDarkMode: boolean;
   setIsDarkMode: (dark: boolean) => void;
   toggleDarkMode: () => void;
@@ -23,16 +21,6 @@ const AppContext = createContext<AppContextType | undefined>(undefined);
 const DEBUG_MODE_KEY = 'tcm_hmi_debug_mode';
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [language, setLanguageState] = useState<Language>(() => {
-    try {
-      const saved = localStorage.getItem('tcm_hmi_lang');
-      if (saved === 'en' || saved === 'es') return saved;
-    } catch {
-      // fallback
-    }
-    return 'es';
-  });
-
   const [isDarkMode, setIsDarkModeState] = useState<boolean>(() => {
     try {
       const saved = localStorage.getItem('tcm_hmi_theme');
@@ -68,11 +56,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   useEffect(() => {
     try {
-      localStorage.setItem('tcm_hmi_lang', language);
+      localStorage.removeItem('tcm_hmi_lang');
     } catch {
       // ignore
     }
-  }, [language]);
+  }, []);
 
   useEffect(() => {
     try {
@@ -106,10 +94,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // ignore
     }
   }, [debugMode]);
-
-  const setLanguage = (lang: Language) => {
-    setLanguageState(lang);
-  };
 
   const setIsDarkMode = (dark: boolean) => {
     setIsDarkModeState(dark);
@@ -146,7 +130,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const t = (key: TranslationKey, params?: Record<string, string | number>): string => {
-    let text = translations[language][key] || translations['es'][key] || key;
+    let text = translations.es[key] || key;
     if (params) {
       Object.entries(params).forEach(([k, v]) => {
         text = text.replace(new RegExp(`\\{${k}\\}`, 'g'), String(v));
@@ -158,8 +142,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   return (
     <AppContext.Provider
       value={{
-        language,
-        setLanguage,
         isDarkMode,
         setIsDarkMode,
         toggleDarkMode,

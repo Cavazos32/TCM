@@ -1178,7 +1178,7 @@ static bool pfTcpDoByte(uint8_t cmdByte)
       const String v = pfPeerOnOffVal(
           pfTcpCmdValue.length() ? pfTcpCmdValue : String("1"));
       ok = pfDispatchCmd("materialistaCall", v, '-');
-      if (!ok) err = "Materialist no enviado a L/R";
+      if (!ok) err = "Materialista no enviado a L/R";
       break;
     }
     case PF_CMD_TRIGGER_R:

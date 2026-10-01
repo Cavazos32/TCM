@@ -3,7 +3,6 @@ import {
   X,
   Sun,
   Moon,
-  Globe,
   Sliders,
   Network,
   ShieldCheck,
@@ -53,8 +52,6 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
   onDebugModeDisable,
 }) => {
   const {
-    language,
-    setLanguage,
     isDarkMode,
     setIsDarkMode,
     showLogs,
@@ -176,31 +173,6 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
                   <span className="text-xs font-bold">{t('theme_dark')}</span>
                 </div>
                 {isDarkMode && <Check className="h-4 w-4 text-emerald-400" />}
-              </button>
-            </div>
-          </div>
-
-          <hr className="border-slate-200 dark:border-slate-800" />
-
-          <div className="space-y-3">
-            <div className="flex items-center gap-2">
-              <Globe className="h-4 w-4 text-sky-500" />
-              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
-                {t('language_title')}
-              </h3>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <button
-                onClick={() => setLanguage('es')}
-                className={`rounded-xl border p-3 text-xs font-bold ${language === 'es' ? 'border-slate-900 dark:border-emerald-500 bg-slate-50 dark:bg-slate-800' : 'border-slate-200 dark:border-slate-800'}`}
-              >
-                Español
-              </button>
-              <button
-                onClick={() => setLanguage('en')}
-                className={`rounded-xl border p-3 text-xs font-bold ${language === 'en' ? 'border-slate-900 dark:border-emerald-500 bg-slate-50 dark:bg-slate-800' : 'border-slate-200 dark:border-slate-800'}`}
-              >
-                English
               </button>
             </div>
           </div>

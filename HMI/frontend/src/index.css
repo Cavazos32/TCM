@@ -2,8 +2,30 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
-html, body {
+html,
+body,
+#root {
+  height: 100%;
   min-height: 100%;
   margin: 0;
   padding: 0;
+  width: 100%;
+}
+
+html {
+  /* Escala base: tipografía y espaciado rem más legibles en pantalla de planta */
+  font-size: 112.5%; /* 18px si el navegador usa 16px */
+}
+
+body {
+  background-color: #f8fafc; /* slate-50 */
+  overflow-x: hidden;
+}
+
+html.dark body {
+  background-color: #020617; /* slate-950 */
+}
+
+#root {
+  background-color: inherit;
 }

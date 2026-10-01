@@ -235,7 +235,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
         : machineState.statusText || t('state_ready');
 
   const btnBase =
-    'flex items-center justify-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-bold transition shadow-2xs active:scale-95';
+    'flex items-center justify-center gap-2 rounded-lg border px-3.5 py-2.5 text-sm font-bold transition shadow-2xs active:scale-95';
   const btnIdle =
     'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 active:bg-slate-800 active:text-white active:border-slate-800 dark:active:bg-slate-100 dark:active:text-slate-900';
   const btnOn =
@@ -334,27 +334,28 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
     showRecoveryTrack;
   const showMachineResetCoach = showErrorProcess && processStep === 'reset';
   const showMachineResumeCoach = showErrorProcess && processStep === 'resume';
-  const showRecoveryActions =
-    recoveryStage === 'abort_decide' ||
-    recoveryStage === 'pre_purge_decide' ||
-    recoveryStage === 'purge_decide' ||
-    recoveryStage === 'await_feed' ||
-    recoveryStage === 'after_feed' ||
-    recoveryStage === 'after_cut' ||
-    (recoveryStage === 'e050_materialist' &&
-      !!machineState.recoveryAwaitingConfirm) ||
-    recoveryStage === 'e050_finishing' ||
-    recoveryStage === 'e050_materialist_wait' ||
-    recoveryStage === 'review_piece' ||
-    recoveryStage === 'continue_cycle' ||
-    trayFull;
-
+  // Refill manual (sin recovery): solo banner sky. Amber = recovery/E050/tray.
   const showManualRefill =
     !machineState.recoveryAfterError &&
     !machineState.e050Lot &&
     !!machineState.refillActive &&
     !!machineState.refillPrompt &&
     !!onRefillConfirm;
+  const showRecoveryActions =
+    !showManualRefill &&
+    (recoveryStage === 'abort_decide' ||
+      recoveryStage === 'pre_purge_decide' ||
+      recoveryStage === 'purge_decide' ||
+      recoveryStage === 'await_feed' ||
+      recoveryStage === 'after_feed' ||
+      recoveryStage === 'after_cut' ||
+      (recoveryStage === 'e050_materialist' &&
+        !!machineState.recoveryAwaitingConfirm) ||
+      recoveryStage === 'e050_finishing' ||
+      recoveryStage === 'e050_materialist_wait' ||
+      recoveryStage === 'review_piece' ||
+      recoveryStage === 'continue_cycle' ||
+      trayFull);
   const recoveryTitle = trayFull
     ? t('tray_full_title')
     : recoveryStage === 'e050_materialist'
@@ -485,17 +486,17 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
   const jogROn = !!preFeederState.refillR?.material;
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       <div
-        className={`rounded-xl border px-4 py-2.5 shadow-2xs flex flex-wrap items-center justify-between gap-3 transition-colors ${
+        className={`rounded-xl border px-5 py-3.5 shadow-2xs flex flex-wrap items-center justify-between gap-3 transition-colors ${
           hasFault || interlockError
             ? 'border-red-300 dark:border-red-800 bg-red-50/70 dark:bg-red-950/30 text-slate-800 dark:text-slate-200'
             : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200'
         }`}
       >
-        <div className="flex items-center gap-2.5 min-w-0">
+        <div className="flex items-center gap-3 min-w-0">
           <div
-            className={`h-2.5 w-2.5 shrink-0 rounded-full ${
+            className={`h-3 w-3 shrink-0 rounded-full ${
               hasFault || interlockError
                 ? 'bg-red-500'
                 : machineState.isRunning
@@ -508,7 +509,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
             }`}
           />
           <span
-            className={`text-sm font-semibold tracking-tight min-w-0 truncate ${
+            className={`text-base font-semibold tracking-tight min-w-0 truncate ${
               hasFault || interlockError
                 ? 'text-red-700 dark:text-red-300'
                 : 'text-slate-900 dark:text-white'
@@ -522,7 +523,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                 : t('state_ready')}
           </span>
           {hasFault && faultCount >= 1 ? (
-            <span className="rounded border border-red-300 dark:border-red-800 bg-red-100 dark:bg-red-950/60 px-2 py-0.5 font-mono text-[11px] font-semibold text-red-700 dark:text-red-300 shrink-0">
+            <span className="rounded border border-red-300 dark:border-red-800 bg-red-100 dark:bg-red-950/60 px-2.5 py-1 font-mono text-xs font-semibold text-red-700 dark:text-red-300 shrink-0">
               {t(faultCount === 1 ? 'status_error_qty' : 'status_errors_qty', {
                 count: faultCount,
               })}
@@ -531,11 +532,11 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
         </div>
       </div>
 
-      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 shadow-2xs transition-colors">
-        <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2.5">
-          <div className="flex items-center gap-2">
-            <Sliders className="h-4 w-4 text-slate-600 dark:text-slate-400" />
-            <h2 className="text-xs font-bold uppercase tracking-wider text-slate-800 dark:text-slate-200">
+      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 sm:p-6 shadow-2xs transition-colors">
+        <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+          <div className="flex items-center gap-2.5">
+            <Sliders className="h-5 w-5 text-slate-600 dark:text-slate-400" />
+            <h2 className="text-sm font-bold uppercase tracking-wider text-slate-800 dark:text-slate-200">
               {t('machine_control')}
             </h2>
           </div>
@@ -544,22 +545,22 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               <button
                 type="button"
                 onClick={onGotoCycle}
-                className="flex items-center gap-1 rounded bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-2 py-0.5 text-[10px] font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition"
+                className="flex items-center gap-1.5 rounded bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-2.5 py-1 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition"
               >
-                <Settings2 className="h-3 w-3" />
+                <Settings2 className="h-3.5 w-3.5" />
                 {t('btn_goto_cycle')}
               </button>
             )}
-            <span className="rounded bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-2 py-0.5 font-mono text-[10px] text-slate-600 dark:text-slate-400">
+            <span className="rounded bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-2.5 py-1 font-mono text-xs text-slate-600 dark:text-slate-400">
               {t('master_control')}
             </span>
           </div>
         </div>
 
-        <div className="mt-4 space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-start">
-              <div className="space-y-1.5">
-                <label htmlFor="select-modelo" className="text-xs font-semibold text-slate-700 dark:text-slate-300 block">
+        <div className="mt-5 space-y-5">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-5 items-start">
+              <div className="space-y-2">
+                <label htmlFor="select-modelo" className="text-sm font-semibold text-slate-700 dark:text-slate-300 block">
                   {t('model')}
                 </label>
                 <div className="relative">
@@ -568,7 +569,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     value={selectedModelIndex}
                     onChange={(e) => onModelSelect(Number(e.target.value))}
                     disabled={machineState.isRunning}
-                    className="w-full appearance-none rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-900 dark:text-slate-100 shadow-2xs focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-400 disabled:opacity-50"
+                    className="w-full appearance-none rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-3.5 py-2.5 text-sm font-medium text-slate-900 dark:text-slate-100 shadow-2xs focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-400 disabled:opacity-50"
                   >
                     {models.map((m, i) => (
                       <option key={m.name} value={i}>
@@ -579,8 +580,8 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                 </div>
               </div>
 
-              <div className="space-y-1.5">
-                <label htmlFor="input-general-offset" className="text-xs font-semibold text-slate-700 dark:text-slate-300 block">
+              <div className="space-y-2">
+                <label htmlFor="input-general-offset" className="text-sm font-semibold text-slate-700 dark:text-slate-300 block">
                   {t('cfg_cut_offset')}
                 </label>
                 <div className="relative flex items-center gap-1">
@@ -599,14 +600,14 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                         e.currentTarget.blur();
                       }
                     }}
-                    className="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 pl-3 pr-10 py-1.5 text-xs font-mono font-medium text-slate-900 dark:text-slate-100 shadow-2xs focus:border-teal-500 focus:outline-none"
+                    className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 pl-3.5 pr-12 py-2.5 text-sm font-mono font-medium text-slate-900 dark:text-slate-100 shadow-2xs focus:border-teal-500 focus:outline-none"
                   />
-                  <span className="absolute right-3 text-xs font-mono text-slate-400 pointer-events-none">mm</span>
+                  <span className="absolute right-3.5 text-sm font-mono text-slate-400 pointer-events-none">mm</span>
                 </div>
               </div>
 
-              <div className="space-y-1.5">
-                <label htmlFor="input-target-pieces" className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+              <div className="space-y-2">
+                <label htmlFor="input-target-pieces" className="text-sm font-semibold text-slate-700 dark:text-slate-300">
                   {t('target_pieces')}
                 </label>
                 <div className="relative flex items-center">
@@ -618,12 +619,12 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     value={machineState.targetPieces || ''}
                     onChange={(e) => onTargetPiecesChange(Math.max(1, parseInt(e.target.value, 10) || 1))}
                     disabled={machineState.isRunning}
-                    className="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 pl-3 pr-10 py-1.5 text-xs font-mono font-medium text-slate-900 dark:text-slate-100 shadow-2xs focus:border-teal-500 focus:outline-none disabled:opacity-50"
+                    className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 pl-3.5 pr-12 py-2.5 text-sm font-mono font-medium text-slate-900 dark:text-slate-100 shadow-2xs focus:border-teal-500 focus:outline-none disabled:opacity-50"
                   />
-                  <span className="absolute right-3 text-xs font-mono text-slate-400 pointer-events-none">pz</span>
+                  <span className="absolute right-3.5 text-sm font-mono text-slate-400 pointer-events-none">pz</span>
                 </div>
                 {feedSides === 'LR' && (machineState.targetPieces || 0) >= 1 && (
-                  <p className="text-[10px] leading-tight text-slate-400 dark:text-slate-500 pl-0.5">
+                  <p className="text-xs leading-tight text-slate-400 dark:text-slate-500 pl-0.5">
                     {(machineState.targetPieces || 0) % 2 === 0
                       ? t('target_pieces_mirror', {
                           n: Math.floor((machineState.targetPieces || 0) / 2),
@@ -634,17 +635,17 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               </div>
             </div>
 
-            <div className="rounded-lg bg-slate-50 dark:bg-slate-800/60 p-3 border border-slate-200/80 dark:border-slate-800">
-              <div className="mb-2 flex items-center justify-between text-xs font-mono flex-wrap gap-1">
-                <span className="text-slate-700 dark:text-slate-300 flex items-center gap-1.5 font-sans text-xs font-semibold">
-                  <Clock className="h-3.5 w-3.5 text-slate-500" />
+            <div className="rounded-lg bg-slate-50 dark:bg-slate-800/60 p-4 border border-slate-200/80 dark:border-slate-800">
+              <div className="mb-2.5 flex items-center justify-between text-sm font-mono flex-wrap gap-1">
+                <span className="text-slate-700 dark:text-slate-300 flex items-center gap-2 font-sans text-sm font-semibold">
+                  <Clock className="h-4 w-4 text-slate-500" />
                   {machineState.cycleActive ? t('current_cycle_progress') : t('total_production_progress')}
                 </span>
-                <span className="font-bold text-emerald-600 dark:text-emerald-400 text-xs">
+                <span className="font-bold text-emerald-600 dark:text-emerald-400 text-sm">
                   {stepProgress}%
                 </span>
               </div>
-              <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700 p-0.5 mb-2">
+              <div className="h-3.5 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700 p-0.5 mb-2.5">
                 <div
                   className={`h-full rounded-full transition-all duration-300 ${
                     machineState.isRunning
@@ -656,7 +657,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                   style={{ width: `${stepProgress}%` }}
                 />
               </div>
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[10px] font-mono text-slate-600 dark:text-slate-400">
+              <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-xs font-mono text-slate-600 dark:text-slate-400">
                 <span>
                   {t('pieces')}:{' '}
                   <strong className="text-slate-800 dark:text-slate-200">
@@ -708,7 +709,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                         : btnStartIdle
                   }`}
                 >
-                  <Play className="h-3.5 w-3.5 fill-current" />
+                  <Play className="h-4 w-4 fill-current" />
                   <span>{t('btn_start')}</span>
                 </button>
                 <button
@@ -721,7 +722,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     btnFlash.stop ? btnStopOn : btnStopIdle
                   }`}
                 >
-                  <Square className={`h-3.5 w-3.5 fill-current ${btnFlash.stop ? '' : 'text-red-600'}`} />
+                  <Square className={`h-4 w-4 fill-current ${btnFlash.stop ? '' : 'text-red-600'}`} />
                   <span>{t('btn_stop')}</span>
                 </button>
                 <button
@@ -739,7 +740,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     showMachineResetCoach || btnFlash.reset ? btnResetOn : btnResetIdle
                   }`}
                 >
-                  <RotateCcw className="h-3.5 w-3.5" />
+                  <RotateCcw className="h-4 w-4" />
                   <span>{t('btn_reset_cycle')}</span>
                 </button>
                 <button
@@ -754,7 +755,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                         : btnIdle
                   }`}
                 >
-                  <Pause className="h-3.5 w-3.5" />
+                  <Pause className="h-4 w-4" />
                   <span>{t('btn_pause')}</span>
                 </button>
                 <button
@@ -772,7 +773,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     showMachineResumeCoach ? btnNeedGo : btnIdle
                   }`}
                 >
-                  <RotateCcw className="h-3.5 w-3.5 group-hover:rotate-45 transition-transform" />
+                  <RotateCcw className="h-4 w-4 group-hover:rotate-45 transition-transform" />
                   <span>
                     {machineState.stepByStep && machineState.isPaused
                       ? t('btn_next_step')
@@ -796,7 +797,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                         : btnPurgeIdle
                   }`}
                 >
-                  <Droplets className="h-3.5 w-3.5" />
+                  <Droplets className="h-4 w-4" />
                   <span>{t('btn_refill')}</span>
                 </button>
                 <button
@@ -823,7 +824,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                         : btnHomeIdle
                   }`}
                 >
-                  <Home className="h-3.5 w-3.5" />
+                  <Home className="h-4 w-4" />
                   <span>{t('btn_machine_home')}</span>
                 </button>
                 <button
@@ -844,30 +845,30 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                         : btnMatIdle
                   }`}
                 >
-                  <Package className="h-3.5 w-3.5" />
+                  <Package className="h-4 w-4" />
                   <span>{t('btn_materialist_cycle')}</span>
                 </button>
             </div>
 
             <div className="space-y-3">
               <div className="flex items-center gap-2">
-                <MessageSquare className="h-3.5 w-3.5 text-slate-500 dark:text-slate-400" />
-                <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                <MessageSquare className="h-4 w-4 text-slate-500 dark:text-slate-400" />
+                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
                   {t('process_assist_title')}
                 </h3>
               </div>
             {!showRecoveryActions && !showManualRefill && (
-              <p className="text-xs text-slate-500 dark:text-slate-400">
+              <p className="text-sm text-slate-500 dark:text-slate-400">
                 {t('process_assist_idle')}
               </p>
             )}
             {showRecoveryActions && (
-              <div className="flex flex-wrap items-center gap-3 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/50 px-4 py-3">
+              <div className="flex flex-wrap items-center gap-3 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/50 px-4 py-3.5">
                 <div className="min-w-0 flex-1">
-                  <p className="text-xs font-bold text-amber-900 dark:text-amber-100">
+                  <p className="text-sm font-bold text-amber-900 dark:text-amber-100">
                     {recoveryTitle}
                   </p>
-                  <p className="text-[11px] text-amber-800/80 dark:text-amber-200/80 mt-0.5">
+                  <p className="text-xs text-amber-800/80 dark:text-amber-200/80 mt-0.5">
                     {recoveryHint}
                   </p>
                 </div>
@@ -1112,29 +1113,29 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
           </div>
         </div>
 
-      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 shadow-2xs transition-colors">
-        <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2.5 gap-2 flex-wrap">
-          <div className="flex items-center gap-2">
+      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 sm:p-6 shadow-2xs transition-colors">
+        <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3 gap-2 flex-wrap">
+          <div className="flex items-center gap-2.5">
             <Layers
-              className={`h-4 w-4 ${
+              className={`h-5 w-5 ${
                 modulePanelError
                   ? 'text-red-600 dark:text-red-400'
                   : 'text-slate-500 dark:text-slate-400'
               }`}
             />
-            <h2 className="text-xs font-bold uppercase tracking-wider text-slate-800 dark:text-slate-200">
+            <h2 className="text-sm font-bold uppercase tracking-wider text-slate-800 dark:text-slate-200">
               {t('tab_prefeeder')}
             </h2>
           </div>
         </div>
 
         {hasFault && modKind === 'other' && machineState.fault ? (
-          <p className="mt-3 text-xs text-red-700 dark:text-red-300">
+          <p className="mt-3 text-sm text-red-700 dark:text-red-300">
             {machineState.fault} — {t('module_recovery_use_machine')}
           </p>
         ) : null}
         {showPfCoach ? (
-          <p className="mt-3 text-xs text-amber-800 dark:text-amber-200">
+          <p className="mt-3 text-sm text-amber-800 dark:text-amber-200">
             {resumeEnabled
               ? t('pf_recover_hint_jog_resume')
               : t('pf_recover_hint_jog')}
@@ -1143,17 +1144,17 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
 
         <div className="mt-4 grid gap-3 grid-cols-1">
           <div
-            className={`rounded-lg border p-3 transition-colors ${
+            className={`rounded-lg border p-4 transition-colors ${
               pfHasError || pfLatched
                 ? 'border-red-300 dark:border-red-800 bg-red-50/60 dark:bg-red-950/30'
                 : 'border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-800/40'
             }`}
           >
-            <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-2.5 text-slate-800 dark:text-slate-200 shadow-2xs flex flex-wrap items-center justify-between gap-3 transition-colors">
+            <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-3 text-slate-800 dark:text-slate-200 shadow-2xs flex flex-wrap items-center justify-between gap-3 transition-colors">
               <div className="flex items-center gap-3 min-w-0">
                 <div className="flex items-center gap-2 min-w-0">
                   <span
-                    className={`h-2.5 w-2.5 rounded-full shrink-0 ${
+                    className={`h-3 w-3 rounded-full shrink-0 ${
                       !pfConnected || pfHasError || pfLatched
                         ? 'bg-red-500'
                         : pfMode === 'materialist'
@@ -1164,7 +1165,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     }`}
                   />
                   <span
-                    className={`text-sm font-semibold tracking-tight truncate ${
+                    className={`text-base font-semibold tracking-tight truncate ${
                       pfHasError || pfLatched
                         ? 'text-red-700 dark:text-red-300'
                         : 'text-slate-900 dark:text-white'
@@ -1176,7 +1177,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
 
                 <span className="text-slate-300 dark:text-slate-700 hidden sm:inline">|</span>
 
-                <div className="flex items-center gap-1.5 font-mono text-xs text-slate-600 dark:text-slate-400">
+                <div className="flex items-center gap-1.5 font-mono text-sm text-slate-600 dark:text-slate-400">
                   <span className="text-slate-400 dark:text-slate-500">{t('link_label')}:</span>
                   <span className={`font-semibold ${pfConnected ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
                     {pfConnected ? t('node_connected') : t('node_disconnected')}
@@ -1185,7 +1186,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               </div>
 
               <div className="flex items-center gap-3">
-                <div className="flex items-center gap-1.5 text-xs font-mono">
+                <div className="flex items-center gap-1.5 text-sm font-mono">
                   <span className="text-slate-500 dark:text-slate-400">{t('feed_status')}:</span>
                   <span
                     className={`font-bold px-2 py-0.5 rounded-md border text-xs ${
@@ -1212,7 +1213,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                   preFeederState.isRunning ? btnOn : btnIdle
                 }`}
               >
-                <Play className="h-3.5 w-3.5 fill-current" />
+                <Play className="h-4 w-4 fill-current" />
                 <span>{t('btn_start')}</span>
               </button>
               <button
@@ -1229,7 +1230,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                   jogLOn ? btnMatOn : btnMatIdle
                 }`}
               >
-                <Zap className="h-3.5 w-3.5" />
+                <Zap className="h-4 w-4" />
                 <span>{t('btn_jog')} L</span>
               </button>
               <button
@@ -1246,7 +1247,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                   jogROn ? btnMatOn : btnMatIdle
                 }`}
               >
-                <Zap className="h-3.5 w-3.5" />
+                <Zap className="h-4 w-4" />
                 <span>{t('btn_jog')} R</span>
               </button>
             </div>

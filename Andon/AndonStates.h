@@ -66,7 +66,7 @@ static inline const char* andonRxName(uint8_t b) {
     case ANDON_RX_ERROR:       return "ErrorState";
     case ANDON_RX_FINISH:      return "FinishParts";
     case ANDON_RX_PAUSE:       return "Pause";
-    case ANDON_RX_MATERIALIST: return "Materialist";
+    case ANDON_RX_MATERIALIST: return "Materialista";
     default:                   return "unknown";
   }
 }

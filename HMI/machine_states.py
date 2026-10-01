@@ -18,8 +18,8 @@ MACH_IDLE = 0x44        # IdleState · Green
 MACH_BUSY = 0x45        # BusyState · Green (máquina trabajando)
 MACH_ERROR = 0x46       # ErrorState · Red + Buzzer (máquina en error)
 MACH_FINISH = 0x47      # FinishParts / LotCompleate · seq R→Y→G + Buzzer (temporal)
-MACH_PAUSE = 0x48       # Pause · Yellow (sin buzzer; distinto de Materialist)
-MACH_MATERIALIST = 0x49 # Materialist · Yellow + Buzzer
+MACH_PAUSE = 0x48       # Pause · Yellow (sin buzzer; distinto de Materialista)
+MACH_MATERIALIST = 0x49 # Materialista · Yellow + Buzzer
 MACH_RETURN = MACH_PAUSE  # alias histórico ReturnStop
 
 # Andon propio: TX only (E064) — pin FRL → torreta + aviso HMI
@@ -62,7 +62,7 @@ STATE_LABELS = {
     TX_STOP: "Máquina — Stop (0x042)",
     TX_FINISH: "Máquina — FinishParts (0x047)",
     TX_PAUSE: "Máquina — Pause (0x048)",
-    TX_MATERIALIST: "Máquina — Materialist (0x049)",
+    TX_MATERIALIST: "Máquina — Materialista (0x049)",
 }
 
 MACHINE_STATE_BYTES = frozenset(STATE_LABELS.keys())
