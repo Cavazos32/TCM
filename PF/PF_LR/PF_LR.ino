@@ -261,23 +261,42 @@ static uint16_t servoMotionPwmUs()
   return servoActivePwmUs;
 }
 
+// Remux completo tras RMT: Detach → GPIO bajo → Attach. Sin el pinMode
+// intermedio ledcAttachChannel puede quedar sin pulso real en GPIO26.
+static void servoRemuxWriteUs(uint16_t us)
+{
+  us = constrain(us, SERVO_PWM_MIN_US, SERVO_PWM_MAX_US);
+  const uint32_t duty = servoUsToDuty(us);
+  servoPinDirty = false;
+  servoLastOutputUs = us;
+
+  ledcDetach(PIN_SERVO_PWM);
+  pinMode(PIN_SERVO_PWM, OUTPUT);
+  digitalWrite(PIN_SERVO_PWM, LOW);
+  ledcAttachChannel(PIN_SERVO_PWM, 50, SERVO_LEDC_BITS, SERVO_LEDC_CHANNEL);
+  ledcWrite(PIN_SERVO_PWM, duty);
+  ledcWrite(PIN_SERVO_PWM, duty);
+}
+
 static void servoWriteUsForced(uint16_t us)
 {
   us = constrain(us, SERVO_PWM_MIN_US, SERVO_PWM_MAX_US);
   const uint32_t duty = servoUsToDuty(us);
   const bool remux = servoPinDirty;
-  servoPinDirty = false;
-  servoLastOutputUs = us;
 
   // Remux tras RMT; sin dirty no reescribir el mismo duty (glitch RC).
   if (!remux && ledcRead(PIN_SERVO_PWM) == duty)
+  {
+    servoLastOutputUs = us;
     return;
+  }
   if (!remux && ledcWrite(PIN_SERVO_PWM, duty))
+  {
+    servoLastOutputUs = us;
     return;
+  }
 
-  ledcDetach(PIN_SERVO_PWM);
-  ledcAttachChannel(PIN_SERVO_PWM, 50, SERVO_LEDC_BITS, SERVO_LEDC_CHANNEL);
-  ledcWrite(PIN_SERVO_PWM, duty);
+  servoRemuxWriteUs(us);
 }
 
 // Neutro 1500. Remux solo si dirty o force con cache mentiroso.
@@ -294,22 +313,17 @@ static void servoHardStopNeutral(bool force)
       && (uint32_t)(now - lastHardMs) < SERVO_STOP_REASSERT_MS)
     return;
 
-  const uint32_t duty = servoUsToDuty(SERVO_PWM_NEUTRAL_US);
   servoPinDirty = false;
   servoLastOutputUs = SERVO_PWM_NEUTRAL_US;
   servoRunning = false;
 
   if (remux)
   {
-    ledcDetach(PIN_SERVO_PWM);
-    ledcAttachChannel(PIN_SERVO_PWM, 50, SERVO_LEDC_BITS, SERVO_LEDC_CHANNEL);
-    ledcWrite(PIN_SERVO_PWM, duty);
+    servoRemuxWriteUs(SERVO_PWM_NEUTRAL_US);
   }
-  else if (!ledcWrite(PIN_SERVO_PWM, duty))
+  else if (!ledcWrite(PIN_SERVO_PWM, servoUsToDuty(SERVO_PWM_NEUTRAL_US)))
   {
-    ledcDetach(PIN_SERVO_PWM);
-    ledcAttachChannel(PIN_SERVO_PWM, 50, SERVO_LEDC_BITS, SERVO_LEDC_CHANNEL);
-    ledcWrite(PIN_SERVO_PWM, duty);
+    servoRemuxWriteUs(SERVO_PWM_NEUTRAL_US);
   }
   lastHardMs = now;
 }
@@ -431,9 +445,10 @@ static void serviceServoPwm()
 
 static void setupRotationServo()
 {
-  ledcAttachChannel(PIN_SERVO_PWM, 50, SERVO_LEDC_BITS, SERVO_LEDC_CHANNEL);
+  servoPinDirty = true;
   servoLastOutputUs = 0;
-  servoStop();
+  servoRemuxWriteUs(SERVO_PWM_NEUTRAL_US);
+  servoRunning = false;
 }
 
 static bool bufferFullRaw()

@@ -180,6 +180,26 @@ static inline void pfErrorFormatUiFromFault(char* buf, size_t n, SystemFault fau
   pfErrorFormatUi(buf, n, pfErrorIdFromFault(fault), side);
 }
 
+/** Nivel UI Master: 1=aviso, 2=PAUSE, 3=safety (endstop / Buffer Max). */
+static inline uint8_t pfErrorLevel(PfErrorId id)
+{
+  switch (id) {
+    case PF_ERR_ENDSTOP: return 3;
+    case PF_ERR_NONE:    return 0;
+    default:             return 2;
+  }
+}
+
+static inline uint8_t pfErrorLevelFromFault(SystemFault fault)
+{
+  return pfErrorLevel(pfErrorIdFromFault(fault));
+}
+
+static inline uint8_t pfErrorLevelFromWireCode(uint8_t code)
+{
+  return pfErrorLevel(pfErrorIdFromWireCode(code));
+}
+
 static inline AutoState pfAutoPhaseFromFault(SystemFault fault)
 {
   const PfErrorEntry* e = pfErrorFindByFault(fault);

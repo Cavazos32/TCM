@@ -269,8 +269,8 @@ static void recomputeMasterError()
     next.ui = String(uiBuf);
     if (!next.tag.length())
       next.tag = String(pfErrorTagFromWireCode(next.code));
-    const PfErrorEntry* e = pfErrorFindById(pfErrorIdFromWireCode(next.code));
-    next.level = e ? e->level : 2;
+    next.level = pfErrorLevelFromWireCode(next.code);
+    if (!next.level) next.level = 2;
   }
   else if (sideR.error)
   {
@@ -284,8 +284,8 @@ static void recomputeMasterError()
     next.ui = String(uiBuf);
     if (!next.tag.length())
       next.tag = String(pfErrorTagFromWireCode(next.code));
-    const PfErrorEntry* e = pfErrorFindById(pfErrorIdFromWireCode(next.code));
-    next.level = e ? e->level : 2;
+    next.level = pfErrorLevelFromWireCode(next.code);
+    if (!next.level) next.level = 2;
   }
 
   applyMasterErrorVar(next);
