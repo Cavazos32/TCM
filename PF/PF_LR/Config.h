@@ -46,7 +46,7 @@ constexpr int PIN_DEREELER_MOSFET        = 33;
 constexpr uint8_t DEREELER_DIR_CW_LEVEL  = LOW;
 constexpr uint8_t DEREELER_DIR_CCW_LEVEL = HIGH;
 constexpr int PIN_FEEDER_PUL             = 18;  // DIR/EN fijos en driver
-constexpr uint8_t PIN_SERVO_PWM          = 26;
+constexpr uint8_t PIN_SERVO_PWM          = 15;
 
 // ====================== SERVO ======================
 constexpr uint16_t SERVO_PWM_MIN_US       = 500;

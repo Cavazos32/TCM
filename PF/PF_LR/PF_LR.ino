@@ -116,6 +116,13 @@ static uint32_t      bufferFullHighAccumMs  = 0;
 static uint32_t      bufferFullLowAccumMs   = 0;
 static uint32_t      bufferFullFilterLastMs = 0;
 
+// Diagnóstico: latencia BUFFER_FULL RAW → force stop → PWM 1500 (solo flanco).
+static bool     bufferFullRawPrev = false;
+static uint32_t bufferFullDetectedMs = 0;
+static uint32_t servoForceStopMs = 0;
+static bool     waitingServoStopMeasurement = false;
+static bool     servoForceStopLogged = false;
+
 // ====================== AUTO / FAULTS ======================
 bool      autoEnabled    = true;
 AutoState autoState      = AUTO_OFF;
@@ -261,6 +268,8 @@ static uint16_t servoMotionPwmUs()
   return servoActivePwmUs;
 }
 
+static void servoTimingOnPwmNeutralWritten();
+
 static void servoWriteUsForced(uint16_t us)
 {
   us = constrain(us, SERVO_PWM_MIN_US, SERVO_PWM_MAX_US);
@@ -272,12 +281,18 @@ static void servoWriteUsForced(uint16_t us)
   // Remux tras RMT; sin dirty no reescribir el mismo duty (glitch RC).
   if (!remux && ledcRead(PIN_SERVO_PWM) == duty)
     return;
+  bool wrote = false;
   if (!remux && ledcWrite(PIN_SERVO_PWM, duty))
-    return;
-
-  ledcDetach(PIN_SERVO_PWM);
-  ledcAttachChannel(PIN_SERVO_PWM, 50, SERVO_LEDC_BITS, SERVO_LEDC_CHANNEL);
-  ledcWrite(PIN_SERVO_PWM, duty);
+    wrote = true;
+  else
+  {
+    ledcDetach(PIN_SERVO_PWM);
+    ledcAttachChannel(PIN_SERVO_PWM, 50, SERVO_LEDC_BITS, SERVO_LEDC_CHANNEL);
+    ledcWrite(PIN_SERVO_PWM, duty);
+    wrote = true;
+  }
+  if (wrote && us == SERVO_PWM_NEUTRAL_US)
+    servoTimingOnPwmNeutralWritten();
 }
 
 // Neutro 1500. Remux solo si dirty o force con cache mentiroso.
@@ -292,7 +307,19 @@ static void servoHardStopNeutral(bool force)
 
   if (!remux && !wasRunning
       && (uint32_t)(now - lastHardMs) < SERVO_STOP_REASSERT_MS)
+  {
+    // Diagnóstico: ya neutro; no inventar latencia de parada.
+    if (waitingServoStopMeasurement)
+    {
+      Serial.printf("[%s][SERVO_TIMING] PWM already neutral (no rewrite) @ %lu ms | +%lu ms from BUFFER_FULL\n",
+                    PREFEEDER_SIDE_TAG,
+                    (unsigned long)now,
+                    (unsigned long)(now - bufferFullDetectedMs));
+      waitingServoStopMeasurement = false;
+      servoForceStopLogged = false;
+    }
     return;
+  }
 
   const uint32_t duty = servoUsToDuty(SERVO_PWM_NEUTRAL_US);
   servoPinDirty = false;
@@ -312,6 +339,7 @@ static void servoHardStopNeutral(bool force)
     ledcWrite(PIN_SERVO_PWM, duty);
   }
   lastHardMs = now;
+  servoTimingOnPwmNeutralWritten();
 }
 
 static void servoAssertNeutral(bool force)
@@ -439,6 +467,66 @@ static void setupRotationServo()
 static bool bufferFullRaw()
 {
   return digitalRead(PIN_SENSOR_BUFFER_FULL) == HIGH;
+}
+
+// Flanco LOW→HIGH del sensor RAW (no filtrado). Solo log en el flanco.
+static void servoTimingOnBufferFullRawEdge()
+{
+  const bool raw = bufferFullRaw();
+  if (raw && !bufferFullRawPrev)
+  {
+    const uint32_t now = millis();
+    bufferFullDetectedMs = now;
+    const bool alreadyStopped = !servoRunning
+        && servoLastOutputUs == SERVO_PWM_NEUTRAL_US;
+    if (alreadyStopped)
+    {
+      waitingServoStopMeasurement = false;
+      servoForceStopLogged = false;
+      Serial.printf("[%s][SERVO_TIMING] BUFFER_FULL RAW HIGH @ %lu ms | servo=%u us | running=0 | already stopped (no timing)\n",
+                    PREFEEDER_SIDE_TAG,
+                    (unsigned long)now,
+                    (unsigned)servoLastOutputUs);
+    }
+    else
+    {
+      waitingServoStopMeasurement = true;
+      servoForceStopLogged = false;
+      Serial.printf("[%s][SERVO_TIMING] BUFFER_FULL RAW HIGH @ %lu ms | servo=%u us | running=%d\n",
+                    PREFEEDER_SIDE_TAG,
+                    (unsigned long)now,
+                    (unsigned)servoLastOutputUs,
+                    (int)servoRunning);
+    }
+  }
+  bufferFullRawPrev = raw;
+}
+
+// Solo callers de Buffer Full (no otros forceStop).
+static void servoTimingOnForceStopFromBufferFull()
+{
+  if (!waitingServoStopMeasurement || servoForceStopLogged)
+    return;
+  servoForceStopLogged = true;
+  servoForceStopMs = millis();
+  Serial.printf("[%s][SERVO_TIMING] FORCE STOP @ %lu ms | +%lu ms from BUFFER_FULL\n",
+                PREFEEDER_SIDE_TAG,
+                (unsigned long)servoForceStopMs,
+                (unsigned long)(servoForceStopMs - bufferFullDetectedMs));
+}
+
+static void servoTimingOnPwmNeutralWritten()
+{
+  if (!waitingServoStopMeasurement)
+    return;
+  const uint32_t now = millis();
+  Serial.printf("[%s][SERVO_TIMING] PWM STOP %u us @ %lu ms | +%lu ms from BUFFER_FULL\n",
+                PREFEEDER_SIDE_TAG,
+                (unsigned)SERVO_PWM_NEUTRAL_US,
+                (unsigned long)now,
+                (unsigned long)(now - bufferFullDetectedMs));
+  waitingServoStopMeasurement = false;
+  servoForceStopLogged = false;
 }
 
 static bool bufferFullActive()
@@ -1543,6 +1631,7 @@ static void serviceAuto()
 
   if (bufferFullStopNow())
   {
+    servoTimingOnForceStopFromBufferFull();
     forceStopDereelerAndServo();
     if (autoState == AUTO_SERVO_LEAD || autoState == AUTO_CW || autoState == AUTO_CCW
         || autoState == AUTO_HOME_HOLD)
@@ -3587,6 +3676,7 @@ void setup()
   pinMode(PIN_SENSOR_CILINDRO, INPUT_PULLDOWN);
   pinMode(PIN_SENSOR_HOSE_BELT, INPUT_PULLUP);
   bufferFullFilterReset();
+  bufferFullRawPrev = bufferFullRaw();
 
   Serial.begin(115200);
   delay(200);
@@ -3671,6 +3761,7 @@ void loop()
 {
   serviceHttp(12);
 
+  servoTimingOnBufferFullRawEdge();
   updateBufferFullFilter();
   updateTensionReverseFilter();
   if (!idleMode)
@@ -3683,6 +3774,7 @@ void loop()
     }
     else if (bufferFullStopNow())
     {
+      servoTimingOnForceStopFromBufferFull();
       servoServiceBufferFullCut();
       forceStopDereelerAndServo();
       if (autoEnabled && systemFault == FAULT_NONE

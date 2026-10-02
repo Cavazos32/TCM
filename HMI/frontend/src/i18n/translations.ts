@@ -88,7 +88,7 @@ export const translations = {
     cfg_pf_trigger: 'Aviso al alimentador entre piezas (Tfeed)',
     cfg_pf_trigger_on: 'Activado',
     cfg_pf_trigger_off: 'Desactivado',
-    cfg_pf_trigger_hint: 'Desactivado = no se envía Tfeed. Activado = se envía Tfeed después del corte de las piezas 2…N (la 1ª del lote omite; C2 lo omite si ya se envió).',
+    cfg_pf_trigger_hint: 'Desactivado = no se envía Tfeed. Activado = se envía Tfeed antes de la alimentación CAN de las piezas 2…N (la 1ª del lote omite; C2 lo omite si ya se envió).',
     cfg_timeout_piece: 'Tiempo límite por pieza (s)',
     cfg_timeout_motion: 'Tiempo límite de movimiento (s)',
     cfg_timeout_feed: 'Tiempo límite de alimentación (s)',

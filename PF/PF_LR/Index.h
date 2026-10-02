@@ -558,7 +558,7 @@ const char index_html[] PROGMEM = R"rawliteral(
         <ol class="info-flow">
           <li>Buffer Full GPIO 19 → para DeReeler/servo; rearranque tras OFF ~200 ms</li>
           <li>Vacío estable → servo · DeReeler CW tras <span class="info-param">100</span> ms · <span class="info-param" data-info-key="autoRpm">60 RPM</span></li>
-          <li>Servo GPIO 26 · PWM <span class="info-param" data-info-key="servoPwm">800 µs</span> (neutro 1500)</li>
+          <li>Servo GPIO 15 · PWM <span class="info-param" data-info-key="servoPwm">800 µs</span> (neutro 1500)</li>
           <li>Tensión GPIO 23 → inversión · <span class="info-param" data-info-key="tensionReverseRpm">30 RPM</span> × <span class="info-param" data-info-key="autoRev">2.0 s</span></li>
           <li class="info-step-note">Fallas enclavadas hasta Reset + Iniciar (TCP al Master)</li>
           <li>Buffer Max / Cilindro / Tensión &gt; <span class="info-param" data-info-key="tensionFault">10 s</span> → para todo</li>
