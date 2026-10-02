@@ -24,6 +24,7 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HMI_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+TCM_ROOT="$(cd "$HMI_ROOT/.." && pwd)"
 URL="http://127.0.0.1:${PORT}"
 DIST_INDEX="$HMI_ROOT/frontend/dist/index.html"
 
@@ -37,8 +38,8 @@ hmi_port_open() {
 }
 
 python_exe() {
-  if [[ -x "$HMI_ROOT/.venv/bin/python" ]]; then
-    echo "$HMI_ROOT/.venv/bin/python"
+  if [[ -x "$TCM_ROOT/.venv/bin/python" ]]; then
+    echo "$TCM_ROOT/.venv/bin/python"
   elif command -v python3 >/dev/null 2>&1; then
     echo "python3"
   else

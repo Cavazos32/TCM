@@ -41,12 +41,12 @@ HMI/
 ## Instalación
 
 ```bash
-cd HMI
+# Desde la raiz TCM
 python3 -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+pip install -r HMI/requirements.txt
 
-cd frontend
+cd HMI/frontend
 npm install
 npm run build
 ```
@@ -54,6 +54,7 @@ npm run build
 ## Ejecutar
 
 ```bash
+# Con el venv de la raiz TCM activado
 cd HMI
 python app.py
 ```
@@ -92,7 +93,7 @@ cd HMI
 python3 iniciar_hmi.py
 ```
 
-Usa siempre `HMI/.venv` (si no existe, indica cómo crearlo). Opciones: `--port N`, `--no-browser`.
+Usa siempre `TCM/.venv` en la raíz del repo (si no existe, indica cómo crearlo). Opciones: `--port N`, `--no-browser`.
 
 ### Desarrollo UI (hot reload)
 

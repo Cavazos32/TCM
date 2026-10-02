@@ -20,14 +20,15 @@ import webbrowser
 from pathlib import Path
 
 HMI_ROOT = Path(__file__).resolve().parent
+TCM_ROOT = HMI_ROOT.parent
 PORT_DEFAULT = 5050
 
 
 def _venv_python() -> Path | None:
     if sys.platform == "win32":
-        candidate = HMI_ROOT / ".venv" / "Scripts" / "python.exe"
+        candidate = TCM_ROOT / ".venv" / "Scripts" / "python.exe"
     else:
-        candidate = HMI_ROOT / ".venv" / "bin" / "python"
+        candidate = TCM_ROOT / ".venv" / "bin" / "python"
     return candidate if candidate.is_file() else None
 
 
@@ -48,12 +49,12 @@ def _ensure_venv_python() -> None:
     venv = _venv_python()
     if venv is None:
         print(
-            "No se encontro HMI/.venv.\n"
+            "No se encontro TCM/.venv (raiz del repo).\n"
             "Crea el entorno:\n"
-            "  cd HMI\n"
+            "  cd TCM\n"
             "  python3 -m venv .venv\n"
             "  source .venv/bin/activate   # Windows: .venv\\Scripts\\activate\n"
-            "  pip install -r requirements.txt",
+            "  pip install -r HMI/requirements.txt",
             file=sys.stderr,
         )
         sys.exit(1)

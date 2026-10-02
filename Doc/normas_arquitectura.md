@@ -139,6 +139,18 @@ Si ocurre un fallo en PreFeeder y abres la IP/HTML de ese módulo, debes ver **e
 - El HTML local no inventa catálogo paralelo: usa el mismo código/descripción que Error list.
 - Firmware local debe exponer en JSON al menos `exxx` + `ui` (`EXXX: Module, Descripción`) para que la web del módulo no reinvente textos.
 
+### Regla R0b — PreFeeder: sensor ≠ EXXX cuando hay timeout
+
+En PreFeeder, estos opcodes **no** se Setean solo porque el sensor esté ON:
+
+| EXXX | Sensor | Set real |
+|------|--------|----------|
+| E052 / E058 | Buffer Full | Timeout de buffer sin relleno (fallo enclavado L/R) |
+| E057 / E063 | Holgura | Timeout sin holgura (fallo enclavado L/R) |
+| E054 / E060 | Tensión | Timeout de tensión ≥ `tension-fault-s` (fallo enclavado L/R) |
+
+GPIO tensión HIGH dispara **inversión** del DeReeler; eso es operación normal, no E054/E060. Master publica el opcode de tensión como `active` solo con fallo enclavado del esclavo. HMI enclavá el EXXX solo vía ese fallo (`fault_active` / `error`+`errorCode`), no por el espejo del sensor.
+
 ### Regla R1 — Fuente de verdad del catálogo
 
 Errores oficiales = hoja **Error list** (+ Opcodes) en `Doc/TCM - D.xlsx`.  

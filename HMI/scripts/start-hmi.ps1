@@ -6,6 +6,7 @@ param(
 
 $ErrorActionPreference = 'Continue'
 $HmiRoot = Split-Path $PSScriptRoot -Parent
+$TcmRoot = Split-Path $HmiRoot -Parent
 $Url = "http://127.0.0.1:$Port"
 $DistIndex = Join-Path $HmiRoot 'frontend\dist\index.html'
 
@@ -25,7 +26,7 @@ function Test-HmiPort {
 }
 
 function Get-PythonExe {
-    $venvPy = Join-Path $HmiRoot '.venv\Scripts\python.exe'
+    $venvPy = Join-Path $TcmRoot '.venv\Scripts\python.exe'
     if (Test-Path $venvPy) { return $venvPy }
     return 'python'
 }

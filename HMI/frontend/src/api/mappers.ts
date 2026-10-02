@@ -45,6 +45,12 @@ const PF_OK_WHEN_ACTIVE: Record<string, number> = {
   'Holgura R': 0x32,
 };
 
+// Sensor ON = condición (inversión); EXXX solo con fault_active (timeout).
+const PF_TIMEOUT_GATED: Record<string, number> = {
+  'Tensioner L': 0x35,
+  'Tensioner R': 0x2f,
+};
+
 let logCounter = 0;
 
 function parseLogLine(line: string, module: LogEntry['module']): LogEntry {
@@ -331,6 +337,22 @@ function buildSensors(
           name: e.label,
           active: fault,
           status: (fault ? 'error' : e.active === true ? 'ok' : e.active === false ? 'warning' : 'idle') as PreFeederSensor['status'],
+        };
+      }
+      const timeoutByte = PF_TIMEOUT_GATED[e.label];
+      if (timeoutByte !== undefined) {
+        const tFault = faults[String(timeoutByte)] === true;
+        return {
+          id: PF_SENSOR_IDS[e.label] ?? e.label.toLowerCase().replace(/\s+/g, '-'),
+          name: e.label,
+          active: tFault || e.active === true,
+          status: (tFault
+            ? 'error'
+            : e.active === true
+              ? 'warning'
+              : e.active === false
+                ? 'ok'
+                : 'idle') as PreFeederSensor['status'],
         };
       }
       return {

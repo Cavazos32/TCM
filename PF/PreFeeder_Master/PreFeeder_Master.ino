@@ -975,13 +975,14 @@ static void pfTcpPushStateIfChanged()
 static bool pfSideErrFlag(const SideView& s, uint8_t idx)
 {
   switch (idx) {
-    // Buffer Full / Holgura: sensor ON = OK. EXXX solo con fallo enclavado
-    // (timeout). No publicar s.home / s.holgura como active del opcode E052/E058/E057/E063.
+    // Buffer Full / Holgura / Tensión: EXXX solo con fallo enclavado (timeout).
+    // Sensor tensión ON = inversión normal, no E054/E060.
+    // No publicar s.home / s.holgura / s.tension como active del opcode.
     case 0: return s.error && pfErrorIdFromWireCode(s.errorCode) == PF_ERR_BUFFER;
+    case 2: return s.error && pfErrorIdFromWireCode(s.errorCode) == PF_ERR_TENSION;
     case 5: return s.error && pfErrorIdFromWireCode(s.errorCode) == PF_ERR_HOLGURA;
-    // Resto: sensor activo = condición de fallo (misma polaridad que EXXX)
+    // Instantáneos: sensor activo = condición de fallo (misma polaridad que EXXX)
     case 1: return s.endstop || (s.error && pfErrorIdFromWireCode(s.errorCode) == PF_ERR_ENDSTOP);
-    case 2: return s.tension || (s.error && pfErrorIdFromWireCode(s.errorCode) == PF_ERR_TENSION);
     case 3: return s.cylinderOpen || (s.error && pfErrorIdFromWireCode(s.errorCode) == PF_ERR_CYLINDER);
     case 4: return s.hoseAbsent || (s.error && pfErrorIdFromWireCode(s.errorCode) == PF_ERR_HOSE);
     default: return false;

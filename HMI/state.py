@@ -122,6 +122,8 @@ from prefeeder import (
     TX_BUFFER_FULL_R,
     TX_HOLGURA_L,
     TX_HOLGURA_R,
+    TX_TENSION_L,
+    TX_TENSION_R,
     TX_PF_BUSY,
     TX_PF_ERROR,
     TX_PF_IDLE,
@@ -232,9 +234,21 @@ _PF_SIDE_SENSOR_FIELDS = (
     ("holgura", 0x38, 0x32),
 )
 
-# Sensor ON = OK; el mismo opcode EXXX solo aplica con fallo enclavado del Master.
+# Sensor ON = OK (panel). EXXX solo con fault_active (timeout enclavado).
 _PF_OK_WHEN_ACTIVE = frozenset(
     {TX_BUFFER_FULL_L, TX_BUFFER_FULL_R, TX_HOLGURA_L, TX_HOLGURA_R}
+)
+# EXXX solo vía fault_active / error enclavado del lado (no por sensor ON).
+# Incluye Buffer/Holgura (OK-when-active) y Tensión (inversión normal ≠ E054/E060).
+_PF_EXXX_VIA_FAULT = frozenset(
+    {
+        TX_BUFFER_FULL_L,
+        TX_BUFFER_FULL_R,
+        TX_HOLGURA_L,
+        TX_HOLGURA_R,
+        TX_TENSION_L,
+        TX_TENSION_R,
+    }
 )
 
 def _ts() -> str:
@@ -324,9 +338,9 @@ class HmiState:
                 for _, items in PF_ERRORS
                 for label, b in items
             },
-            # Fallo enclavado para opcodes con sensor OK-when-active (Buffer/Holgura).
+            # Fallo enclavado para opcodes timeout-gated (Buffer/Holgura/Tensión).
             "fault_active": {
-                str(b): False for b in _PF_OK_WHEN_ACTIVE
+                str(b): False for b in _PF_EXXX_VIA_FAULT
             },
             # Runtime L/R desde status Master (relleno / Tfeed / helper).
             "sides": {
@@ -2708,7 +2722,7 @@ class HmiState:
                     continue
                 if not self._pf_error_byte_in_lot(byte):
                     continue
-                if byte in _PF_OK_WHEN_ACTIVE:
+                if byte in _PF_EXXX_VIA_FAULT:
                     if not self._pf.get("fault_active", {}).get(key):
                         continue
                 elif not info.get("active"):
@@ -2826,7 +2840,14 @@ class HmiState:
         if "plc" in mod:
             return self._plc_is_healthy()
         if "pre" in mod or "feeder" in mod:
-            return self._pf_is_healthy()
+            if not self._pf_is_healthy():
+                return False
+            # E054/E060: condición real = GPIO tensión aún HIGH (inversión ≠ fallo).
+            if code in ("E054", "E060"):
+                byte = TX_TENSION_R if code == "E054" else TX_TENSION_L
+                if bool(self._pf.get("errors", {}).get(str(byte), {}).get("active")):
+                    return False
+            return True
         if "andon" in mod or code == "E064":
             return not bool(self._andon.get("pressure"))
 
@@ -3780,20 +3801,23 @@ class HmiState:
         return True
 
     def _apply_pf_side_fault(self, side: dict, is_left: bool) -> bool:
-        """Sincroniza fault_active Buffer/Holgura desde error enclavado del lado."""
+        """Sincroniza fault_active Buffer/Holgura/Tensión desde error enclavado del lado."""
         if not isinstance(side, dict):
             return False
         err_on = bool(side.get("error"))
         err_id = self._pf_side_wire_err_id(side)
-        # PfErrorId: BUFFER=5, HOLGURA=6 → opcodes TCP
+        # PfErrorId: TENSION=2, BUFFER=5, HOLGURA=6 → opcodes TCP
         want: dict[int, bool] = {
             (TX_BUFFER_FULL_L if is_left else TX_BUFFER_FULL_R): False,
             (TX_HOLGURA_L if is_left else TX_HOLGURA_R): False,
+            (TX_TENSION_L if is_left else TX_TENSION_R): False,
         }
         if err_on and err_id == 5:
             want[TX_BUFFER_FULL_L if is_left else TX_BUFFER_FULL_R] = True
         elif err_on and err_id == 6:
             want[TX_HOLGURA_L if is_left else TX_HOLGURA_R] = True
+        elif err_on and err_id == 2:
+            want[TX_TENSION_L if is_left else TX_TENSION_R] = True
         changed = False
         for byte, active in want.items():
             key = str(byte)
@@ -3814,7 +3838,7 @@ class HmiState:
                 continue
             if not self._pf_error_byte_in_lot(byte):
                 continue
-            if byte in _PF_OK_WHEN_ACTIVE:
+            if byte in _PF_EXXX_VIA_FAULT:
                 if not self._pf["fault_active"].get(key):
                     continue
             elif not info.get("active"):
@@ -4061,10 +4085,10 @@ class HmiState:
                 if byte_code in PF_ERROR_BYTES:
                     active = bool(msg.get("active", True))
                     key = str(byte_code)
-                    if byte_code in _PF_OK_WHEN_ACTIVE:
+                    if byte_code in _PF_EXXX_VIA_FAULT:
                         # Espejo para state ERROR en runtime. No Set aquí:
-                        # Master antiguo publicaba sensor Buffer Full ON como active
-                        # y al reconnect HMI enclavaba E058/E052 fantasma.
+                        # Master antiguo publicaba sensor Buffer Full / tensión ON
+                        # como active y al reconnect HMI enclavaba E058/E052/E054 fantasma.
                         # Set real = status.error (+ errorCode) o state ERROR tras espejo.
                         prev = self._pf["fault_active"].get(key)
                         self._pf["fault_active"][key] = active
