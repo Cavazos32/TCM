@@ -102,7 +102,8 @@ button.primary{background:var(--accent);border-color:var(--accent);color:#0d1117
 <button onclick="autoCmd('reset')">Reset</button>
 </div>
 <div class="toggles">
-<label><input type="checkbox" id="tog-idle" onchange="setIdleMode(this.checked)"> Materialista</label>
+<span id="idle-ro" style="font-size:13px;color:#555">Materialista: solo HMI · <strong id="tog-idle-label">Off</strong></span>
+<label><input type="checkbox" id="tog-idle" disabled title="Solo desde HMI"> Materialista (solo HMI)</label>
 <label><input type="checkbox" id="tog-proc" onchange="setInProcess(this.checked)"> In process</label>
 </div>
 </section>
@@ -160,6 +161,7 @@ applySide('r',d.r);
 if(d.uiL){var a=document.getElementById('link-ui-l');if(a)a.href=d.uiL;var pl=document.getElementById('panel-link-l');if(pl)pl.href=d.uiL;}
 if(d.uiR){var b=document.getElementById('link-ui-r');if(b)b.href=d.uiR;var pr=document.getElementById('panel-link-r');if(pr)pr.href=d.uiR;}
 var idle=document.getElementById('tog-idle');if(idle&&!idle._user)idle.checked=!!(d.l.idleMode||d.r.idleMode);
+var idleLab=document.getElementById('tog-idle-label');if(idleLab)idleLab.textContent=(d.l.idleMode||d.r.idleMode)?'On':'Off';
 var proc=document.getElementById('tog-proc');if(proc&&!proc._user)proc.checked=!!(d.l.inProcess||d.r.inProcess);
 }).catch(function(e){
 setDotEl('dot-wifi','err');
@@ -173,7 +175,7 @@ if(action==='start')return autoFetch('enable=1');
 if(action==='stop')return autoFetch('enable=0');
 if(action==='reset')return autoFetch('reset=1');
 }
-function setIdleMode(on){autoFetch('idle_mode='+(on?'1':'0'));}
+function setIdleMode(on){/* Materialista solo desde HMI */void on;}
 function setInProcess(on){autoFetch('in_process='+(on?'1':'0'));}
 ['tog-idle','tog-proc'].forEach(function(id){var el=document.getElementById(id);el.addEventListener('mousedown',function(){el._user=true;setTimeout(function(){el._user=false;},800);});});
 setInterval(poll,500);poll();

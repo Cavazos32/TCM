@@ -67,10 +67,12 @@ TIMING_OP_ORDER = (
 # Stage2 HTTP queda para pruebas locales Motion; el ciclo no lo usa.
 # El test HTML de Motion sigue usando pieceMm = L (target = L−55).
 # No modificar Feed / FEED_TARGET_FIXED_MM / Move ABS manual.
-# Excepción refill: skipValidate + mm opcional (Long feed). Ciclo de lote sigue en 55 mm.
+# Excepción refill: skipValidate → creep hasta láser ON (sin OM). Ciclo de lote sigue en 55 mm.
 
-# Purga: no alimenta sola. Tras park: Retry (55), Long feed (100) o Next corte.
-# Long feed = skipValidate en Motion.
+# Purga: no alimenta sola. Tras park: Alimentar (hasta láser) o Next corte.
+# Timeout láser purga ≈ 10 s (Motion FEED_PURGE_LASER_TIMEOUT_MS); lados independientes.
+REFILL_LASER_TIMEOUT_S = 10.0
+# Legado: ya no se ofrece Long feed en UI; se mantiene por compat API.
 REFILL_LONG_FEED_MM = 100.0
 
 # WIP Delivery (HOME): soplo al volver a 0.
@@ -220,7 +222,7 @@ class CycleConfig:
     # Tfeed tras el corte (paso 18). False = omitir siempre; solo helper holgura.
     # C2 omite si esa pieza ya mandó Tfeed. Default ON (producción).
     pf_trigger_enabled: bool = True
-    # Refill / purga: Retry = refill_mm (55). Long feed = 100 mm (skipValidate).
+    # Refill / purga: Alimentar hasta láser (skipValidate). refill_mm legado.
     refill_mm: float = 55.0
     refill_asda_mm: float = -300.0
 
@@ -557,6 +559,9 @@ class CycleRunner:
         # Start / recovery / recovery: validar láser antes de alimentar (ON → omitir).
         self._restart_piece = False
         self._recovery_skip_feed = False
+        # True tras LengthOK (feed+offset Motion). offL/offR suelen dejar láser OFF;
+        # sin este flag, Resume/Continuar ciclo re-alimentaba y reaplicaba el offset.
+        self._material_feed_done = False
         self._recovery_skip_pf_trigger = False
         self._pf_trigger_sent_this_piece = False
         self._flow_interrupt = threading.Event()
@@ -792,6 +797,7 @@ class CycleRunner:
         self._clear_recovery_gate()
         self._restart_piece = False
         self._recovery_skip_feed = False
+        self._material_feed_done = False
         self._recovery_skip_pf_trigger = False
         self._pf_trigger_sent_this_piece = False
         self._stop.clear()
@@ -837,6 +843,7 @@ class CycleRunner:
         self._flow_interrupt.set()
         self._restart_piece = False
         self._recovery_skip_feed = False
+        self._material_feed_done = False
         self._recovery_skip_pf_trigger = False
         self._pause.clear()
         self._refill_reject.set()
@@ -1096,6 +1103,7 @@ class CycleRunner:
         req = self._lot_purge_request
         self._lot_purge_request = None
         self._restart_piece = False
+        self._material_feed_done = False
         self._flow_interrupt.clear()
         if req is None or self._should_abort():
             return
@@ -1166,13 +1174,12 @@ class CycleRunner:
         feed_mm: float | None = None,
         asda_mm: float | None = None,
     ) -> dict[str, Any]:
-        """Purga/refill: ASDA park → holder → espera Retry/Long/corte → feed → cut → home.
+        """Purga/refill: ASDA park → holder → Alimentar (láser) / corte → home.
 
-        Tras park: operador Retry (55 mm), Long feed (100 mm) o Next Cutting;
-        no hay feed automático (Next corta sin alimentar).
-        Tras feed: Retry, Long feed o Next Cutting.
+        Tras park: Alimentar hasta láser ON (timeout 10 s, lados independientes)
+        o Next Cutting; no hay feed automático.
+        Tras feed: Reintentar (otra vez a láser) o Next Cutting.
         Tras corte: Next Return ASDA to 0.
-        Feed físico sin validación láser ni OM (skipValidate en Motion).
         """
         with self._lock:
             if self._active:
@@ -1212,7 +1219,7 @@ class CycleRunner:
         self._set_state(TX_BUSY)
         self._host.cycle_log(
             f"Refill Start — ASDA→{use_asda:g} mm · "
-            f"espera Retry ({use_feed:g} mm), Long feed {REFILL_LONG_FEED_MM:g} mm "
+            f"Alimentar hasta láser (timeout {REFILL_LASER_TIMEOUT_S:g} s) "
             f"o Next Cutting · "
             f"lados={CycleConfig.normalize_feed_sides(cfg.feed_sides)}"
         )
@@ -1246,25 +1253,20 @@ class CycleRunner:
         return {"ok": True}
 
     def retry_refill(self, feed_mm: float | None = None) -> dict[str, Any]:
-        """Retry (55 mm) o Long feed. Válido en await_feed y after_feed.
+        """Alimentar / reintentar hasta láser ON. Válido en await_feed y after_feed.
 
-        feed_mm=None → Retry con refillMm. feed_mm=100 → Long feed.
+        feed_mm se ignora (legado Long feed); siempre creep a láser.
         """
         if not self._refill_awaiting_confirm:
             return {"ok": False, "error": "Sin refill pendiente de confirmación"}
         if self._refill_prompt not in ("await_feed", "after_feed"):
-            return {"ok": False, "error": "Retry / Long feed solo en espera de alimentación"}
-        next_mm: float | None = None
-        if feed_mm is not None:
-            next_mm = float(feed_mm)
-            if next_mm < 1.0 or next_mm > 200.0:
-                return {"ok": False, "error": "feedMm inválido"}
-        self._refill_next_feed_mm = next_mm
+            return {"ok": False, "error": "Alimentar solo en espera de alimentación"}
+        _ = feed_mm  # legado API; ignorado
+        self._refill_next_feed_mm = None
         self._refill_retry.set()
-        if next_mm is not None:
-            self._host.cycle_log(f"Refill: Long feed {next_mm:g} mm")
-        else:
-            self._host.cycle_log("Refill: operador pide reintentar alimentación")
+        self._host.cycle_log(
+            f"Refill: alimentar hasta láser (timeout {REFILL_LASER_TIMEOUT_S:g} s)"
+        )
         self._host.cycle_notify()
         return {"ok": True}
 
@@ -1285,6 +1287,7 @@ class CycleRunner:
         self._clear_recovery_gate()
         self._restart_piece = False
         self._recovery_skip_feed = False
+        self._material_feed_done = False
         self._recovery_skip_pf_trigger = False
         self._flow_interrupt.clear()
         self._e050_finish_piece = False
@@ -1639,6 +1642,7 @@ class CycleRunner:
         self._host.cycle_log("Recovery: operador solicitó purga")
         cfg = self.get_config()
         rpm = float(self._lot_rpm or 1200.0)
+        self._material_feed_done = False
         with self._lock:
             self._recovery_prompt = ""
             self._refill_mode = True
@@ -3254,10 +3258,16 @@ class CycleRunner:
         # 3) HOME 0
         return self._wip_motion_zero(rpm, prefetch_running=prefetch_running)
 
-    def _wait_feed(self, *, log_ok: bool = True, apply_piece_watch: bool = True) -> bool:
+    def _wait_feed(
+        self,
+        *,
+        log_ok: bool = True,
+        apply_piece_watch: bool = True,
+        timeout_s: float | None = None,
+    ) -> bool:
         cfg = self.get_config()
         sides = self._feed_side_list()
-        timeout_s = float(cfg.feed_wait_timeout_s)
+        timeout_s = float(cfg.feed_wait_timeout_s if timeout_s is None else timeout_s)
         remaining = timeout_s
         while remaining > 0:
             if self._should_abort() or self._restart_piece:
@@ -3274,6 +3284,7 @@ class CycleRunner:
                 # Tras error: si la referencia ya está en el láser, no esperar otro feed.
                 if self._recovery_after_error and self._feed_reference_visible():
                     sides_txt = "".join(sides)
+                    self._material_feed_done = True
                     if log_ok:
                         self._host.cycle_log(f"Feed OK lados={sides_txt}")
                     return True
@@ -3726,6 +3737,8 @@ class CycleRunner:
 
     def _run_feed_after_home(self, rep: int, qty: int) -> bool:
         """Feed de la *siguiente* pieza. Exige ASDA en 0. Tfeed ya fue (post-corte)."""
+        # Pieza actual ya cortada: el ready anterior no vale para la siguiente.
+        self._material_feed_done = False
         if self._e050_materialist_requested:
             self._host.cycle_log("Feed post-HOME: omitido (ruta E050 Materialista)")
             return True
@@ -3738,6 +3751,7 @@ class CycleRunner:
             self._host.cycle_log("Feed post-HOME: omitido (última pieza)")
             return True
         if self._feed_reference_visible():
+            self._material_feed_done = True
             self._metro_snap("post-feed-next")
             self._host.cycle_log(
                 "Feed post-HOME omitido (láser ya ON) — handoff listo"
@@ -3755,6 +3769,7 @@ class CycleRunner:
         apply_piece_watch: bool = True,
         timing_tag: str = "feed",
         metro_tag: str = "post-feed",
+        wait_timeout_s: float | None = None,
     ) -> bool:
         if not self._ensure_holder_encoder_closed_for_feed():
             return False
@@ -3762,19 +3777,25 @@ class CycleRunner:
         sides = self._feed_side_list()
         cmd_op = self._begin_op(f"{timing_tag}_cmd")
         failed: list[str] = []
+        # Purga: skipValidate sin mm → creep a láser (lados independientes).
+        feed_arg = None if skip_validate else feed_mm
         if "L" in sides:
             if not self._host.cmd_motion_feed_l(
-                skip_validate=skip_validate, feed_mm=feed_mm
+                skip_validate=skip_validate, feed_mm=feed_arg
             ):
                 failed.append("L")
         if "R" in sides:
             if not self._host.cmd_motion_feed_r(
-                skip_validate=skip_validate, feed_mm=feed_mm
+                skip_validate=skip_validate, feed_mm=feed_arg
             ):
                 failed.append("R")
         ok_all = not failed
         cmd_sec = self._end_op(cmd_op, ok=ok_all)
-        note = " (purga: sin láser/OM)" if skip_validate else ""
+        note = (
+            f" (purga: hasta láser · timeout {REFILL_LASER_TIMEOUT_S:g} s)"
+            if skip_validate
+            else ""
+        )
         self._host.cycle_log(f"Feed start lados={''.join(sides)}{note}")
         if cmd_sec >= TIMING_CMD_SLOW_S:
             self._host.cycle_log(
@@ -3786,12 +3807,22 @@ class CycleRunner:
             self._raise_fault("feed_cmd")
             return False
         op = self._begin_op(timing_tag)
-        if not self._wait_feed(log_ok=False, apply_piece_watch=apply_piece_watch):
+        use_timeout = wait_timeout_s
+        if use_timeout is None and skip_validate:
+            use_timeout = REFILL_LASER_TIMEOUT_S + 2.0
+        if not self._wait_feed(
+            log_ok=False,
+            apply_piece_watch=apply_piece_watch,
+            timeout_s=use_timeout,
+        ):
             self._end_op(op, ok=False)
             self._metro_snap(metro_tag)
             return False
         sec = self._end_op(op, ok=True)
         self._metro_snap(metro_tag)
+        if not skip_validate:
+            # LengthOK incluye el relativo offL/offR en Motion (láser puede quedar OFF).
+            self._material_feed_done = True
         self._host.cycle_log(
             f"Feed OK lados={''.join(sides)} · wait={self._fmt_op(sec)} "
             f"cmd={self._fmt_op(cmd_sec)}"
@@ -3801,8 +3832,8 @@ class CycleRunner:
     def _wait_refill_operator_decision(self, prompt: str) -> str:
         """'ok' | 'reject' | 'retry'. Abort/Stop → 'reject'.
 
-        prompt: await_feed (Retry / Long feed / Next Cutting)
-              | after_feed (Retry / Long feed / Next Cutting)
+        prompt: await_feed (Alimentar láser / Next Cutting)
+              | after_feed (Reintentar láser / Next Cutting)
               | after_cut (Next ASDA 0).
         """
         with self._lock:
@@ -3815,19 +3846,17 @@ class CycleRunner:
         self._enter_pause_andon()
         if prompt == "await_feed":
             self._host.cycle_log(
-                f"Refill: park listo — Retry, Long feed {REFILL_LONG_FEED_MM:g} mm "
-                "o Next → Cutting (sin feed automático)"
+                f"Refill: park listo — Alimentar hasta láser "
+                f"(timeout {REFILL_LASER_TIMEOUT_S:g} s) o Next → Cutting"
             )
         elif prompt == "after_feed":
             if self._refill_skip_cut:
                 self._host.cycle_log(
-                    f"Refill: feed listo — Retry, Long feed {REFILL_LONG_FEED_MM:g} mm "
-                    "o Continuar → ASDA a 0"
+                    "Refill: láser OK — Reintentar o Continuar → ASDA a 0"
                 )
             else:
                 self._host.cycle_log(
-                    f"Refill: feed listo — Retry, Long feed {REFILL_LONG_FEED_MM:g} mm "
-                    "o Next → Cutting"
+                    "Refill: láser OK — Reintentar o Next → Cutting"
                 )
         else:
             self._host.cycle_log("Refill: corte listo — Next → ASDA a 0")
@@ -3939,7 +3968,6 @@ class CycleRunner:
         with self._lock:
             self._progress = 35
 
-        use_feed: float | None = feed_mm
         fed_once = False
         while True:
             if not fed_once:
@@ -3948,13 +3976,12 @@ class CycleRunner:
                     break
                 if decision != "retry":
                     return "cancel"
-                use_feed = self._refill_next_feed_mm
                 self._refill_next_feed_mm = None
-            shown = float(use_feed) if use_feed is not None else 55.0
             self._host.cycle_log(
-                f"Refill: alimentar {shown:g} mm (sin validación láser/OM)"
+                f"Refill: alimentar hasta láser ON "
+                f"(timeout {REFILL_LASER_TIMEOUT_S:g} s · sin OM · lados independientes)"
             )
-            if not self._run_feed(skip_validate=True, feed_mm=use_feed):
+            if not self._run_feed(skip_validate=True, feed_mm=None):
                 return "fail"
             fed_once = True
             with self._lock:
@@ -3966,11 +3993,9 @@ class CycleRunner:
             if decision == "ok":
                 break
             if decision == "retry":
-                use_feed = self._refill_next_feed_mm
                 self._refill_next_feed_mm = None
-                shown = float(use_feed) if use_feed is not None else 55.0
                 self._host.cycle_log(
-                    f"Refill: reintento — feed {shown:g} mm (ASDA en park)"
+                    "Refill: reintento — otra vez hasta láser (ASDA en park)"
                 )
                 with self._lock:
                     self._progress = 35
@@ -4005,7 +4030,7 @@ class CycleRunner:
         return "ok"
 
     def _run_refill(self, rpm: float, feed_mm: float, asda_mm: float) -> None:
-        """ASDA park → holder → espera Retry/Long/corte → feed ↔ retry → cut → home."""
+        """ASDA park → holder → Alimentar (láser) ↔ reintento → cut → home."""
         with self._lock:
             self._active = True
             self._refill_mode = True
@@ -4326,9 +4351,21 @@ class CycleRunner:
                         if handoff_ready:
                             handoff_ready = False
                             self._recovery_skip_feed = False
+                            self._material_feed_done = True
                             self._metro_snap("handoff")
                             self._host.cycle_log(
                                 "Feed: handoff (ya alimentado post-HOME, ASDA=0)"
+                            )
+                        elif self._material_feed_done and (
+                            self._recovery_skip_feed or self._recovery_after_error
+                        ):
+                            # Ya hubo LengthOK (+ offset Motion). Tras offL/offR el
+                            # láser suele estar OFF: no re-alimentar ni reaplicar offset.
+                            self._recovery_skip_feed = False
+                            sides_txt = "".join(self._feed_side_list())
+                            self._metro_snap("feed-done-skip")
+                            self._host.cycle_log(
+                                f"Feed omitido (ya alimentado+offset) lados={sides_txt}"
                             )
                         elif (
                             (
@@ -4342,6 +4379,7 @@ class CycleRunner:
                                 self._recovery_skip_feed or self._recovery_after_error
                             )
                             self._recovery_skip_feed = False
+                            self._material_feed_done = True
                             sides_txt = "".join(self._feed_side_list())
                             if c2_or_rec:
                                 self._metro_snap("c2-skip-feed")
@@ -4778,6 +4816,7 @@ class CycleRunner:
         self._lot_purge_request = None
         self._suspend_piece_watch = False
         self._recovery_skip_feed = False
+        self._material_feed_done = False
         self._recovery_skip_pf_trigger = False
         self._flow_interrupt.clear()
         refill = False

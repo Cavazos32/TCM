@@ -217,6 +217,19 @@ static void loadSettings()
   if (refillPulseMs > REFILL_PULSE_MS_MAX) refillPulseMs = REFILL_PULSE_MS_MAX;
   prefs.end();
 
+  // Builds que mezclaron inversión (~2 s) con timeout de falla: si tens_fault
+  // quedó ≈ auto_rev y por debajo del default, restaurar 10 s (HTML Timeout tensión).
+  if (tensionFaultSec <= (autoReverseSec + 0.2f)
+      && tensionFaultSec < (TENSION_FAULT_SEC_DEFAULT - 0.5f))
+  {
+    Serial.printf("TENSION: migrar tens_fault %.1f → %.1f (era ≈ reverse)\n",
+                  tensionFaultSec, TENSION_FAULT_SEC_DEFAULT);
+    tensionFaultSec = TENSION_FAULT_SEC_DEFAULT;
+    prefs.begin(PREFS_NS, false);
+    prefs.putFloat("tens_fault", tensionFaultSec);
+    prefs.end();
+  }
+
   if (!bufMigratedV4)
   {
     // v4: HIGH = holgura OK (active HIGH). Revierte v3 (LED ON/LOW=OK).
@@ -280,24 +293,42 @@ static void servoWriteUsForced(uint16_t us)
   ledcWrite(PIN_SERVO_PWM, duty);
 }
 
-// Corte físico a neutro: Detach+Attach+1500 siempre (no confiar en cache LEDC).
-// Tras RMT el canal puede “leer” 1500 y el pin seguir con el pulso de marcha.
+// Corte a neutro 1500. RC continuo: perder PWM (Detach) = failsafe ≈ última marcha
+// (~3 s). Por eso NO se hace Detach en cada reafirmación ni al cortar marcha con
+// LEDC sano: solo cuando el RMT ensució el pin, o en flanco Full si el software
+// ya dice “parado” (cache mentiroso / pin huérfano).
 static void servoHardStopNeutral(bool force)
 {
   static uint32_t lastHardMs = 0;
   const uint32_t now = millis();
-  const bool immediate = force || servoPinDirty || servoRunning
+  const bool dirty = servoPinDirty;
+  const bool wasRunning = servoRunning
       || servoLastOutputUs != SERVO_PWM_NEUTRAL_US;
-  if (!immediate && (uint32_t)(now - lastHardMs) < SERVO_STOP_REASSERT_MS)
+  // Remux: dirty siempre. Flanco force solo si el cache ya decía neutro.
+  const bool remux = dirty || (force && !wasRunning);
+
+  if (!remux && !wasRunning
+      && (uint32_t)(now - lastHardMs) < SERVO_STOP_REASSERT_MS)
     return;
 
   const uint32_t duty = servoUsToDuty(SERVO_PWM_NEUTRAL_US);
   servoPinDirty = false;
   servoLastOutputUs = SERVO_PWM_NEUTRAL_US;
   servoRunning = false;
-  ledcDetach(PIN_SERVO_PWM);
-  ledcAttachChannel(PIN_SERVO_PWM, 50, SERVO_LEDC_BITS, SERVO_LEDC_CHANNEL);
-  ledcWrite(PIN_SERVO_PWM, duty);
+
+  if (remux)
+  {
+    ledcDetach(PIN_SERVO_PWM);
+    ledcAttachChannel(PIN_SERVO_PWM, 50, SERVO_LEDC_BITS, SERVO_LEDC_CHANNEL);
+    ledcWrite(PIN_SERVO_PWM, duty);
+  }
+  else if (!ledcWrite(PIN_SERVO_PWM, duty))
+  {
+    // ledcWrite falló (pin huérfano sin dirty): recuperar enlace una vez.
+    ledcDetach(PIN_SERVO_PWM);
+    ledcAttachChannel(PIN_SERVO_PWM, 50, SERVO_LEDC_BITS, SERVO_LEDC_CHANNEL);
+    ledcWrite(PIN_SERVO_PWM, duty);
+  }
   lastHardMs = now;
 }
 
@@ -1918,6 +1949,9 @@ static void updateHoseBeltFaultMonitor()
   enterSystemFault(FAULT_HOSE_ABSENT);
 }
 
+// Timeout de falla (E054/E060): GPIO23 HIGH continuo (reloj de pared) ≥ tensionFaultSec.
+// Independiente de autoReverseSec (inversión). Si NVS dejó tens_fault ≈ reverse (~2 s),
+// migrar al default 10 s — evita EXXX al acabar la inversión con HTML a más segundos.
 static void updateTensionFaultMonitor()
 {
   if (systemFault != FAULT_NONE)
@@ -1929,10 +1963,18 @@ static void updateTensionFaultMonitor()
     return;
   }
 
+  const uint32_t limitMs = (uint32_t)(tensionFaultSec * 1000.0f + 0.5f);
+  if (limitMs < 1000u)
+    return;
   if (tensionActiveSinceMs == 0)
     tensionActiveSinceMs = millis();
-  else if ((uint32_t)(millis() - tensionActiveSinceMs) >= (uint32_t)(tensionFaultSec * 1000.0f))
+  else if ((uint32_t)(millis() - tensionActiveSinceMs) >= limitMs)
+  {
+    Serial.printf("TENSION FAULT: fault_s=%.1f reverse_s=%.1f high_ms=%lu\n",
+                  tensionFaultSec, autoReverseSec,
+                  (unsigned long)(millis() - tensionActiveSinceMs));
     enterSystemFault(FAULT_TENSION_TIMEOUT);
+  }
 }
 
 // Buffer Full consumido: ya no enclava por timeout de relleno (E052/E058).
@@ -2250,10 +2292,10 @@ static void motor2HolguraTask(void* /*param*/)
       continue;
     }
 
-    // Buffer Max: cortar feeder. DeReeler/servo los para loop() en el mismo criterio.
+    // Buffer Max: cortar feeder en curso. Conservar Tfeed pendiente — al bajar
+    // Max arranca (un glitch de Max no debe borrar el relleno de la pieza).
     if (bufferMaxActive())
     {
-      motor2ClearPendingTrigger();
       if (motor2Phase != M2_PHASE_IDLE || fabsf(commandedRpm2) > 0.01f
           || (motor2 && fabsf(motor2->currentRPM()) > 1.0f))
         motor2DisarmFeedCycle();
@@ -2261,7 +2303,7 @@ static void motor2HolguraTask(void* /*param*/)
       continue;
     }
 
-    // Trigger TCP: requiere ventana armada + Auto ON.
+    // Trigger TCP: arranque requiere ventana armada + Auto ON.
     // Timed feed ya iniciado: seguir hasta fin aunque In process OFF / sin armado.
     // Tfeed pendiente se conserva (como holgura): arranca al rearmar — no perder
     // el de un lado si el otro ya estaba idle.
@@ -2287,8 +2329,11 @@ static void motor2HolguraTask(void* /*param*/)
 
     if (motor2TcpTriggerRequest)
     {
-      if (!peerLinkOk || bufferMaxActive())
-        motor2ClearPendingTrigger();
+      // Sin enlace: conservar pendiente (blip TCP). Buffer Max ya se filtró arriba.
+      if (!peerLinkOk)
+      {
+        // Esperar enlace; no borrar el Tfeed de ciclo.
+      }
       else if (motor2Phase == M2_PHASE_TIMED_FEED)
       {
         // Holgura o Tfeed TCM en curso: no cortar ni reiniciar timer;
@@ -2675,10 +2720,11 @@ void handleAuto()
       autoDisable();
   }
 
-  if (server.hasArg("idle_mode"))
-    applyIdleMode(server.arg("idle_mode") == "1");
-  else if (server.hasArg("test_mode"))  // alias legacy
-    applyIdleMode(server.arg("test_mode") == "1");
+  if (server.hasArg("idle_mode") || server.hasArg("test_mode"))
+  {
+    // Materialista solo desde HMI (Master TCP 0x3F → peer setIdleMode).
+    // HTML local /api/auto?idle_mode= ya no activa el modo.
+  }
 
   if (server.hasArg("refill_pulse_s"))
     applyRefillPulseSec(server.arg("refill_pulse_s").toFloat());
@@ -3132,11 +3178,15 @@ static bool peerDoCmd(const String& cmd, const String& val, int id)
       if (bufferMaxActive() && systemFault != FAULT_ENDSTOP)
         enterSystemFault(FAULT_ENDSTOP, false);
 
-      if (systemFault == FAULT_NONE && peerLinkOk && sensorsMotionArmed() && autoEnabled
+      // Encolar aunque In process esté OFF (no armado): la tarea M2 conserva el
+      // pendiente y arranca al rearmar. Antes se NACK-eaba y HMI/Master ya habían
+      // dado OK → un lado podía pasar piezas sin Tfeed (fire-and-forget).
+      // Sí se rechaza con falla / sin enlace / Auto OFF / Buffer Max.
+      if (systemFault == FAULT_NONE && peerLinkOk && autoEnabled
           && !bufferMaxActive())
       {
-        // Encolar siempre. Si hay timed feed (holgura o Tfeed) en curso, la tarea
-        // M2 lo deja pendiente y arranca al terminar — no marcar id hecho aquí.
+        // Si hay timed feed (holgura o Tfeed) en curso, la tarea M2 lo deja
+        // pendiente y arranca al terminar — no marcar id hecho aquí.
         if (val.length())
         {
           float v = val.toFloat();
@@ -3149,6 +3199,13 @@ static bool peerDoCmd(const String& cmd, const String& val, int id)
         motor2TcpTriggerPendingId = trigId;
         motor2TcpTriggerRequest = true;
         ok = true;
+        if (!sensorsMotionArmed())
+        {
+          Serial.printf(
+            "[PEER] trigger QUEUED id=%u (sin armado — arranca al In process) "
+            "inProc=%d idle=%d\n",
+            (unsigned)trigId, (int)tcmInProcess, (int)idleMode);
+        }
       }
       else
       {

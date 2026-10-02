@@ -103,7 +103,7 @@ button.primary{background:var(--accent);border-color:var(--accent);color:#0d1117
 <button onclick="autoCmd('reset')">Reset</button>
 </div>
 <div class="toggles">
-<label><input type="checkbox" id="tog-idle" onchange="setIdleMode(this.checked)"> Materialista</label>
+<label><input type="checkbox" id="tog-idle" disabled title="Solo desde HMI"> Materialista (solo HMI)</label>
 <label><input type="checkbox" id="tog-proc" onchange="setInProcess(this.checked)"> In process</label>
 </div>
 </section>
@@ -188,7 +188,7 @@ if(action==='start')return autoFetch('enable=1');
 if(action==='stop')return autoFetch('enable=0');
 if(action==='reset')return autoFetch('reset=1');
 }
-function setIdleMode(on){autoFetch('idle_mode='+(on?'1':'0'));}
+function setIdleMode(on){/* Materialista solo desde HMI */void on;}
 function setInProcess(on){autoFetch('in_process='+(on?'1':'0'));}
 ['tog-idle','tog-proc'].forEach(function(id){var el=document.getElementById(id);el.addEventListener('mousedown',function(){el._user=true;setTimeout(function(){el._user=false;},800);});});
 setInterval(poll,500);poll();

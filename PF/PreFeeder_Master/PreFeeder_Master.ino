@@ -700,10 +700,9 @@ static bool pfBroadcastAutoFromQuery()
       pfBroadcastCmd("stop", "");    // peerDoCmd("stop") ↔ enable=0
   }
 
-  if (server.hasArg("idle_mode"))
-    pfBroadcastCmd("setIdleMode", pfPeerOnOffVal(server.arg("idle_mode")));
-  else if (server.hasArg("test_mode"))
-    pfBroadcastCmd("setIdleMode", pfPeerOnOffVal(server.arg("test_mode")));
+  // Materialista solo desde HMI TCP 0x3F (no HTTP local Master/L/R).
+  (void)server.hasArg("idle_mode");
+  (void)server.hasArg("test_mode");
 
   if (server.hasArg("in_process"))
     pfBroadcastCmd("setInProcess", pfPeerOnOffVal(server.arg("in_process")));

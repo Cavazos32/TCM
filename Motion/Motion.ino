@@ -2793,9 +2793,9 @@ static bool feederTcpDoByte(uint8_t cmdByte, const char* line) {
   String err;
   bool ok = false;
   const bool sideR = (cmdByte == FEED_CMD_FEED_R);
-  // Purga HMI: skipValidate=true → LengthOK sin láser/OM. Ciclo normal no lo envía.
+  // Purga HMI: skipValidate=true → creep hasta láser ON (sin OM, timeout 10 s).
   const bool skipValidate = asdaTcpJBool(line, "skipValidate", false);
-  // mm solo con skipValidate (Long feed). Ciclo normal ignora el campo.
+  // mm legado (Long feed); la purga-a-láser lo ignora.
   const float targetMm = skipValidate ? asdaTcpJFloat(line, "mm", 0.0f) : 0.0f;
 
   switch (cmdByte) {

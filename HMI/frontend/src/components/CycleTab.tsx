@@ -543,19 +543,6 @@ export const CycleTab: React.FC<CycleTabProps> = ({
               {t('btn_refill_confirm_retry')}
             </button>
           )}
-          {(recoveryStage === 'await_feed' || recoveryStage === 'after_feed') &&
-            onRefillLongFeed && (
-            <button
-              id="btn-cycle-recovery-long"
-              type="button"
-              onClick={onRefillLongFeed}
-              disabled={!machineState.refillAwaitingConfirm}
-              className="flex items-center gap-1.5 rounded-lg bg-sky-600 hover:bg-sky-700 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40"
-            >
-              <Footprints className="h-3.5 w-3.5" />
-              {t('btn_refill_confirm_long')}
-            </button>
-          )}
           {(recoveryStage === 'after_feed' || recoveryStage === 'await_feed') &&
             onRefillConfirm && (
             <button
@@ -719,20 +706,6 @@ export const CycleTab: React.FC<CycleTabProps> = ({
             >
               <RotateCcw className="h-3.5 w-3.5" />
               {t('btn_refill_confirm_retry')}
-            </button>
-          )}
-          {(machineState.refillPrompt === 'after_feed' ||
-            machineState.refillPrompt === 'await_feed') &&
-            onRefillLongFeed && (
-            <button
-              id="btn-cycle-refill-long"
-              type="button"
-              onClick={onRefillLongFeed}
-              disabled={!machineState.refillAwaitingConfirm}
-              className="flex items-center gap-1.5 rounded-lg bg-sky-600 hover:bg-sky-700 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              <Footprints className="h-3.5 w-3.5" />
-              {t('btn_refill_confirm_long')}
             </button>
           )}
           {machineState.refillPrompt !== 'working' && (

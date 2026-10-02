@@ -4,7 +4,7 @@
 
 // ====================== LADO L / R ======================
 // Comentada = L | descomentada = R
-//#define PREFEEDER_SIDE_RIGHT
+#define PREFEEDER_SIDE_RIGHT
 
 #ifndef PREFEEDER_SIDE_RIGHT
 #define PREFEEDER_SIDE_TAG  "L"
@@ -22,7 +22,7 @@ constexpr uint8_t  FAULT_CODE_BASE     = 30;
 
 // ====================== DEBUG ======================
 #ifndef SERIAL_VERBOSE
-#define SERIAL_VERBOSE 0
+#define SERIAL_VERBOSE 1
 #endif
 #if SERIAL_VERBOSE
 #define DBG_PRINT(...)   Serial.print(__VA_ARGS__)

@@ -117,8 +117,8 @@ const char* feedControlModeName(FeedMode mode);
 String feedStatusJson();
 
 bool feedQueueTest(const FeedTestReq& req, String& err);
-// skipValidate: purga/refill — LengthOK al fin de servo, sin láser ni ventana OM.
-// targetMm>0 solo con skipValidate (p.ej. Long feed 100 mm). Ciclo normal: 0 → 55 fijo.
+// skipValidate: purga/refill — creep hasta láser ON por lado, sin OM.
+// targetMm ignorado (legado Long feed). Timeout FEED_PURGE_LASER_TIMEOUT_MS.
 bool feedQueueTestSide(int8_t onlySide, String& err, bool skipValidate = false,
                        float targetMm = 0.0f);
 bool feedResetRuntime();

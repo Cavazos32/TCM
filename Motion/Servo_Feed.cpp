@@ -643,9 +643,9 @@ static Preferences feedPrefs;
 struct FeedSideRt {
   bool pending = false;
   bool active = false;
-  // Purga/refill HMI: feed físico sin validar láser ni OM (LengthOK al fin de servo).
+  // Purga/refill HMI: creep hasta láser ON; sin OM; timeout FEED_PURGE_LASER_TIMEOUT_MS.
   bool skipValidate = false;
-  // >0 solo en skipValidate (override de FEED_TARGET_FIXED_MM). 0 = 55 mm.
+  // Legacy mm override (ya no usado en purga-a-láser). 0 = ignorar.
   float overrideTargetMm = 0.0f;
   uint32_t gen = 0;
   FeedSidePhase phase = FSP_IDLE;
@@ -1181,6 +1181,11 @@ static uint32_t feedSideCreepPp(bool sideR)
   return feedMmSToPp(FEED_LASER_CREEP_MM_S, sideR);
 }
 
+static uint8_t feedSideNoFbErr(bool sideR)
+{
+  return sideR ? MOT_ERR_FEED_R_NO_FB : MOT_ERR_FEED_L_NO_FB;
+}
+
 static bool feedSideIssueMove(bool sideR, int32_t steps, uint32_t now, uint32_t velPp = 0)
 {
   FeedSideRt& s = feedSideAt(sideR);
@@ -1213,11 +1218,6 @@ static bool feedSideIssueMoveOrRetry(bool sideR, int32_t steps, uint32_t now, ui
   }
   feedSideFinish(sideR, FVR_NG, feedSideNoFbErr(sideR), "FEED: sin feedback 6064");
   return false;
-}
-
-static uint8_t feedSideNoFbErr(bool sideR)
-{
-  return sideR ? MOT_ERR_FEED_R_NO_FB : MOT_ERR_FEED_L_NO_FB;
 }
 
 static bool feedSidePollServoDone(bool sideR, uint32_t now)
@@ -1272,12 +1272,7 @@ static void feedSideStartApproach(bool sideR)
   FeedSideRt& s = feedSideAt(sideR);
   feedSideClearDiag(s);
   s.targetMm = FEED_TARGET_FIXED_MM;
-  if (s.skipValidate && s.overrideTargetMm >= 1.0f)
-    s.targetMm = clampFeedTargetMm(s.overrideTargetMm);
   s.approachMm = s.targetMm * (feedApproachPct / 100.0f);
-  // Purga: un solo movimiento a target (sin corrección OM/láser).
-  if (s.skipValidate)
-    s.approachMm = s.targetMm;
   // approachMm = comando servo intermedio (p.ej. 44). No es medición OM ni pasa por PHYS 50–58.
   s.gen = feedGenCounter++;
   if (s.gen == 0) s.gen = feedGenCounter++;
@@ -1289,11 +1284,29 @@ static void feedSideStartApproach(bool sideR)
   s.moveStartMs = 0;
   s.absDueMs = 0;
 
-  // Purga: un movimiento a target+offset. Ciclo: approach = % de 55, sin offset
+  // Purga HMI: por lado, creep hasta LR-X ON (sin OM). Si ya está ON → OK inmediato.
+  // El otro lado sigue si aún no llegó. Timeout 10 s (refill lejano).
+  if (s.skipValidate) {
+    const uint32_t now = millis();
+    s.huntLaser = true;
+    s.overrideTargetMm = 0.0f;
+    if (feedLaserMaterialPresentRaw(sideR)) {
+      s.laserState = true;
+      s.laserSeekDone = true;
+      Serial.printf("FEED %c PURGE: laser already ON → OK\n", sideR ? 'R' : 'L');
+      feedSideFinish(sideR, FVR_OK, 0, "FEED_OK_PURGE_LASER");
+      return;
+    }
+    feedSideStartLaserSeek(sideR, now, "purge");
+    s.seekDeadlineMs = now + FEED_PURGE_LASER_TIMEOUT_MS;
+    Serial.printf("FEED %c PURGE: creep until laser · timeout=%lums\n",
+                  sideR ? 'R' : 'L', (unsigned long)FEED_PURGE_LASER_TIMEOUT_MS);
+    return;
+  }
+
+  // Ciclo: approach = % de 55, sin offset
   // (si se suma offR al 80%, R manda ~50–55 y el validador se saltaba la corrección).
-  const float offset = sideR ? feedOffsetMmB : feedOffsetMm;
-  const float planOffset = s.skipValidate ? offset : 0.0f;
-  FeedEncPlan plan = feedPlanEncTarget(s.approachMm, planOffset, sideR);
+  FeedEncPlan plan = feedPlanEncTarget(s.approachMm, 0.0f, sideR);
   if (!plan.ok) {
     s.phase = FSP_APPROACH;
     feedSideFinish(sideR, FVR_NG,
@@ -1310,7 +1323,7 @@ static void feedSideStartApproach(bool sideR)
   }
   s.moveSteps = steps;  // pending approach steps tras halt settle
 
-  s.huntLaser = !s.skipValidate && !feedLaserMaterialPresentRaw(sideR);
+  s.huntLaser = !feedLaserMaterialPresentRaw(sideR);
   sendCanHaltImmediate(sideR);
   s.settleUntilMs = millis() + FEED_HALT_SETTLE_MS;
   s.phase = FSP_HALT_SETTLE;
@@ -1684,18 +1697,22 @@ static void feedSideService(bool sideR, uint32_t now)
 
     case FSP_LASER_SEEK_HALT:
       if (now < s.settleUntilMs) break;
-      // Láser ON tras seek: aceptar FEED_OK e ignorar ventana PHYS/control OM.
-      // Si OM ya estaba ~55 con láser OFF, el seek empuja OM fuera de 50–58.
+      // Láser ON tras seek / purga: FEED_OK; ignorar ventana PHYS/control OM.
       {
         float om = 0.0f;
-        if (feedOmReadOfficialMmSide(sideR, &om)) {
+        if (!s.skipValidate && feedOmReadOfficialMmSide(sideR, &om)) {
           s.finalOmMm = om;
           feedOmLastOfficialMm = om;
         }
         s.laserState = true;
-        Serial.printf("FEED %c LASER_SEEK OK (OM limit ignored) omF=%.2f\n",
-                      sideR ? 'R' : 'L', (double)s.finalOmMm);
-        feedSideFinish(sideR, FVR_OK, 0, "FEED_OK_LASER_SEEK");
+        if (s.skipValidate) {
+          Serial.printf("FEED %c PURGE laser OK (sin OM)\n", sideR ? 'R' : 'L');
+          feedSideFinish(sideR, FVR_OK, 0, "FEED_OK_PURGE_LASER");
+        } else {
+          Serial.printf("FEED %c LASER_SEEK OK (OM limit ignored) omF=%.2f\n",
+                        sideR ? 'R' : 'L', (double)s.finalOmMm);
+          feedSideFinish(sideR, FVR_OK, 0, "FEED_OK_LASER_SEEK");
+        }
       }
       break;
 

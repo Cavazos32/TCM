@@ -10,6 +10,10 @@ Va **después del corte** (paso 18: post-corte, antes del depósito). Así el Pr
 
 Si **holgura** está ausente o choca con un Tfeed, holgura va primero: el helper no se corta. El Tfeed de ciclo **no se pierde**: Main lo manda igual y el esclavo lo deja pendiente hasta que termine el helper. Igual si el lado **ya está en un Tfeed TCP**: el nuevo queda pendiente y arranca al terminar (no se marca “hecho” ni se descarta). Así L y R no quedan asimétricos cuando un lado aún alimenta y el otro ya idle. El ciclo no manda triggers extra para “arreglar” holgura.
 
+**In process OFF / sin armado:** el esclavo **encola** el Tfeed y lo arranca al rearmar (misma regla que holgura). No lo descarta. Antes, un NACK silencioso (HMI/Master ya habían ACK’eado el TCP) dejaba un lado sin feeder durante varias piezas. Sí se rechaza con falla activa, Auto OFF, sin enlace Master↔esclavo o Buffer Max en el instante del comando.
+
+**Buffer Max breve** tras haber encolado: no borra el pendiente; al bajar Max arranca. Falla / Materialista refill manual sí cancelan el pendiente.
+
 ---
 
 ## Trigger de ciclo (paso 18, post-corte)
@@ -73,4 +77,4 @@ El ciclo **no** tiene un Tfeed extra “si falta holgura” (pre-pieza / post-pi
 
 ---
 
-**Regla corta:** Con `pfTriggerEnabled` ON, Tfeed **tras el corte** de cada pieza (incluida la 1ª y la última). C2 omite solo si esa pieza ya mandó Tfeed. Con OFF, el paso 18 siempre omite. Holgura o Tfeed en curso van primero; el Tfeed nuevo espera y no se pierde. Opcodes: `0x4C` = R, `0x51` = L (ciclo manda ambos si `feedSides` = LR; no hay opcode único L+R).
+**Regla corta:** Con `pfTriggerEnabled` ON, Tfeed **tras el corte** de cada pieza (incluida la 1ª y la última). C2 omite solo si esa pieza ya mandó Tfeed. Con OFF, el paso 18 siempre omite. Holgura, Tfeed en curso o In process OFF: el nuevo Tfeed **espera en cola** y no se pierde. Opcodes: `0x4C` = R, `0x51` = L (ciclo manda ambos si `feedSides` = LR; no hay opcode único L+R).

@@ -93,7 +93,8 @@ export const PreFeederTab: React.FC<PreFeederTabProps> = ({
 
   const connected = preFeederState.connection.connected;
   const hasError = !!preFeederState.hasError && connected;
-  const pfMode = cycleMaterialist
+  const inMaterialist = cycleMaterialist || !!preFeederState.idleMode;
+  const pfMode = inMaterialist
     ? 'materialist'
     : cycleBusy || preFeederState.isRunning
       ? 'busy'

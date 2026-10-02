@@ -584,6 +584,13 @@ export function useHmiState() {
 
     const snap = snapRef.current;
     if (!snap) return;
+    // Con ErrorState / issue: solo cortador manual; resto bloqueado hasta Reset.
+    const plcFault =
+      snap.plc.status?.kind === 'error' ||
+      Object.values(snap.plc.valves || {}).some((v) => v.error === true);
+    const isCutter = valveId === 'cutter-r' || valveId === 'cutter-l';
+    if (plcFault && !isCutter) return;
+
     const valves = mapPlcState(snap).valves;
     const byte = valveByteFromId(valves, valveId);
     if (byte == null) return;

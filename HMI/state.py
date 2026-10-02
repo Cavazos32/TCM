@@ -2129,6 +2129,15 @@ class HmiState:
     def cmd_plc(self, action: str, **kwargs) -> dict:
         if action == "valve":
             byte_code = int(kwargs.get("byte", 0))
+            # Manual con issue: solo cortador queda operable (purga / corte puntual).
+            if self._plc_has_fault() and byte_code not in (
+                CMD_CUTTER_R,
+                CMD_CUTTER_L,
+            ):
+                return {
+                    "ok": False,
+                    "error": "PLC en error — solo cortador manual; Reset para el resto",
+                }
             on = bool(kwargs.get("on", True))
             label = PLC_VALVE_LABELS.get(byte_code, f"0x{byte_code:02X}")
             out_name = PLC_VALVE_OUT_NAMES.get(byte_code, "?")
@@ -2172,6 +2181,11 @@ class HmiState:
             # Reset PLC propio (0x1E). Reset HMI también lo manda si hay enlace.
             ok = self._plc_reset_reflect_off()
         elif action == "all_off":
+            if self._plc_has_fault():
+                return {
+                    "ok": False,
+                    "error": "PLC en error — Reset antes de All Off manual",
+                }
             ok = self._manual_plc(lambda: self._plc_client.cmd_all_off())
             if ok:
                 with self._lock:
@@ -4001,6 +4015,15 @@ class HmiState:
                 elif self._pf_materialist != pf_idle:
                     self._pf_materialist = pf_idle
                     changed = True
+                    # Reflejar en ciclo/Andon: Materialista solo debe activarse
+                    # desde HMI, pero si el PF queda en idleMode hay que mostrarlo.
+                    try:
+                        cur = bool(self._cycle.snapshot().get("materialist"))
+                        if cur != pf_idle:
+                            self._cycle.set_materialist(pf_idle)
+                            changed = True
+                    except Exception:
+                        pass
                 if self._pf_apply_state_byte(byte_code):
                     changed = True
                     entered_error = (

@@ -616,9 +616,11 @@ const char index_html[] PROGMEM = R"rawliteral(
         <button class="btn-danger" onclick="autoCmd('stop')">Detener</button>
         <button class="btn-warning" onclick="autoCmd('reset')">Reset</button>
       </div>
-      <div class="btn-row cols-1" style="margin-top:10px">
-        <button type="button" class="btn-toggle test-mode" id="idle-mode-btn" onclick="toggleIdleMode()">Idle</button>
-      </div>
+      <p class="meta compact" style="margin-top:10px">
+        Materialista solo desde HMI. Aquí se muestra el estado (solo lectura).
+        <strong id="idle-mode-readonly">Idle</strong>
+      </p>
+      <button type="button" class="btn-toggle test-mode" id="idle-mode-btn" hidden aria-hidden="true">Idle</button>
     </div>
 
     <div class="card" id="refill-card">
@@ -771,7 +773,7 @@ const char index_html[] PROGMEM = R"rawliteral(
       </div>
       <div class="form-group">
         <label for="tension-fault-s">Timeout tensión (s)</label>
-        <p class="field-desc">Si GPIO 23 permanece activo este tiempo → falla (E054/E060). Independiente de la inversión.</p>
+        <p class="field-desc">Si GPIO 23 permanece activo este tiempo → falla (E054/E060). <strong>No es</strong> la duración de inversión (arriba, tip. 2 s): son independientes. Tras cambiar, pulsa Guardar.</p>
         <input type="number" id="tension-fault-s" min="1" max="60" step="0.1" value="10">
       </div>
       <div class="form-group">
@@ -985,6 +987,8 @@ const char index_html[] PROGMEM = R"rawliteral(
         idleBtn.className = 'btn-toggle test-mode' + (idleOn ? ' on' : '');
         idleBtn.textContent = idleOn ? 'Materialista' : 'Idle';
       }
+      var idleRo = document.getElementById('idle-mode-readonly');
+      if (idleRo) idleRo.textContent = idleOn ? 'Materialista (HMI)' : 'Idle';
       var modeEl = document.getElementById('mode-label');
       var armedEl = document.getElementById('sensors-armed-label');
       if (modeEl) {
@@ -1007,24 +1011,8 @@ const char index_html[] PROGMEM = R"rawliteral(
       if (armedEl) armedEl.textContent = armed ? 'armados' : 'bloqueados';
     }
     function toggleIdleMode() {
-      var btn = document.getElementById('idle-mode-btn');
-      // class "on" = Materialista; sin "on" = Idle
-      var nextIdle = !(btn && btn.classList.contains('on'));
-      fetch('/api/auto?idle_mode=' + (nextIdle ? '1' : '0'))
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-          applyModeFlags(data);
-          if (data.refill) applyRefill(data.refill, nextIdle);
-          if (data.auto) applyAuto(data.auto, data.error, data);
-          var inProc = !!(data.inProcess);
-          setStatus(true, nextIdle
-            ? 'Materialista · solo manual · torre naranja · TCM no produce'
-            : (inProc ? 'In process · sensores armados'
-              : 'Idle · sensores bloqueados / Iniciar o In process'));
-        })
-        .catch(function() {
-          setStatus(false, 'Error de conexión');
-        });
+      // Materialista solo desde HMI (TCP 0x3F). HTML local: solo lectura.
+      setStatus(false, 'Materialista solo desde HMI');
     }
     function applyRefill(r, idleOn) {
       r = r || {};

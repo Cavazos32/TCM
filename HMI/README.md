@@ -75,6 +75,16 @@ powershell -ExecutionPolicy Bypass -File scripts/create-desktop-shortcut.ps1
 
 Crea **`TCM HMI.lnk`** en el Escritorio.
 
+### Acceso directo (Linux)
+
+```bash
+cd HMI
+chmod +x "Iniciar HMI.sh" scripts/start-hmi.sh
+./"Iniciar HMI.sh"
+```
+
+Inicia el servidor en la terminal actual y abre el navegador (`xdg-open`). Si el servidor ya corre, solo abre la web. Opciones: `--port N`, `--no-browser`.
+
 ### Desarrollo UI (hot reload)
 
 Terminal 1 — backend:

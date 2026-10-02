@@ -458,7 +458,8 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
     machineState.refillActive;
   // Error activo: no producir. Materialist + JOG permanecen disponibles como antes.
   const pfProdLocked = hasFault;
-  const pfInMaterialist = machineState.cycleMaterialist;
+  const pfInMaterialist =
+    machineState.cycleMaterialist || !!preFeederState.idleMode;
   const pfMode = pfInMaterialist
     ? 'materialist'
     : machineState.cycleBusy || preFeederState.isRunning
@@ -885,19 +886,6 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     {t('btn_refill_confirm_retry')}
                   </button>
                 )}
-                {(recoveryStage === 'await_feed' || recoveryStage === 'after_feed') &&
-                  onRefillLongFeed && (
-                  <button
-                    id="btn-recovery-refill-long"
-                    type="button"
-                    onClick={onRefillLongFeed}
-                    disabled={!machineState.refillAwaitingConfirm}
-                    className="flex items-center gap-1.5 rounded-lg bg-sky-600 hover:bg-sky-700 px-3.5 py-2 text-xs font-bold text-white disabled:opacity-40"
-                  >
-                    <Activity className="h-3.5 w-3.5" />
-                    {t('btn_refill_confirm_long')}
-                  </button>
-                )}
                 {(recoveryStage === 'after_feed' || recoveryStage === 'await_feed') &&
                   onRefillConfirm && (
                   <button
@@ -1065,20 +1053,6 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                   >
                     <RotateCcw className="h-3.5 w-3.5" />
                     {t('btn_refill_confirm_retry')}
-                  </button>
-                )}
-                {(machineState.refillPrompt === 'after_feed' ||
-                  machineState.refillPrompt === 'await_feed') &&
-                  onRefillLongFeed && (
-                  <button
-                    id="btn-refill-confirm-long"
-                    type="button"
-                    onClick={onRefillLongFeed}
-                    disabled={!machineState.refillAwaitingConfirm}
-                    className="flex items-center gap-1.5 rounded-lg bg-sky-600 hover:bg-sky-700 px-3.5 py-2 text-xs font-bold text-white shadow-2xs active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
-                  >
-                    <Activity className="h-3.5 w-3.5" />
-                    {t('btn_refill_confirm_long')}
                   </button>
                 )}
                 {machineState.refillPrompt !== 'working' && (

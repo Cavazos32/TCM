@@ -156,6 +156,8 @@
 #define FEED_LASER_HALT_BURST       3u     // CW Halt al flanco ON
 #define FEED_LASER_CREEP_MM         1.5f   // trozo máximo; tope de sobrepaso
 #define FEED_LASER_CREEP_MM_S       25.0f  // vel seek / hunt
+// Purga HMI (skipValidate): creep hasta LR-X ON; sin OM; timeout por lado.
+#define FEED_PURGE_LASER_TIMEOUT_MS 10000u
 
 #define FEED_VELOCITY_PP_DEFAULT    FEED_SERVO_BASE_PP_DEFAULT
 #define FEED_PREFS_NS               "motion_feed"

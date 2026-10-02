@@ -37,6 +37,9 @@ export const PlcTab: React.FC<PlcTabProps> = ({
   const activeValvesCount = plcState.valves.filter((v) => v.active).length;
   const connected = plcState.connection.connected;
   const hasError = !!plcState.hasError && connected;
+  // Con issue: bloquear manuals excepto cortador (purga / corte puntual).
+  const manualsLocked = hasError;
+  const isCutterValve = (id: string) => id === 'cutter-r' || id === 'cutter-l';
 
   return (
     <div className="space-y-4">
@@ -119,13 +122,25 @@ export const PlcTab: React.FC<PlcTabProps> = ({
             <button
               id="btn-all-off-plc"
               onClick={onAllOff}
-              className="flex items-center justify-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 px-3 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-200 transition active:scale-95 shadow-2xs"
+              disabled={manualsLocked || !connected}
+              title={
+                manualsLocked
+                  ? t('plc_manuals_locked')
+                  : undefined
+              }
+              className="flex items-center justify-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 px-3 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-200 transition active:scale-95 shadow-2xs disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
             >
               <PowerOff className="h-3.5 w-3.5 text-slate-500 dark:text-slate-400" />
               <span>{t('btn_all_off')}</span>
             </button>
           </div>
         </div>
+
+        {manualsLocked && (
+          <p className="mt-2 text-xs text-red-700 dark:text-red-300 font-medium">
+            {t('plc_manuals_locked')}
+          </p>
+        )}
 
         {/* Valves Matrix / Table */}
         <div className="mt-3 overflow-hidden rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
@@ -184,10 +199,21 @@ export const PlcTab: React.FC<PlcTabProps> = ({
                     <button
                       id={`btn-valve-${valve.id}`}
                       type="button"
-                      disabled={busy}
+                      disabled={
+                        busy ||
+                        !connected ||
+                        (manualsLocked && !isCutterValve(valve.id))
+                      }
+                      title={
+                        manualsLocked && !isCutterValve(valve.id)
+                          ? t('plc_manuals_locked')
+                          : undefined
+                      }
                       onClick={() => onToggleValve(valve.id)}
                       className={`group flex items-center justify-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-mono font-bold transition border shadow-2xs ${
-                        busy ? 'opacity-60 cursor-wait' : 'active:scale-95'
+                        busy || (manualsLocked && !isCutterValve(valve.id))
+                          ? 'opacity-60 cursor-not-allowed'
+                          : 'active:scale-95'
                       } ${
                         valve.active
                           ? 'bg-emerald-600 dark:bg-emerald-600 text-white border-emerald-600'
