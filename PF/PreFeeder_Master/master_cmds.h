@@ -33,17 +33,14 @@ static inline PfCmdScope pfMasterCmdScope(const String& cmd)
 
   if (cmd == "trigger"
       || cmd == "setRefillPulseS" || cmd == "refillPulseS"
-      || cmd == "setDereelerLead" || cmd == "setDereelerLeadMs"
+      || cmd == "setHolguraFault" || cmd == "setHolguraFaultS"
+      || cmd == "setHolguraHelper" || cmd == "setHolguraHelperRpm"
+      || cmd == "setHolguraHelperS" || cmd == "setHolguraHelperAbsentMs"
       || cmd == "setTriggerFeed" || cmd == "setTriggerCfg"
       || cmd == "setAllCfg" || cmd == "applyAllCfg")
     return PfCmdScope::Side;
 
   return PfCmdScope::Unknown;
-}
-
-static inline bool pfMasterCmdBypassesPause(const String& cmd)
-{
-  return cmd == "reset" || cmd == "stop";
 }
 
 static inline char pfMasterParseSideArg(const String& s)

@@ -72,7 +72,7 @@ button.primary{background:var(--accent);border-color:var(--accent);color:#0d1117
 <section class="status-card">
 <h2>Comunicación</h2>
 <div class="status-bar"><span class="status-dot ok" id="dot-wifi"></span><span id="txt-wifi">WiFi Master: …</span></div>
-<div class="status-bar"><span class="status-dot" id="dot-ml"></span><span id="txt-ml">Master ↔ L (.101): …</span></div>
+<div class="status-bar"><span class="status-dot" id="dot-ml"></span><span id="txt-ml">Master ↔ L (.30): …</span></div>
 <div class="status-bar"><span class="status-dot" id="dot-mr"></span><span id="txt-mr">Master ↔ R (.102): …</span></div>
 </section>
 <section class="status-card">
@@ -95,21 +95,21 @@ button.primary{background:var(--accent);border-color:var(--accent);color:#0d1117
 </div>
 <section class="ctrl">
 <h2>Control manual (global L + R)</h2>
-<p>Misma API que PF_LR (<code>/api/auto</code>): Iniciar/Detener/Reset, Materialista e In process se reenvían por TCP a L+R.</p>
-<p class="state" id="mode-global">Modo: Idle · Sensores: bloqueados</p>
+<p>Misma API que PF_LR (<code>/api/auto</code>): Iniciar/Detener/Reset, Materialista e In process se reenvían por TCP a L+R (<code>peerDoCmd</code>).</p>
 <div class="btns">
 <button class="primary" onclick="autoCmd('start')">Iniciar</button>
 <button class="danger" onclick="autoCmd('stop')">Detener</button>
 <button onclick="autoCmd('reset')">Reset</button>
 </div>
 <div class="toggles">
+<span id="idle-ro" style="font-size:13px;color:#555">Materialista: solo HMI · <strong id="tog-idle-label">Off</strong></span>
 <label><input type="checkbox" id="tog-idle" disabled title="Solo desde HMI"> Materialista (solo HMI)</label>
 <label><input type="checkbox" id="tog-proc" onchange="setInProcess(this.checked)"> In process</label>
 </div>
 </section>
 </div>
 <script>
-var SENS=[['home','Buffer Full'],['endstop','Buffer Max'],['tension','Tensión'],['cylinderOpen','Cilindro abierto'],['hoseAbsent','Manguera ausente']];
+var SENS=[['home','Buffer Full'],['endstop','Buffer Max'],['tension','Tensión'],['cylinderOpen','Cilindro abierto'],['hoseAbsent','Manguera ausente'],['holgura','Holgura']];
 function mkSens(id){var el=document.getElementById(id);el.innerHTML=SENS.map(function(s){return '<div class="row"><span>'+s[1]+'</span><span class="dot" id="'+id+'-'+s[0]+'"></span></div>';}).join('');}
 mkSens('sens-l');mkSens('sens-r');
 function setDot(id,on,alarm){var d=document.getElementById(id);if(!d)return;d.className='dot'+(alarm?' alarm':(on?' on':''));}
@@ -129,22 +129,16 @@ return info.warn?'warn':'err';
 function applySide(prefix,d){
 var stEl=document.getElementById('state-'+prefix);
 var errLine=d.error?' · FALTA ENCLAVADA':'';
-var mode='Idle';
-if(d.idleMode)mode='Materialista';
-else if(d.inProcess)mode='In process';
-else if(d.machineState==='in_process')mode='In process';
-else if(d.machineState==='materialist')mode='Materialista';
-else if(d.machineState==='error')mode='Error';
-else if(d.machineState==='stop')mode='Stop';
-var armed=d.sensorsArmed!==undefined?!!d.sensorsArmed:(!d.idleMode&&!!d.inProcess);
-stEl.textContent=mode+' · Auto: '+(d.autoEnabled?'ON':'OFF')+' · '+(armed?'sensores armados':'sensores bloqueados')+' · '+d.autoState+errLine;
+stEl.textContent='Auto: '+(d.autoEnabled?'ON':'OFF')+' · '+d.autoState+errLine;
 SENS.forEach(function(s){var k=s[0];setDot('sens-'+prefix+'-'+k,!!d[k],false);});
 }
 function applyErrorGlobal(me,paused){
 var el=document.getElementById('error-global');
 if(!me.active){el.textContent='Sin error — sistema OK (L+R)';el.className='error-global ok';return;}
-var txt=me.ui||((me.exxx||me.tag||'E???')+': Pre-Feeder, '+(me.reason||'falla'));
-if(me.side&&me.side!=='-')txt+=' · '+me.side;
+var txt=me.tag||('PF-'+String(me.code).padStart(3,'0'));
+txt+=' · Nivel '+me.level;
+if(me.side&&me.side!=='-')txt+=' · lado '+me.side;
+txt+=' · '+me.reason;
 if(paused)txt+=' · PAUSE';
 el.textContent=txt;el.className='error-global '+(me.level>=3?'err':(me.level>=2?'warn':'warn'));
 }
@@ -158,28 +152,21 @@ setDotEl('dot-wifi',d.wifiOk?'ok':'err');
 document.getElementById('txt-wifi').textContent='WiFi Master: '+(d.wifiOk?('OK '+d.wifiIp):'sin red');
 setDotEl('dot-ml',linkDot(ml));
 setDotEl('dot-mr',linkDot(mr));
-document.getElementById('txt-ml').textContent='Master ↔ '+linkTxt('L (.101)',ml);
+document.getElementById('txt-ml').textContent='Master ↔ '+linkTxt('L (.30)',ml);
 document.getElementById('txt-mr').textContent='Master ↔ '+linkTxt('R (.102)',mr);
 applyErrorGlobal(me,d.paused);
 document.getElementById('paused-banner').hidden=!d.paused;
 applySide('l',d.l);
 applySide('r',d.r);
-var idleOn=!!(d.l.idleMode||d.r.idleMode);
-var inProc=!!(d.l.inProcess||d.r.inProcess);
-var modeG=document.getElementById('mode-global');
-if(modeG){
-  var gTxt=idleOn?'Materialista':(inProc?'In process':'Idle');
-  var gArm=(!idleOn&&inProc)?'armados':'bloqueados';
-  modeG.textContent='Modo: '+gTxt+' · Sensores: '+gArm;
-}
 if(d.uiL){var a=document.getElementById('link-ui-l');if(a)a.href=d.uiL;var pl=document.getElementById('panel-link-l');if(pl)pl.href=d.uiL;}
 if(d.uiR){var b=document.getElementById('link-ui-r');if(b)b.href=d.uiR;var pr=document.getElementById('panel-link-r');if(pr)pr.href=d.uiR;}
-var idle=document.getElementById('tog-idle');if(idle&&!idle._user)idle.checked=idleOn;
-var proc=document.getElementById('tog-proc');if(proc&&!proc._user)proc.checked=inProc;
+var idle=document.getElementById('tog-idle');if(idle&&!idle._user)idle.checked=!!(d.l.idleMode||d.r.idleMode);
+var idleLab=document.getElementById('tog-idle-label');if(idleLab)idleLab.textContent=(d.l.idleMode||d.r.idleMode)?'On':'Off';
+var proc=document.getElementById('tog-proc');if(proc&&!proc._user)proc.checked=!!(d.l.inProcess||d.r.inProcess);
 }).catch(function(e){
 setDotEl('dot-wifi','err');
 document.getElementById('txt-wifi').textContent='Poll: '+(e&&e.message?e.message:'sin respuesta')+' — prueba /ping y /api/health';
-setDotEl('dot-ml','err');document.getElementById('txt-ml').textContent='Master ↔ L (.101): poll pendiente';
+setDotEl('dot-ml','err');document.getElementById('txt-ml').textContent='Master ↔ L (.30): poll pendiente';
 setDotEl('dot-mr','err');document.getElementById('txt-mr').textContent='Master ↔ R (.102): poll pendiente';
 });}
 function autoFetch(q){return fetch('/api/auto?'+q,{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){if(!d.ok)throw new Error(d.error||'fail');poll();}).catch(function(e){alert(e&&e.message?e.message:'Error de conexión');});}

@@ -72,7 +72,7 @@ button.primary{background:var(--accent);border-color:var(--accent);color:#0d1117
 <section class="status-card">
 <h2>Comunicación</h2>
 <div class="status-bar"><span class="status-dot ok" id="dot-wifi"></span><span id="txt-wifi">WiFi Master: …</span></div>
-<div class="status-bar"><span class="status-dot" id="dot-ml"></span><span id="txt-ml">Master ↔ L (.101): …</span></div>
+<div class="status-bar"><span class="status-dot" id="dot-ml"></span><span id="txt-ml">Master ↔ L (.30): …</span></div>
 <div class="status-bar"><span class="status-dot" id="dot-mr"></span><span id="txt-mr">Master ↔ R (.102): …</span></div>
 </section>
 <section class="status-card">
@@ -109,7 +109,7 @@ button.primary{background:var(--accent);border-color:var(--accent);color:#0d1117
 </section>
 </div>
 <script>
-var SENS=[['home','Buffer Full'],['endstop','Buffer Max'],['tension','Tensión'],['cylinderOpen','Cilindro abierto'],['hoseAbsent','Manguera ausente']];
+var SENS=[['home','Buffer Full'],['endstop','Buffer Max'],['tension','Tensión'],['cylinderOpen','Cilindro abierto'],['hoseAbsent','Manguera ausente'],['holgura','Holgura']];
 function mkSens(id){var el=document.getElementById(id);el.innerHTML=SENS.map(function(s){return '<div class="row"><span>'+s[1]+'</span><span class="dot" id="'+id+'-'+s[0]+'"></span></div>';}).join('');}
 mkSens('sens-l');mkSens('sens-r');
 function setDot(id,on,alarm){var d=document.getElementById(id);if(!d)return;d.className='dot'+(alarm?' alarm':(on?' on':''));}
@@ -158,7 +158,7 @@ setDotEl('dot-wifi',d.wifiOk?'ok':'err');
 document.getElementById('txt-wifi').textContent='WiFi Master: '+(d.wifiOk?('OK '+d.wifiIp):'sin red');
 setDotEl('dot-ml',linkDot(ml));
 setDotEl('dot-mr',linkDot(mr));
-document.getElementById('txt-ml').textContent='Master ↔ '+linkTxt('L (.101)',ml);
+document.getElementById('txt-ml').textContent='Master ↔ '+linkTxt('L (.30)',ml);
 document.getElementById('txt-mr').textContent='Master ↔ '+linkTxt('R (.102)',mr);
 applyErrorGlobal(me,d.paused);
 document.getElementById('paused-banner').hidden=!d.paused;
@@ -179,7 +179,7 @@ var proc=document.getElementById('tog-proc');if(proc&&!proc._user)proc.checked=i
 }).catch(function(e){
 setDotEl('dot-wifi','err');
 document.getElementById('txt-wifi').textContent='Poll: '+(e&&e.message?e.message:'sin respuesta')+' — prueba /ping y /api/health';
-setDotEl('dot-ml','err');document.getElementById('txt-ml').textContent='Master ↔ L (.101): poll pendiente';
+setDotEl('dot-ml','err');document.getElementById('txt-ml').textContent='Master ↔ L (.30): poll pendiente';
 setDotEl('dot-mr','err');document.getElementById('txt-mr').textContent='Master ↔ R (.102): poll pendiente';
 });}
 function autoFetch(q){return fetch('/api/auto?'+q,{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){if(!d.ok)throw new Error(d.error||'fail');poll();}).catch(function(e){alert(e&&e.message?e.message:'Error de conexión');});}

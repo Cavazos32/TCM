@@ -6,7 +6,6 @@
 
 // Catálogo unificado PreFeeder: códigos PF-xxx, fases auto y estado operativo.
 // Wire code legacy: base L=20 / R=30 + PfErrorId (1..7) → 21–27 / 31–37.
-// Id 6 (ex Holgura) reservado para no desplazar wire codes de Operator (7).
 
 constexpr uint8_t PF_WIRE_BASE_L = 20;
 constexpr uint8_t PF_WIRE_BASE_R = 30;
@@ -18,7 +17,7 @@ enum PfErrorId : uint8_t {
   PF_ERR_CYLINDER = 3,   // PF-003
   PF_ERR_HOSE = 4,       // PF-004
   PF_ERR_BUFFER = 5,     // PF-005
-  PF_ERR_RESERVED_6 = 6, // ex PF-006 Holgura — slot wire reservado, no usar
+  PF_ERR_HOLGURA = 6,    // PF-006
   PF_ERR_OPERATOR = 7    // PF-007
 };
 
@@ -40,22 +39,22 @@ struct PfErrorEntry {
   const char* tag;
   const char* slug;
   const char* desc;
-  uint8_t     level;  // 1=aviso, 2=PAUSE, 3=safety
 };
 
 static const PfErrorEntry PF_ERROR_TABLE[] = {
-  { PF_ERR_ENDSTOP,   FAULT_ENDSTOP,          AUTO_ENDSTOP_FAULT,   "PF-001", "endstop",          "Buffer Max",           3 },
-  { PF_ERR_TENSION,   FAULT_TENSION_TIMEOUT,  AUTO_TENSION_FAULT,   "PF-002", "tension_timeout",  "Tension timeout",      2 },
-  { PF_ERR_CYLINDER,  FAULT_CYLINDER_OPEN,    AUTO_CYLINDER_FAULT,  "PF-003", "cylinder_open",    "Cilindro abierto",     2 },
-  { PF_ERR_HOSE,      FAULT_HOSE_ABSENT,      AUTO_HOSE_FAULT,      "PF-004", "hose_absent",      "Manguera ausente",     2 },
-  { PF_ERR_BUFFER,    FAULT_BUFFER_TIMEOUT,   AUTO_BUFFER_FAULT,    "PF-005", "buffer_timeout",   "Buffer sin relleno",   2 },
-  { PF_ERR_OPERATOR,  FAULT_OPERATOR_STOP,    AUTO_OPERATOR_STOP,   "PF-007", "operator_stop",    "Parada operador",      2 },
+  { PF_ERR_ENDSTOP,   FAULT_ENDSTOP,          AUTO_ENDSTOP_FAULT,   "PF-001", "endstop",          "Buffer Max" },
+  { PF_ERR_TENSION,   FAULT_TENSION_TIMEOUT,  AUTO_TENSION_FAULT,   "PF-002", "tension_timeout",  "Tension timeout" },
+  { PF_ERR_CYLINDER,  FAULT_CYLINDER_OPEN,    AUTO_CYLINDER_FAULT,  "PF-003", "cylinder_open",    "Cilindro abierto" },
+  { PF_ERR_HOSE,      FAULT_HOSE_ABSENT,      AUTO_HOSE_FAULT,      "PF-004", "hose_absent",      "Manguera ausente" },
+  { PF_ERR_BUFFER,    FAULT_BUFFER_TIMEOUT,   AUTO_BUFFER_FAULT,    "PF-005", "buffer_timeout",   "Buffer sin relleno" },
+  { PF_ERR_HOLGURA,   FAULT_HOLGURA_TIMEOUT,  AUTO_HOLGURA_FAULT,   "PF-006", "holgura_timeout",  "Sin holgura" },
+  { PF_ERR_OPERATOR,  FAULT_OPERATOR_STOP,    AUTO_OPERATOR_STOP,   "PF-007", "operator_stop",    "Parada operador" },
 };
 
 static const char* const PF_AUTO_PHASE_NAMES[] = {
   "off", "home_hold", "servo_lead", "cw", "ccw",
   "endstop_fault", "tension_fault", "cylinder_fault", "hose_fault",
-  "buffer_fault", "operator_stop"
+  "buffer_fault", "holgura_fault", "operator_stop"
 };
 
 static const char* const PF_MACHINE_STATE_NAMES[] = {
@@ -95,8 +94,6 @@ static inline PfErrorId pfErrorIdFromWireCode(uint8_t code)
 
 static inline uint8_t pfErrorWireCodeFromId(PfErrorId id, uint8_t wireBase)
 {
-  if (id == PF_ERR_NONE || id == PF_ERR_RESERVED_6)
-    return 0;
   return id ? (uint8_t)(wireBase + id) : 0;
 }
 
@@ -144,6 +141,7 @@ static inline const char* pfErrorExxx(PfErrorId id, char side)
     case PF_ERR_TENSION: return r ? "E054" : "E060";
     case PF_ERR_CYLINDER:return r ? "E055" : "E061";
     case PF_ERR_HOSE:    return r ? "E056" : "E062";
+    case PF_ERR_HOLGURA: return r ? "E057" : "E063";
     default:             return "";
   }
 }
@@ -180,12 +178,6 @@ static inline void pfErrorFormatUi(char* buf, size_t n, PfErrorId id, char side)
 static inline void pfErrorFormatUiFromFault(char* buf, size_t n, SystemFault fault, char side)
 {
   pfErrorFormatUi(buf, n, pfErrorIdFromFault(fault), side);
-}
-
-static inline uint8_t pfErrorLevelFromFault(SystemFault fault)
-{
-  const PfErrorEntry* e = pfErrorFindByFault(fault);
-  return e ? e->level : 0;
 }
 
 static inline AutoState pfAutoPhaseFromFault(SystemFault fault)
