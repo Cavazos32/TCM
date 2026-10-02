@@ -2,11 +2,11 @@
 
 El **trigger** es el Tfeed al PreFeeder (`0x4C` derecha / `0x51` izquierda). No es el Feed de Motion ni el *In process ON*.
 
-Va **después del corte** (paso 18: post-corte, antes del depósito). Así el PreFeeder rellena el buffer mientras depósito / despeje / HOME. El 21 solo abre pinzas. El feed Motion de la siguiente es el paso 25 (tras HOME, ASDA=0).
+Va **antes de la alimentación CAN de Motion** (paso 3: Tfeed → feed). Así el PreFeeder empuja material al buffer cuando el servo CAN empieza a tirar. En piezas 2…N el feed físico suele ocurrir en el paso `feed_after_home` de la pieza anterior; ahí también se manda Tfeed justo antes del `_run_feed`, y el paso 3 de la pieza siguiente hace handoff (omite re-mandar).
 
-**Interruptor de ciclo** (`pfTriggerEnabled` en `cycle_config.json`, UI Cycle → Material handling): **ON** (default) manda Tfeed tras el corte de las piezas 2…N. **OFF** omite siempre el paso 18. No es `Tfeed (s) = 0` en el HTML de L/R: ese valor se clampa a 0.1 s y el feeder igual arranca.
+**Interruptor de ciclo** (`pfTriggerEnabled` en `cycle_config.json`, UI Cycle → Material handling): **ON** (default) manda Tfeed antes del feed CAN de las piezas 2…N. **OFF** omite siempre el paso 3. No es `Tfeed (s) = 0` en el HTML de L/R: ese valor se clampa a 0.1 s y el feeder igual arranca.
 
-**Regla de lote:** la 1ª pieza ya trae feed de referencia (el operador lo dejó, o el Tfeed de la última pieza del lote anterior). Por eso la 1ª **omite**. Las demás, incluida la última, **mandan** Tfeed si el interruptor está ON.
+**Regla de lote:** la 1ª pieza ya trae feed de referencia (el operador lo dejó, o material del lote anterior). Por eso la 1ª **omite**. Las demás **mandan** Tfeed si el interruptor está ON y hay alimentación Motion real (no handoff / skip por láser).
 
 **Arquitectura (2026-10):** TFEED es independiente de AUTO / In process / Holgura (Holgura eliminada del producto). El esclavo encola el trigger (cola hasta 8) y `feederTask` lo ejecuta si safety OK (`systemFault`, Buffer Max, enlace). No depende de `autoEnabled` ni `sensorsMotionArmed`.
 
@@ -20,18 +20,21 @@ Sí se rechaza con falla activa, sin enlace Master↔esclavo, Buffer Max en el i
 
 ---
 
-## Trigger de ciclo (paso 18, post-corte)
+## Trigger de ciclo (paso 3, pre-feed CAN)
 
 | Acción | Resultado | Por qué |
 |---|---|---|
-| 1ª pieza del lote (tras el corte) | **Omite** | Ya trae feed de referencia |
+| 1ª pieza del lote (antes del feed) | **Omite** | Ya trae feed de referencia |
 | `pfTriggerEnabled` = OFF | **Omite** | Operador desactiva Tfeed de ciclo |
-| Piezas intermedias | **Trigger** a `feedSides` | Reponer para la siguiente |
-| Última pieza del lote | **Trigger** a `feedSides` | Referencia para el lote siguiente |
-| C2 Resume **antes** del Tfeed | **Trigger** | Corte de este intento aún no mandó Tfeed |
+| Piezas intermedias (feed real) | **Trigger** a `feedSides` | Reponer al tirar CAN |
+| Feed post-HOME (pieza N → N+1) | **Trigger** con `rep=N+1` | Mismo instante que el feed CAN |
+| Handoff (paso 3 tras feed post-HOME) | **Omite** | Ya mandado (prearmed) |
+| Sin alimentación Motion (láser ON / skip) | **Omite** | No hay tirón CAN |
+| Última pieza del lote | **Omite** al final | Sin feed post-HOME |
+| C2 Resume **antes** del Tfeed | **Trigger** | Este intento aún no mandó Tfeed |
 | C2 Resume **después** de Tfeed | **Omite** | Ya mandado |
 | C2 / reinicio de la **1ª** pieza | **Omite** | Regla de 1ª |
-| C3 misma pieza post-paso 18 | **Omite** | No re-manda |
+| C3 misma pieza post-paso 3 | **Omite** | No re-manda |
 | C3 Resume → pieza siguiente | **Trigger** | Flujo normal de esa pieza |
 | Pause / Resume normal | **Omite** | No re-manda Tfeed |
 | C1, Stop o aborto | **Omite** | |
@@ -40,7 +43,7 @@ Sí se rechaza con falla activa, sin enlace Master↔esclavo, Buffer Max en el i
 | Refill / purga | **Omite** | |
 | Botones manuales Trigger L/R | **Trigger** | Fuera del ciclo |
 
-El **timing y la cantidad** de envíos los define `HMI/cycle.py` (paso 18). No cambiarlos al refactorizar firmware.
+El **timing y la cantidad** de envíos los define `HMI/cycle.py` (paso 3 / feed post-HOME). No cambiarlos al refactorizar firmware.
 
 ---
 

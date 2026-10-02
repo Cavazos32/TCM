@@ -43,6 +43,7 @@ TIMING_ENCODER_OUTLIER_MM = 120.0
 # Reescribe el resumen del .md cada N piezas (sobrevive a un cierre abrupto).
 TIMING_SUMMARY_EVERY_PIECES = 100
 TIMING_OP_ORDER = (
+    "pf_trigger",
     "feed_cmd",
     "feed",
     "grippers_on",
@@ -50,7 +51,6 @@ TIMING_OP_ORDER = (
     "lineal_cmd",
     "lineal",
     "corte",
-    "pf_trigger",
     "depósito_cmd",
     "depósito",
     "grippers_off",
@@ -124,23 +124,23 @@ MOTION_IDLE_NO_TARGET_S = 1.0
 FLOW_STEPS: list[dict[str, Any]] = [
     {"id": 1, "key": "holder_on", "label": "Holder+Encoder ON (solo 1ª pieza)", "kind": "action", "sbsPause": False},
     {"id": 2, "key": "wait_holder_on", "label": "Delay Holder ON", "kind": "wait", "delayKey": "holderOnMs", "sbsPause": True},
-    {"id": 3, "key": "feed", "label": "Alimentación (feed / ya listo post-HOME)", "kind": "action", "sbsPause": True},
-    {"id": 4, "key": "offset", "label": "Offset alimentación (Motion, paso lógico)", "kind": "action", "sbsPause": False},
-    {"id": 5, "key": "grippers_on", "label": "Pinzas cierran", "kind": "action", "sbsPause": False},
-    {"id": 6, "key": "wait_grippers_on", "label": "Delay tras cerrar pinzas", "kind": "wait", "delayKey": "grippersOnMs", "sbsPause": False},
-    {"id": 7, "key": "enc_set0", "label": "OM ref (no usado por lineal TCP)", "kind": "action", "sbsPause": True},
-    {"id": 8, "key": "holder_off", "label": "Holder+Encoder OFF (abre para lineal)", "kind": "action", "sbsPause": False},
-    {"id": 9, "key": "wait_holder_open", "label": "Delay Holder/Encoder OFF", "kind": "wait", "delayKey": "holderOpenMs", "sbsPause": True},
-    {"id": 10, "key": "lineal_fwd", "label": "Lineal ASDA MOVE TCP (0→ABS)", "kind": "action", "sbsPause": False},
-    {"id": 11, "key": "wait_linear_done", "label": "Delay antes del corte", "kind": "wait", "delayKey": "linearDoneMs", "sbsPause": True},
-    {"id": 12, "key": "holder_precut", "label": "Holder ON / Encoder ON (pre-corte)", "kind": "action", "sbsPause": False},
-    {"id": 13, "key": "wait_holder_precut", "label": "Delay tras cerrar holder", "kind": "wait", "delayKey": "holderOnMs", "sbsPause": True},
-    {"id": 14, "key": "cutter_on", "label": "Cortador ON (+ All OK PreFeeder)", "kind": "action", "sbsPause": False},
-    {"id": 15, "key": "wait_cutter_pulse", "label": "Delay entre Set y Res cortador", "kind": "wait", "delayKey": "cutterPulseMs", "sbsPause": False, "delayEditable": False},
-    {"id": 16, "key": "cutter_off", "label": "Cortador OFF", "kind": "action", "sbsPause": False},
-    {"id": 17, "key": "wait_cutter_post", "label": "Delay post-corte", "kind": "wait", "delayKey": "cutterPostMs", "sbsPause": True},
-    # Tfeed DESPUÉS del corte: rellena buffer en paralelo con depósito/HOME.
-    {"id": 18, "key": "pf_trigger", "label": "Trigger PreFeeder (Tfeed)", "kind": "action", "sbsPause": False},
+    # Tfeed ANTES del feed CAN (Motion): rellena buffer al arrancar la alimentación.
+    {"id": 3, "key": "pf_trigger", "label": "Trigger PreFeeder (Tfeed)", "kind": "action", "sbsPause": False},
+    {"id": 4, "key": "feed", "label": "Alimentación (feed / ya listo post-HOME)", "kind": "action", "sbsPause": True},
+    {"id": 5, "key": "offset", "label": "Offset alimentación (Motion, paso lógico)", "kind": "action", "sbsPause": False},
+    {"id": 6, "key": "grippers_on", "label": "Pinzas cierran", "kind": "action", "sbsPause": False},
+    {"id": 7, "key": "wait_grippers_on", "label": "Delay tras cerrar pinzas", "kind": "wait", "delayKey": "grippersOnMs", "sbsPause": False},
+    {"id": 8, "key": "enc_set0", "label": "OM ref (no usado por lineal TCP)", "kind": "action", "sbsPause": True},
+    {"id": 9, "key": "holder_off", "label": "Holder+Encoder OFF (abre para lineal)", "kind": "action", "sbsPause": False},
+    {"id": 10, "key": "wait_holder_open", "label": "Delay Holder/Encoder OFF", "kind": "wait", "delayKey": "holderOpenMs", "sbsPause": True},
+    {"id": 11, "key": "lineal_fwd", "label": "Lineal ASDA MOVE TCP (0→ABS)", "kind": "action", "sbsPause": False},
+    {"id": 12, "key": "wait_linear_done", "label": "Delay antes del corte", "kind": "wait", "delayKey": "linearDoneMs", "sbsPause": True},
+    {"id": 13, "key": "holder_precut", "label": "Holder ON / Encoder ON (pre-corte)", "kind": "action", "sbsPause": False},
+    {"id": 14, "key": "wait_holder_precut", "label": "Delay tras cerrar holder", "kind": "wait", "delayKey": "holderOnMs", "sbsPause": True},
+    {"id": 15, "key": "cutter_on", "label": "Cortador ON (+ All OK PreFeeder)", "kind": "action", "sbsPause": False},
+    {"id": 16, "key": "wait_cutter_pulse", "label": "Delay entre Set y Res cortador", "kind": "wait", "delayKey": "cutterPulseMs", "sbsPause": False, "delayEditable": False},
+    {"id": 17, "key": "cutter_off", "label": "Cortador OFF", "kind": "action", "sbsPause": False},
+    {"id": 18, "key": "wait_cutter_post", "label": "Delay post-corte", "kind": "wait", "delayKey": "cutterPostMs", "sbsPause": True},
     {"id": 19, "key": "deposit", "label": "Extra / depósito lineal", "kind": "action", "sbsPause": False},
     {"id": 20, "key": "wait_deposit_dwell", "label": "Delay tras depósito", "kind": "wait", "delayKey": "dwellAtDestMs", "sbsPause": True},
     {"id": 21, "key": "grippers_off", "label": "Pinzas abren", "kind": "action", "sbsPause": False},
@@ -156,7 +156,7 @@ FLOW_STEPS: list[dict[str, Any]] = [
     {
         "id": 25,
         "key": "feed_after_home",
-        "label": "Feed post-HOME (ASDA=0)",
+        "label": "Feed post-HOME (ASDA=0) + Tfeed si alimenta",
         "kind": "action",
         "sbsPause": True,
     },
@@ -219,7 +219,7 @@ class CycleConfig:
     piece_watch_timeout_s: float = 20.0
     # Feed / Stage2 OM: "L" | "R" | "LR" (producción = ambos)
     feed_sides: str = "LR"
-    # Tfeed tras el corte (paso 18). False = omitir siempre.
+    # Tfeed antes del feed CAN (paso 3 / feed post-HOME). False = omitir siempre.
     # 1ª pieza del lote omite; C2 omite si esa pieza ya mandó Tfeed. Default ON.
     pf_trigger_enabled: bool = True
     # Refill / purga: Alimentar hasta láser (skipValidate). refill_mm legado.
@@ -564,6 +564,8 @@ class CycleRunner:
         self._material_feed_done = False
         self._recovery_skip_pf_trigger = False
         self._pf_trigger_sent_this_piece = False
+        # Tfeed mandado en feed post-HOME para la siguiente pieza (handoff).
+        self._pf_trigger_prearmed = False
         self._flow_interrupt = threading.Event()
         # In process OFF por Pause/Error; Resume/Busy rearma. Evita doble OFF/ON.
         self._pf_held_idle = False
@@ -800,6 +802,7 @@ class CycleRunner:
         self._material_feed_done = False
         self._recovery_skip_pf_trigger = False
         self._pf_trigger_sent_this_piece = False
+        self._pf_trigger_prearmed = False
         self._stop.clear()
         self._pause.clear()
         self._flow_interrupt.clear()
@@ -845,6 +848,7 @@ class CycleRunner:
         self._recovery_skip_feed = False
         self._material_feed_done = False
         self._recovery_skip_pf_trigger = False
+        self._pf_trigger_prearmed = False
         self._pause.clear()
         self._refill_reject.set()
         self._recovery_reject.set()
@@ -2653,12 +2657,12 @@ class CycleRunner:
     ) -> None:
         """Resumen compacto en log de ciclo (ops físicas + delays)."""
         highlight = (
+            "pf_trigger",
             "feed_cmd",
             "feed",
             "lineal_cmd",
             "lineal",
             "corte",
-            "pf_trigger",
             "depósito_cmd",
             "depósito",
             "despeje_cmd",
@@ -3371,12 +3375,13 @@ class CycleRunner:
             return ["R"]
         return ["L", "R"]
 
-    def _do_pf_trigger(self, rep: int) -> bool:
+    def _do_pf_trigger(self, rep: int, *, mark_piece: bool = True) -> bool:
         """Tfeed a lados de feedSides. True = OK / omitido; False = fault.
 
         Contrato Doc/pf_trigger.md: omite si pfTriggerEnabled=False, 1ª
-        pieza del lote, o C2 (Tfeed ya mandado en esta pieza). Con helper
-        # TFEED: el esclavo encola el trigger (independiente de AUTO/InProcess).
+        pieza del lote, o C2 (Tfeed ya mandado en esta pieza). Se manda
+        justo antes del feed CAN de Motion (paso 3 / feed post-HOME).
+        mark_piece=False: feed post-HOME arma la pieza siguiente (prearmed).
         """
         c2_skip = self._recovery_skip_pf_trigger
         self._recovery_skip_pf_trigger = False
@@ -3394,7 +3399,8 @@ class CycleRunner:
             )
             return True
         if c2_skip:
-            self._pf_trigger_sent_this_piece = True
+            if mark_piece:
+                self._pf_trigger_sent_this_piece = True
             self._host.cycle_log(
                 "trigger PreFeeder: omitido (recovery — Tfeed ya mandado)"
             )
@@ -3427,7 +3433,8 @@ class CycleRunner:
                 f"R(0x4C)={r_txt} L(0x51)={l_txt}"
             )
             return False
-        self._pf_trigger_sent_this_piece = True
+        if mark_piece:
+            self._pf_trigger_sent_this_piece = True
         sec = self._end_op(op, ok=True)
         self._host.cycle_log(
             f"trigger PreFeeder Tfeed lados={sides} pieza={rep} — "
@@ -3737,7 +3744,7 @@ class CycleRunner:
         return self._ensure_asda_at_zero(reason="post-HOME")
 
     def _run_feed_after_home(self, rep: int, qty: int) -> bool:
-        """Feed de la *siguiente* pieza. Exige ASDA en 0. Tfeed ya fue (post-corte)."""
+        """Feed de la *siguiente* pieza. Exige ASDA en 0. Tfeed justo antes del CAN."""
         # Pieza actual ya cortada: el ready anterior no vale para la siguiente.
         self._material_feed_done = False
         if self._e050_materialist_requested:
@@ -3758,6 +3765,11 @@ class CycleRunner:
                 "Feed post-HOME omitido (láser ya ON) — handoff listo"
             )
             return True
+        # Tfeed para la pieza que se alimenta ahora (rep+1); el paso 3 de esa
+        # pieza hará handoff y omitirá re-mandar.
+        if not self._do_pf_trigger(int(rep) + 1, mark_piece=False):
+            return False
+        self._pf_trigger_prearmed = True
         return self._run_feed(
             apply_piece_watch=False, timing_tag="feed_next", metro_tag="post-feed-next"
         )
@@ -4296,7 +4308,11 @@ class CycleRunner:
             completed = start_rep - 1
             handoff_ready = False
             for rep in range(start_rep, qty + 1):
-                self._pf_trigger_sent_this_piece = False
+                if self._pf_trigger_prearmed:
+                    self._pf_trigger_sent_this_piece = True
+                    self._pf_trigger_prearmed = False
+                else:
+                    self._pf_trigger_sent_this_piece = False
                 while True:
                     early_exit = True
                     materialist_only = False
@@ -4346,7 +4362,45 @@ class CycleRunner:
                             reason="recovery"
                         ):
                             break
-                        # 3 Feed / ya listo post-HOME
+                        # 3 Tfeed justo antes del feed CAN (Motion). Handoff /
+                        # skip de feed → omitir (ya mandado en feed post-HOME
+                        # o no hay alimentación Motion en esta pieza).
+                        if self._enter(rep, qty, "pf_trigger"):
+                            break
+                        will_run_feed = False
+                        if handoff_ready:
+                            pass
+                        elif self._material_feed_done and (
+                            self._recovery_skip_feed or self._recovery_after_error
+                        ):
+                            pass
+                        elif (
+                            (
+                                rep == 1
+                                or self._recovery_skip_feed
+                                or self._recovery_after_error
+                            )
+                            and self._feed_reference_visible()
+                        ):
+                            pass
+                        else:
+                            will_run_feed = True
+                        if self._pf_trigger_sent_this_piece:
+                            self._host.cycle_log(
+                                "trigger PreFeeder: omitido "
+                                "(ya mandado pre-feed / handoff)"
+                            )
+                        elif will_run_feed:
+                            if not self._do_pf_trigger(rep):
+                                break
+                        else:
+                            self._host.cycle_log(
+                                "trigger PreFeeder: omitido "
+                                "(sin alimentación Motion en este paso)"
+                            )
+                        if self._after_step("pf_trigger"):
+                            break
+                        # 4 Feed / ya listo post-HOME
                         if self._enter(rep, qty, "feed"):
                             break
                         if handoff_ready:
@@ -4400,7 +4454,7 @@ class CycleRunner:
                                 break
                         if self._after_step("feed"):
                             break
-                        # 4 Offset (placeholder)
+                        # 5 Offset (placeholder)
                         if self._enter(rep, qty, "offset"):
                             break
                         if self._after_step("offset"):
@@ -4536,13 +4590,6 @@ class CycleRunner:
                         if self._after_step("cutter_off"):
                             break
                         if self._do_wait(rep, qty, "wait_cutter_post", "cutter_post_ms"):
-                            break
-                        # 18 Tfeed post-corte (1ª omite; 2…N incluido última; C2 si ya se mandó)
-                        if self._enter(rep, qty, "pf_trigger"):
-                            break
-                        if not self._do_pf_trigger(rep):
-                            break
-                        if self._after_step("pf_trigger"):
                             break
                         # No mover ASDA (depósito ni despeje) hasta KEEP asentado.
                         if self._ensure_cutter_settled_before_travel(cut_sides):
