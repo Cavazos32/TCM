@@ -110,7 +110,7 @@ constexpr float M2_HOLGURA_HELPER_SEC_DEFAULT = 1.0f;
 constexpr float M2_HOLGURA_HELPER_SEC_MIN     = 0.05f;
 constexpr float M2_HOLGURA_HELPER_SEC_MAX     = 60.0f;
 constexpr uint32_t BUFFER_FULL_ON_FILTER_MS  = 80;
-constexpr uint32_t BUFFER_FULL_OFF_FILTER_MS = 200;
+constexpr uint32_t BUFFER_FULL_OFF_FILTER_MS = 400;  // evita lead tras chatter Full ON/OFF
 constexpr uint32_t BUFFER_FULL_GLITCH_MS     = 40;
 constexpr uint32_t TENSION_REVERSE_FILTER_MS = 80;
 
@@ -119,10 +119,11 @@ constexpr float M2_TRIGGER_FEED_DEFAULT = 2.0f;
 constexpr float M2_TRIGGER_FEED_MIN     = 0.1f;
 constexpr float M2_TRIGGER_FEED_MAX     = 60.0f;
 constexpr uint8_t M2_TRIGGER_CORE          = 1;
+constexpr uint8_t M2_TRIGGER_QUEUE_DEPTH   = 8;  // Tfeeds en cola (no pisar mientras corre uno)
 
 // ====================== REFILL / NVS / PEER ======================
 constexpr uint32_t REFILL_PULSE_MS_DEFAULT = 1000;
 constexpr uint32_t REFILL_PULSE_MS_MIN     = 200;
 constexpr uint32_t REFILL_PULSE_MS_MAX     = 10000;
-constexpr uint8_t  TRIGGER_ID_HIST         = 8;
+constexpr uint8_t  TRIGGER_ID_HIST         = 16;
 constexpr const char* PREFS_NS             = "prefeeder2";

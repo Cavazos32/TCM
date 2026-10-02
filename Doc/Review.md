@@ -6,7 +6,7 @@
 |----------|----------------|----------|
 | Preparación | **No** | `prepareBeforeCut`, ASDA→0, PreFeeder In process ON, espera Buffer Full (Start, Resume y Continuar ciclo) |
 | Holgura pre-pieza | **No** | El ciclo no fuerza Tfeed; holgura la recupera el helper PF |
-| Secuencia productiva | **Sí** | Holder ON (1ª) → feed → pinzas → lineal → corte → Tfeed (cada pieza si `pfTriggerEnabled`; C2 omite si ya se mandó) → depósito → WIP/HOME → feed siguiente (si ASDA=0) → asentar |
+| Secuencia productiva | **Sí** | Holder ON (1ª) → feed → pinzas → lineal → corte → Tfeed (piezas 2…N si `pfTriggerEnabled`; 1ª omite; C2 omite si ya se mandó) → depósito → WIP/HOME → feed siguiente (si ASDA=0) → asentar |
 | Holgura post-pieza | **No** | El ciclo no manda Tfeed extra; holgura la recupera el helper PF |
 | Pause | **No** | excluido del reloj |
 | Fin de lote | **No** | Finish tools, espera PF settled, In process OFF |
@@ -59,7 +59,7 @@ Cortador ON (Set) …
 Delay · Delay entre Set y Res cortador: …
 Cortador OFF (Res) …
 Delay · Delay post-corte: …
-trigger PreFeeder Tfeed lados=…             # tras el corte; 1ª también manda
+trigger PreFeeder Tfeed lados=…             # tras el corte; 1ª omite; 2…N manda
 Depósito MOVE → …                           # ← CMD
 Depósito MOVE ok → … (WIP start ref …)      # ← RX
 Delay · Delay tras depósito: …

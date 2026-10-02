@@ -18,10 +18,88 @@ Preferences prefs;
 StepperRMT* motor  = nullptr;
 StepperRMT* motor2 = nullptr;
 
-static volatile bool motor2TcpTriggerRequest = false;
-static volatile float motor2TcpTriggerSecRequest = 0.0f;  // 0 = usar motor2TriggerFeedSec
-static volatile uint16_t motor2TcpTriggerPendingId = 0;   // id del Tfeed pendiente (0 = sin id)
-static volatile float motor2TriggerActiveSec = 0.0f;      // duración del trigger en curso
+static volatile bool motor2TcpTriggerRequest = false;  // hay ≥1 Tfeed en cola
+static volatile float motor2TriggerActiveSec = 0.0f;   // duración del trigger en curso
+
+// Cola de Tfeed: varios ids mientras uno corre (antes un solo slot → L perdía piezas).
+struct TriggerPend {
+  uint16_t id;
+  float sec;  // 0 = usar motor2TriggerFeedSec
+};
+static TriggerPend triggerQ[M2_TRIGGER_QUEUE_DEPTH];
+static uint8_t triggerQHead = 0;
+static uint8_t triggerQTail = 0;
+static uint8_t triggerQCount = 0;
+static portMUX_TYPE triggerQMux = portMUX_INITIALIZER_UNLOCKED;
+
+static bool triggerQueueContainsId(uint16_t id)
+{
+  if (!id) return false;
+  for (uint8_t n = 0; n < triggerQCount; n++)
+  {
+    const uint8_t i = (uint8_t)((triggerQHead + n) % M2_TRIGGER_QUEUE_DEPTH);
+    if (triggerQ[i].id == id) return true;
+  }
+  return false;
+}
+
+static bool triggerQueuePush(uint16_t id, float sec)
+{
+  portENTER_CRITICAL(&triggerQMux);
+  if (id && triggerQueueContainsId(id))
+  {
+    portEXIT_CRITICAL(&triggerQMux);
+    return true;  // ya en cola
+  }
+  if (triggerQCount >= M2_TRIGGER_QUEUE_DEPTH)
+  {
+    portEXIT_CRITICAL(&triggerQMux);
+    return false;
+  }
+  triggerQ[triggerQTail].id = id;
+  triggerQ[triggerQTail].sec = sec;
+  triggerQTail = (uint8_t)((triggerQTail + 1) % M2_TRIGGER_QUEUE_DEPTH);
+  triggerQCount++;
+  motor2TcpTriggerRequest = true;
+  portEXIT_CRITICAL(&triggerQMux);
+  return true;
+}
+
+static bool triggerQueuePop(uint16_t* idOut, float* secOut)
+{
+  portENTER_CRITICAL(&triggerQMux);
+  if (triggerQCount == 0)
+  {
+    motor2TcpTriggerRequest = false;
+    portEXIT_CRITICAL(&triggerQMux);
+    return false;
+  }
+  if (idOut) *idOut = triggerQ[triggerQHead].id;
+  if (secOut) *secOut = triggerQ[triggerQHead].sec;
+  triggerQHead = (uint8_t)((triggerQHead + 1) % M2_TRIGGER_QUEUE_DEPTH);
+  triggerQCount--;
+  motor2TcpTriggerRequest = (triggerQCount > 0);
+  portEXIT_CRITICAL(&triggerQMux);
+  return true;
+}
+
+static void triggerQueueClear()
+{
+  portENTER_CRITICAL(&triggerQMux);
+  triggerQHead = 0;
+  triggerQTail = 0;
+  triggerQCount = 0;
+  motor2TcpTriggerRequest = false;
+  portEXIT_CRITICAL(&triggerQMux);
+}
+
+static uint8_t triggerQueueDepth()
+{
+  portENTER_CRITICAL(&triggerQMux);
+  const uint8_t n = triggerQCount;
+  portEXIT_CRITICAL(&triggerQMux);
+  return n;
+}
 
 // Dedup: retries TCM reutilizan el mismo cmd id; ACK sin re-alimentar.
 // Solo se marca hecho al ARRANCAR el feed (no al encolar): si el request se
@@ -53,9 +131,7 @@ static void triggerIdClear()
 {
   triggerDoneCount = 0;
   triggerDoneNext = 0;
-  motor2TcpTriggerRequest = false;
-  motor2TcpTriggerSecRequest = 0.0f;
-  motor2TcpTriggerPendingId = 0;
+  triggerQueueClear();
 }
 static String peerLastCmd = "";
 static uint32_t peerLastCmdMs = 0;
@@ -146,9 +222,7 @@ volatile bool motor2AbortRequested = false;
 uint16_t  servoActivePwmUs = SERVO_PWM_ACTIVE_US;  // editable UI/NVS (default por lado)
 bool      servoRunning      = false;
 uint16_t  servoLastOutputUs = 0;
-// Stop/setSpeed/Brake RMT (DeReeler o Feeder) suelta el GPIO del LEDC. El canal
-// puede seguir leyendo 1500 y el cache “ya parado”, pero el pin ya no emite:
-// el RC continuo se queda en el último pulso de marcha ~3 s (failsafe).
+// Stop/Brake RMT puede soltar el GPIO del LEDC → dirty + remux.
 static volatile bool servoPinDirty = false;
 
 static void servoMarkPinDirty()
@@ -263,7 +337,6 @@ static uint32_t servoUsToDuty(uint16_t us)
   return (uint32_t)us * ((1UL << SERVO_LEDC_BITS) - 1) / 20000UL;
 }
 
-// PWM efectivo en refill/auto: 1500 µs = neutro (sin giro en RC continuo).
 static uint16_t servoMotionPwmUs()
 {
   const int delta = (int)servoActivePwmUs - (int)SERVO_PWM_NEUTRAL_US;
@@ -272,31 +345,44 @@ static uint16_t servoMotionPwmUs()
   return servoActivePwmUs;
 }
 
+// Soft-PWM por software (tarea/esp_timer) hacía creep/saltos: el pulso 1500 tiembla
+// al preemptarse. LEDC hardware mantiene 1500 estable @ 50 Hz.
+static void servoRemuxWriteUs(uint16_t us)
+{
+  us = constrain(us, SERVO_PWM_MIN_US, SERVO_PWM_MAX_US);
+  const uint32_t duty = servoUsToDuty(us);
+  servoPinDirty = false;
+  servoLastOutputUs = us;
+
+  ledcDetach(PIN_SERVO_PWM);
+  pinMode(PIN_SERVO_PWM, OUTPUT);
+  digitalWrite(PIN_SERVO_PWM, LOW);
+  ledcAttachChannel(PIN_SERVO_PWM, 50, SERVO_LEDC_BITS, SERVO_LEDC_CHANNEL);
+  ledcWrite(PIN_SERVO_PWM, duty);
+  ledcWrite(PIN_SERVO_PWM, duty);
+}
+
 static void servoWriteUsForced(uint16_t us)
 {
   us = constrain(us, SERVO_PWM_MIN_US, SERVO_PWM_MAX_US);
   const uint32_t duty = servoUsToDuty(us);
   const bool remux = servoPinDirty;
-  servoPinDirty = false;
-  servoLastOutputUs = us;
 
-  // Sin remux: no reescribir el mismo duty (ledcWrite en cada frame glitchea el RC).
-  // Con remux (tras RMT): hay que Detach+Attach; Attach sobre pin “ya LEDC” no
-  // reconecta el matrix y el servo sigue alimentando con Full y DeReeler parados.
   if (!remux && ledcRead(PIN_SERVO_PWM) == duty)
+  {
+    servoLastOutputUs = us;
     return;
+  }
   if (!remux && ledcWrite(PIN_SERVO_PWM, duty))
+  {
+    servoLastOutputUs = us;
     return;
-
-  ledcDetach(PIN_SERVO_PWM);
-  ledcAttachChannel(PIN_SERVO_PWM, 50, SERVO_LEDC_BITS, SERVO_LEDC_CHANNEL);
-  ledcWrite(PIN_SERVO_PWM, duty);
+  }
+  servoRemuxWriteUs(us);
 }
 
-// Corte a neutro 1500. RC continuo: perder PWM (Detach) = failsafe ≈ última marcha
-// (~3 s). Por eso NO se hace Detach en cada reafirmación ni al cortar marcha con
-// LEDC sano: solo cuando el RMT ensució el pin, o en flanco Full si el software
-// ya dice “parado” (cache mentiroso / pin huérfano).
+// Neutro: LEDC 1500 continuo. Remux si dirty o force con cache mentiroso.
+// No Detach en reassert limpio (Detach → failsafe marcha).
 static void servoHardStopNeutral(bool force)
 {
   static uint32_t lastHardMs = 0;
@@ -304,30 +390,21 @@ static void servoHardStopNeutral(bool force)
   const bool dirty = servoPinDirty;
   const bool wasRunning = servoRunning
       || servoLastOutputUs != SERVO_PWM_NEUTRAL_US;
-  // Remux: dirty siempre. Flanco force solo si el cache ya decía neutro.
-  const bool remux = dirty || (force && !wasRunning);
+  const bool wantRemux = dirty || (force && !wasRunning);
 
-  if (!remux && !wasRunning
+  if (!wantRemux && !wasRunning
       && (uint32_t)(now - lastHardMs) < SERVO_STOP_REASSERT_MS)
     return;
 
-  const uint32_t duty = servoUsToDuty(SERVO_PWM_NEUTRAL_US);
-  servoPinDirty = false;
-  servoLastOutputUs = SERVO_PWM_NEUTRAL_US;
   servoRunning = false;
-
-  if (remux)
+  if (wantRemux)
+    servoRemuxWriteUs(SERVO_PWM_NEUTRAL_US);
+  else
   {
-    ledcDetach(PIN_SERVO_PWM);
-    ledcAttachChannel(PIN_SERVO_PWM, 50, SERVO_LEDC_BITS, SERVO_LEDC_CHANNEL);
-    ledcWrite(PIN_SERVO_PWM, duty);
-  }
-  else if (!ledcWrite(PIN_SERVO_PWM, duty))
-  {
-    // ledcWrite falló (pin huérfano sin dirty): recuperar enlace una vez.
-    ledcDetach(PIN_SERVO_PWM);
-    ledcAttachChannel(PIN_SERVO_PWM, 50, SERVO_LEDC_BITS, SERVO_LEDC_CHANNEL);
-    ledcWrite(PIN_SERVO_PWM, duty);
+    const uint32_t duty = servoUsToDuty(SERVO_PWM_NEUTRAL_US);
+    servoLastOutputUs = SERVO_PWM_NEUTRAL_US;
+    if (!ledcWrite(PIN_SERVO_PWM, duty))
+      servoRemuxWriteUs(SERVO_PWM_NEUTRAL_US);
   }
   lastHardMs = now;
 }
@@ -446,7 +523,7 @@ static void serviceServoPwm()
       servoAssertNeutral(false);
     return;
   }
-  // Buffer Full: flanco → remux ya; mientras Full reafirma 1500.
+  // Buffer Full: neutro LEDC 1500 estable.
   if (bufferFullStopNow())
   {
     servoServiceBufferFullCut();
@@ -460,9 +537,12 @@ static void serviceServoPwm()
 
 static void setupRotationServo()
 {
+  ledcDetach(PIN_SERVO_PWM);
   ledcAttachChannel(PIN_SERVO_PWM, 50, SERVO_LEDC_BITS, SERVO_LEDC_CHANNEL);
   servoLastOutputUs = 0;
+  servoPinDirty = false;
   servoStop();
+  Serial.println("SERVO: LEDC 50 Hz (pulso estable — sin soft-PWM)");
 }
 
 static bool bufferFullRaw()
@@ -482,7 +562,7 @@ static bool bufferFullStopNow()
   return bufferFullStable || bufferFullRaw();
 }
 
-// Flanco Full → remux ya (aunque el cache diga 1500). Mientras Full, reafirma.
+// Flanco / mientras Full: LEDC→1500 (remux en flanco).
 static void servoServiceBufferFullCut()
 {
   static bool latched = false;
@@ -493,6 +573,11 @@ static void servoServiceBufferFullCut()
   }
   const bool edge = !latched;
   latched = true;
+  if (edge)
+  {
+    servoMarkPinDirty();
+    Serial.println("FULL CUT: LEDC→1500");
+  }
   servoHardStopNeutral(edge);
 }
 
@@ -520,6 +605,7 @@ static void updateBufferFullFilter()
   bufferFullFilterLastMs = now;
   if (dt > 50) dt = 50;  // anti-salto tras bloqueo largo del loop
 
+  const bool prevStable = bufferFullStable;
   const bool raw = bufferFullRaw();
   if (raw)
   {
@@ -545,28 +631,54 @@ static void updateBufferFullFilter()
       bufferFullLowAccumMs = BUFFER_FULL_OFF_FILTER_MS;
     }
   }
+
+  if (bufferFullStable != prevStable)
+    Serial.printf("BUFFER: Full %s (GPIO19 estable)\n",
+                  bufferFullStable ? "ON" : "OFF");
 }
 
-// Corta DeReeler+servo. Un Stop() por consigna; si el RMT ignora, reintenta cada 250 ms.
-// Stop() cada loop con currentRPM()>1 → vibración / “trabado”.
-// RC: remux+1500 ANTES y DESPUÉS del Stop() — el RMT suelta LEDC y el pin se queda
-// en el último PWM de marcha si solo se escribe 1500 una vez (cache “ya parado”).
+// Corta DeReeler+servo. Si ya está quieto: solo neutro RC, **sin** Brake/RMT
+// (Brake repetido en Pause → saltitos). Con consigna/RPM: Brake; reintento ≤8×/100 ms.
 static void forceStopDereelerAndServo()
 {
   static uint32_t lastStopMs = 0;
-  const bool commanded = motor && fabsf(commandedRpm) > 0.01f;
-  const bool stillSpinning = motor && fabsf(motor->currentRPM()) > 1.0f;
+  static uint8_t spinRetries = 0;
 
-  // Remux ya si aún marcha/dirty; si no, reafirma 1500 cada ~20 ms.
-  servoHardStopNeutral(false);
+  servoHardStopNeutral(true);
 
-  if (commanded || (stillSpinning && (uint32_t)(millis() - lastStopMs) >= 250u))
+  if (!motor)
   {
-    motor->Stop();
+    commandedRpm = 0.0f;
+    tensionReverseUntilMs = 0;
+    spinRetries = 0;
+    return;
+  }
+
+  const bool commanded = fabsf(commandedRpm) > 0.01f;
+  const bool stillSpinning = fabsf(motor->currentRPM()) > 1.0f;
+
+  if (!commanded && !stillSpinning)
+  {
+    spinRetries = 0;
+    commandedRpm = 0.0f;
+    tensionReverseUntilMs = 0;
+    dereelerDirCw();
+    return;
+  }
+
+  if (commanded
+      || (spinRetries < 8u && (uint32_t)(millis() - lastStopMs) >= 100u))
+  {
+    motor->Brake();
     lastStopMs = millis();
+    if (!commanded)
+      spinRetries++;
+    else
+      spinRetries = 0;
     servoMarkPinDirty();
     servoHardStopNeutral(true);
   }
+
   commandedRpm = 0.0f;
   tensionReverseUntilMs = 0;
   dereelerDirCw();
@@ -1039,7 +1151,7 @@ static void beginAutoCwWithServoLead()
   // Arranque inmediato del RC (Forced: no depender de cache si forceStop dejó neutro).
   servoWriteUsForced(servoMotionPwmUs());
   servoRunning = true;
-  DBG_PRINTLN("AUTO: Buffer Full inactivo -> servo lead");
+  Serial.println("AUTO: Buffer Full inactivo -> servo lead");
 }
 
 // Rearme DeReeler/servo si la ventana de relleno está abierta.
@@ -1550,14 +1662,18 @@ static void serviceAuto()
     return;
   }
 
-  // Idle / sin ventana: quieto. forceStop: RMT a veces ignora motorRun(0)
-  // y el DeReeler sigue con el servo ya en neutro.
+  // Idle / sin ventana (Pause): quieto. No spam de forceStop/Brake si ya parado.
   if (!sensorsMotionArmed())
   {
-    forceStopDereelerAndServo();
+    if ((motor && fabsf(motor->currentRPM()) > 1.0f)
+        || fabsf(commandedRpm) > 0.01f
+        || servoRunning
+        || servoLastOutputUs != SERVO_PWM_NEUTRAL_US)
+      forceStopDereelerAndServo();
+    else
+      syncServoToAutoState();
     if (autoState == AUTO_SERVO_LEAD || autoState == AUTO_CW || autoState == AUTO_CCW)
       autoState = AUTO_HOME_HOLD;
-    syncServoToAutoState();
     serviceFillUntilReady();
     return;
   }
@@ -1565,10 +1681,15 @@ static void serviceAuto()
   serviceFillUntilReady();
   if (!sensorsMotionArmed())
   {
-    forceStopDereelerAndServo();
+    if ((motor && fabsf(motor->currentRPM()) > 1.0f)
+        || fabsf(commandedRpm) > 0.01f
+        || servoRunning
+        || servoLastOutputUs != SERVO_PWM_NEUTRAL_US)
+      forceStopDereelerAndServo();
+    else
+      syncServoToAutoState();
     if (autoState == AUTO_SERVO_LEAD || autoState == AUTO_CW || autoState == AUTO_CCW)
       autoState = AUTO_HOME_HOLD;
-    syncServoToAutoState();
     return;
   }
 
@@ -1590,7 +1711,7 @@ static void serviceAuto()
         || autoState == AUTO_HOME_HOLD)
     {
       if (autoState != AUTO_HOME_HOLD)
-        DBG_PRINTLN("AUTO: Buffer Full -> HOME_HOLD (force stop)");
+        Serial.println("AUTO: Buffer Full -> HOME_HOLD (force stop)");
       autoState = AUTO_HOME_HOLD;
     }
     syncServoToAutoState();
@@ -1614,12 +1735,12 @@ static void serviceAuto()
       return;
 
     case AUTO_HOME_HOLD:
-      // GPIO19 vacío estable (~200 ms OFF) → rellenar hasta Full ON.
+      // Solo rearrancar con buffer vacío estable. Si el DeReeler sigue con
+      // Full/chatter: cortar — no lead (antes rearrancaba el RC ~2–3 s).
       if (bufferFullAllowsMotion())
         beginAutoCwWithServoLead();
       else if (motor && fabsf(motor->currentRPM()) > 1.0f)
-        // DeReeler huérfano (Stop RMT ignorado): servo ya, no esperar 200 ms.
-        beginAutoCwWithServoLead();
+        forceStopDereelerAndServo();
       break;
 
     case AUTO_SERVO_LEAD:
@@ -2143,21 +2264,25 @@ static void motor2StartTimedFeed(uint32_t now, Motor2FeedSource src, float rpm, 
 
 static void motor2StartTriggerFeed(uint32_t now)
 {
-  float sec = (motor2TcpTriggerSecRequest > 0.05f)
-                ? (float)motor2TcpTriggerSecRequest
-                : (float)motor2TriggerFeedSec;
-  motor2TcpTriggerSecRequest = 0.0f;
-  const uint16_t trigId = motor2TcpTriggerPendingId;
-  motor2TcpTriggerPendingId = 0;
+  uint16_t trigId = 0;
+  float secQ = 0.0f;
+  if (!triggerQueuePop(&trigId, &secQ))
+  {
+    motor2TcpTriggerRequest = false;
+    return;
+  }
+  float sec = (secQ > 0.05f) ? secQ : (float)motor2TriggerFeedSec;
+  if (sec < 0.05f) sec = 0.05f;
+  if (sec > M2_TRIGGER_FEED_MAX) sec = M2_TRIGGER_FEED_MAX;
+  Serial.printf("[PEER] trigger RUN id=%u — ejecuta Tfeed %.2fs (cola=%u)\n",
+                (unsigned)trigId, sec, (unsigned)triggerQueueDepth());
   motor2StartTimedFeed(now, M2_FEED_TCP, (float)motor2RpmSetting, sec);
   triggerIdRemember(trigId);
 }
 
 static void motor2ClearPendingTrigger()
 {
-  motor2TcpTriggerRequest = false;
-  motor2TcpTriggerSecRequest = 0.0f;
-  motor2TcpTriggerPendingId = 0;
+  triggerQueueClear();
 }
 
 static void serviceTimedFeeder()
@@ -2175,6 +2300,10 @@ static void serviceTimedFeeder()
     motor2TriggerActiveSec = 0.0f;
     Serial.printf("M2: fin timed_feed src=%s %.2fs\n",
                   motor2FeedSourceName(doneSrc), doneSec);
+    // Siguiente Tfeed en cola (si hay) sin esperar otro ciclo de 5 ms.
+    if (motor2TcpTriggerRequest && peerLinkOk && systemFault == FAULT_NONE
+        && !bufferMaxActive() && autoEnabled)
+      motor2StartTriggerFeed(millis());
     return;
   }
 
@@ -2329,19 +2458,18 @@ static void motor2HolguraTask(void* /*param*/)
 
     if (motor2TcpTriggerRequest)
     {
-      // Sin enlace: conservar pendiente (blip TCP). Buffer Max ya se filtró arriba.
+      // Sin enlace: conservar cola (blip TCP). Buffer Max ya se filtró arriba.
       if (!peerLinkOk)
       {
-        // Esperar enlace; no borrar el Tfeed de ciclo.
+        // Esperar enlace; no borrar Tfeeds pendientes.
       }
       else if (motor2Phase == M2_PHASE_TIMED_FEED)
       {
         // Holgura o Tfeed TCM en curso: no cortar ni reiniciar timer;
-        // el Tfeed pendiente arranca al terminar (evita L/R asimétrico en lote).
+        // la cola arranca al terminar (evita L/R asimétrico en lote).
       }
       else
       {
-        motor2TcpTriggerRequest = false;
         motor2StartTriggerFeed(millis());
       }
     }
@@ -3170,7 +3298,8 @@ static bool peerDoCmd(const String& cmd, const String& val, int id)
     if (trigId && triggerIdAlreadyDone(trigId))
     {
       ok = true;
-      DBG_PRINTF("M2: trigger id=%u dedup — sin re-ejecutar\n", (unsigned)trigId);
+      Serial.printf("[PEER] trigger id=%u dedup — ya ejecutado, no re-lanza\n",
+                    (unsigned)trigId);
     }
     else
     {
@@ -3185,26 +3314,35 @@ static bool peerDoCmd(const String& cmd, const String& val, int id)
       if (systemFault == FAULT_NONE && peerLinkOk && autoEnabled
           && !bufferMaxActive())
       {
-        // Si hay timed feed (holgura o Tfeed) en curso, la tarea M2 lo deja
-        // pendiente y arranca al terminar — no marcar id hecho aquí.
+        float sec = 0.0f;
         if (val.length())
         {
-          float v = val.toFloat();
-          if (v < 0.05f) v = 0.05f;
-          if (v > M2_TRIGGER_FEED_MAX) v = M2_TRIGGER_FEED_MAX;
-          motor2TcpTriggerSecRequest = v;
+          sec = val.toFloat();
+          if (sec < 0.05f) sec = 0.05f;
+          if (sec > M2_TRIGGER_FEED_MAX) sec = M2_TRIGGER_FEED_MAX;
+        }
+        if (triggerQueuePush(trigId, sec))
+        {
+          ok = true;
+          const uint8_t depth = triggerQueueDepth();
+          if (!sensorsMotionArmed())
+          {
+            Serial.printf(
+              "[PEER] trigger QUEUED id=%u cola=%u (sin armado — arranca al In process) "
+              "inProc=%d idle=%d\n",
+              (unsigned)trigId, (unsigned)depth,
+              (int)tcmInProcess, (int)idleMode);
+          }
+          else
+          {
+            Serial.printf("[PEER] trigger RX id=%u — aceptado cola=%u\n",
+                          (unsigned)trigId, (unsigned)depth);
+          }
         }
         else
-          motor2TcpTriggerSecRequest = 0.0f;  // default triggerFeedS
-        motor2TcpTriggerPendingId = trigId;
-        motor2TcpTriggerRequest = true;
-        ok = true;
-        if (!sensorsMotionArmed())
         {
-          Serial.printf(
-            "[PEER] trigger QUEUED id=%u (sin armado — arranca al In process) "
-            "inProc=%d idle=%d\n",
-            (unsigned)trigId, (int)tcmInProcess, (int)idleMode);
+          Serial.printf("[PEER] trigger NACK id=%u — cola llena (%u)\n",
+                        (unsigned)trigId, (unsigned)M2_TRIGGER_QUEUE_DEPTH);
         }
       }
       else
@@ -3423,10 +3561,14 @@ static bool peerDoCmd(const String& cmd, const String& val, int id)
   peerLastCmd = cmd;
   peerLastCmdMs = millis();
   peerLastCmdOk = ok;
-  if (!ok)
-    Serial.printf("[PEER] cmd \"%s\" RECHAZADO\n", cmd.c_str());
-  else
-    DBG_PRINTF("[PEER] cmd \"%s\" OK\n", cmd.c_str());
+  // ping: keepalive silencioso. trigger: ya loguea RX / QUEUED / NACK / dedup.
+  if (cmd != "ping" && cmd != "trigger")
+  {
+    if (!ok)
+      Serial.printf("[PEER] cmd \"%s\" RECHAZADO\n", cmd.c_str());
+    else
+      DBG_PRINTF("[PEER] cmd \"%s\" OK\n", cmd.c_str());
+  }
 
   // Sin ACK TCP: TCM fire-and-forget. Errores/timeouts van por event/status.
   if (!ok)
@@ -3759,7 +3901,7 @@ void setup()
   motor2->setDefault(MOTOR_MICROSTEP, MOTOR2_ACCEL, MOTOR2_DECEL);
   motor2->Brake();
 
-  // StepperRMT puede desenganchar LEDC del servo; re-atachar tras motores (como heredado + fix).
+  // StepperRMT puede soltar LEDC; reafirma servo tras begin().
   setupRotationServo();
 
   xTaskCreatePinnedToCore(
@@ -3802,9 +3944,11 @@ void loop()
     }
     else if (bufferFullStopNow())
     {
-      // Primero el RC (flanco Full → Detach+Attach+1500), luego DeReeler.
+      // Primero el RC; DeReeler solo si aún hay consigna/RPM (evita Brake spam).
       servoServiceBufferFullCut();
-      forceStopDereelerAndServo();
+      if (fabsf(commandedRpm) > 0.01f
+          || (motor && fabsf(motor->currentRPM()) > 1.0f))
+        forceStopDereelerAndServo();
       if (autoEnabled && systemFault == FAULT_NONE
           && (autoState == AUTO_SERVO_LEAD || autoState == AUTO_CW || autoState == AUTO_CCW))
         autoState = AUTO_HOME_HOLD;

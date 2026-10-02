@@ -220,7 +220,7 @@ class CycleConfig:
     # Feed / Stage2 OM: "L" | "R" | "LR" (producción = ambos)
     feed_sides: str = "LR"
     # Tfeed tras el corte (paso 18). False = omitir siempre; solo helper holgura.
-    # C2 omite si esa pieza ya mandó Tfeed. Default ON (producción).
+    # 1ª pieza del lote omite; C2 omite si esa pieza ya mandó Tfeed. Default ON.
     pf_trigger_enabled: bool = True
     # Refill / purga: Alimentar hasta láser (skipValidate). refill_mm legado.
     refill_mm: float = 55.0
@@ -3374,9 +3374,9 @@ class CycleRunner:
     def _do_pf_trigger(self, rep: int) -> bool:
         """Tfeed a lados de feedSides. True = OK / omitido; False = fault.
 
-        Contrato Doc/pf_trigger.md: omite si pfTriggerEnabled=False o C2
-        (Tfeed ya mandado en esta pieza). Con helper holgura activo el
-        esclavo encola el Tfeed.
+        Contrato Doc/pf_trigger.md: omite si pfTriggerEnabled=False, 1ª
+        pieza del lote, o C2 (Tfeed ya mandado en esta pieza). Con helper
+        holgura activo el esclavo encola el Tfeed.
         """
         c2_skip = self._recovery_skip_pf_trigger
         self._recovery_skip_pf_trigger = False
@@ -3387,6 +3387,11 @@ class CycleRunner:
             return True
         if not self._use_prefeeder():
             self._host.cycle_log("trigger PreFeeder: omitido (sin enlace)")
+            return True
+        if int(rep) <= 1:
+            self._host.cycle_log(
+                "trigger PreFeeder: omitido (1ª pieza — feed de referencia)"
+            )
             return True
         if c2_skip:
             self._pf_trigger_sent_this_piece = True
@@ -4536,7 +4541,7 @@ class CycleRunner:
                             break
                         if self._do_wait(rep, qty, "wait_cutter_post", "cutter_post_ms"):
                             break
-                        # 18 Tfeed post-corte (todas las piezas; C2 omite si ya se mandó)
+                        # 18 Tfeed post-corte (1ª omite; 2…N incluido última; C2 si ya se mandó)
                         if self._enter(rep, qty, "pf_trigger"):
                             break
                         if not self._do_pf_trigger(rep):
