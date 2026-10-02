@@ -91,7 +91,7 @@ export const CYCLE_STEPS_DEFINITION: CycleStep[] = [
     note: 'Solo si ASDA está en 0. Pieza siguiente: feed. Última: omitido. Tfeed ya se mandó tras el corte.',
   },
   { id: 26, title: 'Delay asentar', type: 'delay', delayKey: 'asentarMs', defaultDurationMs: 50, sbsPause: false },
-  { id: 27, title: 'Post-pieza (safety / peer / holgura)', type: 'action', sbsPause: false },
+  { id: 27, title: 'Post-pieza (safety / peer / settled)', type: 'action', sbsPause: false },
 ]
 
 function stepsFromFlow(flow: BackendFlowStep[]): CycleStep[] {

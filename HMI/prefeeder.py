@@ -35,7 +35,6 @@ PF_ERROR_BYTES_R = frozenset(
         TX_TENSION_R,
         TX_CILINDRO_R,
         TX_MANGUERA_R,
-        TX_HOLGURA_R,
     }
 )
 PF_ERROR_BYTES_L = frozenset(
@@ -45,7 +44,6 @@ PF_ERROR_BYTES_L = frozenset(
         TX_TENSION_L,
         TX_CILINDRO_L,
         TX_MANGUERA_L,
-        TX_HOLGURA_L,
     }
 )
 PF_ERROR_BYTES = PF_ERROR_BYTES_R | PF_ERROR_BYTES_L

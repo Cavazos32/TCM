@@ -161,7 +161,7 @@ FLOW_STEPS: list[dict[str, Any]] = [
         "sbsPause": True,
     },
     {"id": 26, "key": "wait_asentar", "label": "Delay asentar", "kind": "wait", "delayKey": "asentarMs", "sbsPause": False},
-    {"id": 27, "key": "post_piece", "label": "Post-pieza (safety / peer / holgura)", "kind": "action", "sbsPause": False},
+    {"id": 27, "key": "post_piece", "label": "Post-pieza (safety / peer / settled)", "kind": "action", "sbsPause": False},
 ]
 PROGRESS_STEPS = len(FLOW_STEPS)
 STEP_NAMES = {0: "idle", **{s["id"]: s["key"] for s in FLOW_STEPS}}
@@ -219,7 +219,7 @@ class CycleConfig:
     piece_watch_timeout_s: float = 20.0
     # Feed / Stage2 OM: "L" | "R" | "LR" (producción = ambos)
     feed_sides: str = "LR"
-    # Tfeed tras el corte (paso 18). False = omitir siempre; solo helper holgura.
+    # Tfeed tras el corte (paso 18). False = omitir siempre.
     # 1ª pieza del lote omite; C2 omite si esa pieza ya mandó Tfeed. Default ON.
     pf_trigger_enabled: bool = True
     # Refill / purga: Alimentar hasta láser (skipValidate). refill_mm legado.
@@ -3376,13 +3376,13 @@ class CycleRunner:
 
         Contrato Doc/pf_trigger.md: omite si pfTriggerEnabled=False, 1ª
         pieza del lote, o C2 (Tfeed ya mandado en esta pieza). Con helper
-        holgura activo el esclavo encola el Tfeed.
+        # TFEED: el esclavo encola el trigger (independiente de AUTO/InProcess).
         """
         c2_skip = self._recovery_skip_pf_trigger
         self._recovery_skip_pf_trigger = False
         if not self.get_config().pf_trigger_enabled:
             self._host.cycle_log(
-                "trigger PreFeeder: omitido (deshabilitado — solo holgura)"
+                "trigger PreFeeder: omitido (deshabilitado)"
             )
             return True
         if not self._use_prefeeder():
@@ -3540,25 +3540,21 @@ class CycleRunner:
     def _pf_side_settled_for_idle(self, side: str) -> tuple[bool, str]:
         """True si el lado puede pasar a Idle sin cortar relleno/Tfeed.
 
-        Misma idea que PF fillUntilReady: Buffer Full + holgura + M2 quieto.
-        Si no hay triggerActive (Master viejo): holgura presente basta como proxy.
+        Tras eliminación de Holgura: Buffer Full + M2 quieto (sin Tfeed activo).
         """
         full = self._host.pf_buffer_full(side)
-        holgura = self._host.pf_holgura_present(side)
         filling = self._host.pf_auto_filling(side)
         trig = self._host.pf_trigger_active(side)
         if full is not True:
             return False, f"{side}:buffer≠Full"
-        if holgura is not True:
-            return False, f"{side}:sin holgura"
         if filling is True:
             return False, f"{side}:rellenando"
         if trig is True:
-            return False, f"{side}:Tfeed/helper activo"
+            return False, f"{side}:Tfeed activo"
         return True, f"{side}:OK"
 
     def _wait_pf_settled_before_idle(self, timeout_s: float = 3.0) -> None:
-        """Espera Buffer Full + holgura (+ M2 idle) antes de In process OFF.
+        """Espera Buffer Full (+ M2 idle) antes de In process OFF.
 
         Sale al primer tick ya settled, o al timeout / Stop. No falla el lote.
         """
@@ -3579,7 +3575,7 @@ class CycleRunner:
             why_txt = " ".join(reasons)
             if all_ok:
                 self._host.cycle_log(
-                    f"PreFeeder: settled (Full+holgura/M2) → Idle ok · {why_txt}"
+                    f"PreFeeder: settled (Full+M2) → Idle ok · {why_txt}"
                 )
                 return
             if why_txt != last_why:
@@ -4852,7 +4848,7 @@ class CycleRunner:
         # Fin de lote / error: desarmar PreFeeder (In process OFF → Idle).
         # Una sola armada al Start basta para 1…N piezas. No usar Stop 0x2B
         # aquí: enclava PF-007; Stop de operador / error ya mandaron 0x2B.
-        # No cortar en seco: esperar Buffer Full + holgura (+ M2 idle).
+        # No cortar en seco: esperar Buffer Full (+ M2 idle).
         if self._use_prefeeder() and not (self._aborted or self._stop.is_set()):
             if ok:
                 self._wait_pf_settled_before_idle(timeout_s=3.0)

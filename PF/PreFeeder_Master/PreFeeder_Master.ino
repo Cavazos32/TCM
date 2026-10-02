@@ -25,7 +25,7 @@ static const uint32_t STALE_LINK_MS = 30000;
 static const uint32_t KEEPALIVE_PING_MS = 4000;
 static const uint32_t WIFI_RETRY_MS = 8000;
 static const uint32_t STATUS_LOG_MS = 10000;
-static const uint8_t  HTTP_SERVICE_PASSES = 12;
+static const uint8_t  HTTP_SERVICE_PASSES = 4;
 static const uint8_t PROTO_VER = PF_MASTER_PROTO_VER;
 
 WebServer server(80);
@@ -69,7 +69,6 @@ struct SideView {
   bool tension = false;
   bool cylinderOpen = false;
   bool hoseAbsent = false;
-  bool holgura = false;
   bool autoEnabled = false;
   String autoState = "off";
   bool error = false;
@@ -78,7 +77,7 @@ struct SideView {
   bool idleMode = false;
   bool inProcess = false;
   bool sensorsArmed = false;
-  bool triggerActive = false;  // Motor2 Tfeed / helper holgura en curso
+  bool triggerActive = false;  // Motor2 Tfeed en curso
   bool refillMaterial = false;
   bool refillDereeler = false;
   bool refillServo = false;
@@ -313,7 +312,6 @@ static void parseSideSnapshot(const char* j, SideView& s)
   s.tension = jBool(j, "tension", s.tension);
   s.cylinderOpen = jBool(j, "cylinderOpen", s.cylinderOpen);
   s.hoseAbsent = jBool(j, "hoseAbsent", s.hoseAbsent);
-  s.holgura = jBool(j, "holgura", s.holgura);
   s.autoEnabled = jBool(j, "autoEnabled", s.autoEnabled);
   String st = jStr(j, "autoState");
   if (st.length()) s.autoState = st;
@@ -356,7 +354,6 @@ static void parseSideEvent(const char* line, SideView& s)
   else if (field == "tension") s.tension = jBool(line, "value", s.tension);
   else if (field == "cylinderOpen") s.cylinderOpen = jBool(line, "value", s.cylinderOpen);
   else if (field == "hoseAbsent") s.hoseAbsent = jBool(line, "value", s.hoseAbsent);
-  else if (field == "holgura") s.holgura = jBool(line, "value", s.holgura);
   else if (field == "idleMode") s.idleMode = jBool(line, "value", s.idleMode);
   else if (field == "inProcess") s.inProcess = jBool(line, "value", s.inProcess);
   else if (field == "sensorsArmed") s.sensorsArmed = jBool(line, "value", s.sensorsArmed);
@@ -607,7 +604,6 @@ static void appendSideJson(String& j, const char* key, const SideView& s)
   j += ",\"tension\":"; j += s.tension ? "true" : "false";
   j += ",\"cylinderOpen\":"; j += s.cylinderOpen ? "true" : "false";
   j += ",\"hoseAbsent\":"; j += s.hoseAbsent ? "true" : "false";
-  j += ",\"holgura\":"; j += s.holgura ? "true" : "false";
   j += ",\"autoEnabled\":"; j += s.autoEnabled ? "true" : "false";
   j += ",\"autoState\":"; jsonAppendStr(j, s.autoState);
   j += ",\"idleMode\":"; j += s.idleMode ? "true" : "false";
@@ -975,12 +971,12 @@ static void pfTcpPushStateIfChanged()
 static bool pfSideErrFlag(const SideView& s, uint8_t idx)
 {
   switch (idx) {
-    // Buffer Full / Holgura / Tensión: EXXX solo con fallo enclavado (timeout).
+    // Buffer Full / Tensión: EXXX solo con fallo enclavado (timeout).
     // Sensor tensión ON = inversión normal, no E054/E060.
-    // No publicar s.home / s.holgura / s.tension como active del opcode.
+    // No publicar s.home / s.tension como active del opcode.
     case 0: return s.error && pfErrorIdFromWireCode(s.errorCode) == PF_ERR_BUFFER;
     case 2: return s.error && pfErrorIdFromWireCode(s.errorCode) == PF_ERR_TENSION;
-    case 5: return s.error && pfErrorIdFromWireCode(s.errorCode) == PF_ERR_HOLGURA;
+    case 5: return false;  // Holgura eliminada; slot idx reservado (0x32/0x38)
     // Instantáneos: sensor activo = condición de fallo (misma polaridad que EXXX)
     case 1: return s.endstop || (s.error && pfErrorIdFromWireCode(s.errorCode) == PF_ERR_ENDSTOP);
     case 3: return s.cylinderOpen || (s.error && pfErrorIdFromWireCode(s.errorCode) == PF_ERR_CYLINDER);
@@ -1434,12 +1430,17 @@ void loop()
   masterLogWifiOnce();
   masterServiceTcpHmi();
 
+  // RX L/R con frecuencia: HTTP intercalado corto para no retrasar lastRx.
   pfServiceSide(pfClientL, PF_L_IP, lastReconnectMsL, rxLineL, rxLenL, 'L',
                 connectMsL, lastRxMsL, failCountL, lastKeepaliveMsL);
+  if (pfClientR.connected())
+    pfRx(pfClientR, rxLineR, rxLenR, 'R');
   masterServiceHttp();
 
   pfServiceSide(pfClientR, PF_R_IP, lastReconnectMsR, rxLineR, rxLenR, 'R',
                 connectMsR, lastRxMsR, failCountR, lastKeepaliveMsR);
+  if (pfClientL.connected())
+    pfRx(pfClientL, rxLineL, rxLenL, 'L');
 
   masterLogStatus();
   masterServiceHttp();

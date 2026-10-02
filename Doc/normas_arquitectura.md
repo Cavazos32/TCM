@@ -146,8 +146,9 @@ En PreFeeder, estos opcodes **no** se Setean solo porque el sensor esté ON:
 | EXXX | Sensor | Set real |
 |------|--------|----------|
 | E052 / E058 | Buffer Full | Timeout de buffer sin relleno (fallo enclavado L/R) |
-| E057 / E063 | Holgura | Timeout sin holgura (fallo enclavado L/R) |
 | E054 / E060 | Tensión | Timeout de tensión ≥ `tension-fault-s` (fallo enclavado L/R) |
+
+**Holgura (E057/E063) eliminada del producto (2026-10).** Bytes `0x32`/`0x38` quedan reservados en el enum (no publicar).
 
 GPIO tensión HIGH dispara **inversión** del DeReeler; eso es operación normal, no E054/E060. Master publica el opcode de tensión como `active` solo con fallo enclavado del esclavo. HMI enclavá el EXXX solo vía ese fallo (`fault_active` / `error`+`errorCode`), no por el espejo del sensor.
 
@@ -355,7 +356,8 @@ Coherente con **M3** (norma primero) y **M4** (alinear archivos). Resumen operat
 |--------|-------------------|
 | HMI TCP | `HMI/tcp_link.py`, `ModuleTcpClient` (vía `HMI/state.py`): threads RX (`_rx_loop`) y reconnect/heartbeat (`_bg_loop`); locks `_io_lock` / `_conn_lock` / `_connect_gate`; `_session` y callbacks diferidos; `connect` / `reconnect` / `disconnect` / `_drop_link`; heartbeat; timeouts (`RX_TIMEOUT_SEC`, `RX_JOIN_TIMEOUT_SEC`, etc.) |
 | Motion | `Motion/Motion.ino`: `serviceWifi()`, `wifiKickConnect()`, `serviceAsdaTcp()`, `asdaTcpEnsureServices()`, `asdaTcpStopServices()`, `asdaTcpAcceptIncoming()`, `asdaTcpRxDrain()`, `asdaTcpPollEvents()`, protocolo ASDA TCP, orden de `loop()` |
-| PreFeeder Master | `PF/PreFeeder_Master/PreFeeder_Master.ino`: `masterServiceWiFi()`, `masterServiceTcpHmi()`, `pfTcpEnsureServices()`, `pfTcpStopServices()`, `pfTcpAcceptIncoming()`, `pfTcpRxDrain()`, `pfServiceSide` / L–R (`pfTryConnect`, `pfWatchLink`, `pfKeepalive`), protocolo PF |
+| PreFeeder Master | `PF/PreFeeder_Master/PreFeeder_Master.ino`: `masterServiceWiFi()`, `masterServiceTcpHmi()`, `pfTcpEnsureServices()`, `pfTcpStopServices()`, `pfTcpAcceptIncoming()`, colas `MasterQueues.h`, tareas `masterRxTask` / `masterTxTask`, `pfServiceSide` / L–R (`pfTryConnect`, `pfWatchLink`, `pfKeepalive`), protocolo PF |
+| PreFeeder L/R | `PF/PF_LR/PF_LR.ino`: `communicationTask` (TCP/HTTP/WiFi → `PfQueues` CmdQueue), Control=`loop()` (AUTO/Servo/DeReeler/Safety), `feederTask` (TFEED) |
 
 **No** convertir los waits de `HMI/cycle.py` (`CycleRunner`) en polling TCP ni mover la rutina al hilo de comunicación.
 

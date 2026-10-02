@@ -6,14 +6,12 @@
 
 enum Motor2Phase : uint8_t {
   M2_PHASE_IDLE = 0,
-  M2_PHASE_TIMED_FEED     // feeder por tiempo (TCM trigger o helper holgura)
+  M2_PHASE_TIMED_FEED     // feeder por tiempo (TCM trigger TFEED)
 };
 
-// Diferenciador: quién disparó el feed temporizado (mismos pasos de motor).
 enum Motor2FeedSource : uint8_t {
   M2_FEED_NONE = 0,
-  M2_FEED_TCP,       // mensaje TCM/Master (opcode 0x4C / 0x51)
-  M2_FEED_HOLGURA    // leímos cambio de estado GPIO22 (SIN HOLGURA)
+  M2_FEED_TCP        // mensaje TCM/Master (opcode 0x4C / 0x51)
 };
 
 enum SystemFault : uint8_t {
@@ -23,8 +21,8 @@ enum SystemFault : uint8_t {
   FAULT_CYLINDER_OPEN,
   FAULT_HOSE_ABSENT,
   FAULT_BUFFER_TIMEOUT,
-  FAULT_HOLGURA_TIMEOUT,
   FAULT_OPERATOR_STOP   // Detener en UI: enclavado hasta Reset
+  // FAULT_HOLGURA eliminado del producto
 };
 
 enum AutoState : uint8_t {
@@ -38,6 +36,5 @@ enum AutoState : uint8_t {
   AUTO_CYLINDER_FAULT,
   AUTO_HOSE_FAULT,
   AUTO_BUFFER_FAULT,
-  AUTO_HOLGURA_FAULT,
   AUTO_OPERATOR_STOP
 };

@@ -552,9 +552,9 @@ const char index_html[] PROGMEM = R"rawliteral(
           <button type="button" class="info-panel-close" onclick="toggleRoutineInfo(false)" aria-label="Cerrar">×</button>
         </div>
 
-        <p class="info-note">Dos núcleos en paralelo: <strong>Núcleo 1</strong> (loop) = DeReeler, servo, fallas y web. <strong>Núcleo 0</strong> (tarea FreeRTOS) = Feeder por trigger Tfeed. Los tiempos en azul salen de la configuración actual (los fijos no se editan).</p>
+        <p class="info-note">Communication (core0) · Control loop (core1) · Feeder TFEED (core1). Servo dueño único en Control.</p>
 
-        <p class="info-section-title">Núcleo 1 · DeReeler + Servo (con Iniciar)</p>
+        <p class="info-note">Communication (core0) · Control loop (core1) · Feeder TFEED (core1). Servo dueño único en Control.</p>
         <ol class="info-flow">
           <li class="info-step-note"><strong>Secuencia:</strong> trigger Tfeed → feeder consume · DeReeler/servo siguen hasta Full ON</li>
           <li>Buffer Full GPIO 19 HIGH → DeReeler/servo paran al instante; rearranque solo tras OFF ~200 ms</li>
@@ -569,16 +569,12 @@ const char index_html[] PROGMEM = R"rawliteral(
           <li>Tensión GPIO 23 &gt; <span class="info-param" data-info-key="tensionFault">10 s</span> → para todo</li>
         </ol>
 
-        <p class="info-section-title">Núcleo 0 · Feeder (automático, con Iniciar)</p>
+        <p class="info-note">Communication (core0) · Control loop (core1) · Feeder TFEED (core1). Servo dueño único en Control.</p>
         <ol class="info-flow">
-          <li class="info-step-note">Tarea <em>m2_holgura</em> · ciclo ~5 ms · feeder: trigger TCP / helper holgura / refill</li>
           <li class="info-step-note">Misma condición: ventana de relleno + Auto ON</li>
-          <li>Holgura GPIO 22: ON = OK · OFF ≥ <span class="info-param" data-info-key="holguraHelperMs">100 ms</span> → helper feed · ausencia acumulada ≥ <span class="info-param" data-info-key="holguraFault">1.5 s</span> tras Full visto → falla (tirón / helper no cancela; primer relleno no enclava)</li>
-          <li>Helper holgura · <span class="info-param" data-info-key="holguraHelperRpm">60 RPM</span> · <span class="info-param" data-info-key="holguraHelperS">1.0 s</span> · no corta Tfeed TCP en curso</li>
           <li>Trigger TCP desde TCM → alimenta Tfeed · <span class="info-param" data-info-key="rpm2">60 RPM</span> · en paralelo con relleno</li>
           <li class="info-step-wait"><span class="info-param" data-info-key="triggerFeed">2.0 s</span> · duración Tfeed (editable) · no cortar hasta fin (salvo Stop/falla/Buffer Max)</li>
           <li>Fin Tfeed → feeder idle · DeReeler/servo siguen si Full OFF</li>
-          <li class="info-step-wait">80 ms · filtro holgura estable</li>
           <li class="info-step-note">Sin enlace TCP con TCM → feeder en pausa</li>
         </ol>
 
@@ -593,11 +589,8 @@ const char index_html[] PROGMEM = R"rawliteral(
         <p class="info-section-title">Control global</p>
         <ol class="info-flow">
           <li class="info-step-note">Idle quieto: sensores <strong>bloqueados</strong> hasta Iniciar o In process del TCM/Master</li>
-          <li><strong>Iniciar</strong> → rellena una vez (buffer+holgura) y congela sensores</li>
-          <li><strong>In process ON</strong> → sensores armados · relleno continuo · helper holgura</li>
           <li><strong>Detener</strong> → enclava todo hasta Reset (luego Iniciar)</li>
           <li><strong>Reset</strong> → libera falla / parada operador; luego Iniciar</li>
-          <li><strong>Materialista ON</strong> → torre naranja; bloquea buffer/holgura; GPIO 27 off; solo refill manual; TCM no produce</li>
           <li class="info-step-note">Idle: al quitar In process congela (anti-tamper)</li>
         </ol>
       </div>
@@ -667,11 +660,6 @@ const char index_html[] PROGMEM = R"rawliteral(
           <span class="badge off" id="endstop-badge">—</span>
         </div>
         <div class="sensor-row">
-          <div class="led off" id="buffer-tension-led"></div>
-          <span class="sensor-title">GPIO 22 · Holgura</span>
-          <span class="badge off" id="buffer-tension-badge">—</span>
-        </div>
-        <div class="sensor-row">
           <div class="led tension off" id="tension-led"></div>
           <span class="sensor-title">GPIO 23 · Tensión</span>
           <span class="badge tension off" id="tension-badge">—</span>
@@ -706,38 +694,8 @@ const char index_html[] PROGMEM = R"rawliteral(
       </div>
     </div>
 
-    <div class="card" id="holgura-helper-card">
-      <h2>Helper Holgura</h2>
-      <p class="meta compact">
-        Sensor ON = holgura OK. Sensor OFF ≥ umbral → feeder a velocidad/duración propias (prioridad sobre trigger TCP).
-        Si la ausencia acumulada ≥ falla → error PF-006 / opcode Holgura L|R.
-        Un tirón o pulso del sensor no cancela el timeout: hay que sostener holgura ≥ falla (s) con feeder quieto.
-      </p>
-      <div class="form-row">
-        <div class="form-group">
-          <label for="holgura-helper-rpm">Velocidad (RPM)</label>
-          <input type="number" id="holgura-helper-rpm" min="1" max="600" step="1" value="60">
-        </div>
-        <div class="form-group">
-          <label for="holgura-helper-s">Duración (s)</label>
-          <input type="number" id="holgura-helper-s" min="0.05" max="60" step="0.05" value="1.0">
-        </div>
-      </div>
-      <div class="form-row">
-        <div class="form-group">
-          <label for="holgura-helper-absent-ms">Ausente → helper (ms)</label>
-          <input type="number" id="holgura-helper-absent-ms" min="20" max="5000" step="10" value="100">
-        </div>
-        <div class="form-group">
-          <label for="holgura-fault-s">Ausente tras Full → falla (s)</label>
-          <input type="number" id="holgura-fault-s" min="0.3" max="30" step="0.1" value="1.5">
-        </div>
-      </div>
-    </div>
-
-    <div class="card">
+    <div class="card" id="stepmotor-card">
       <h2>StepMotor</h2>
-
       <div class="trigger-section">
         <p class="subsection-title">StepMotor – DeReeler</p>
         <div class="form-group">
@@ -745,7 +703,6 @@ const char index_html[] PROGMEM = R"rawliteral(
           <input type="number" id="auto-rpm" min="1" max="600" step="1" value="60">
         </div>
       </div>
-
       <div class="trigger-section">
         <p class="subsection-title">StepMotor – Feeder</p>
         <div class="form-group">
@@ -813,10 +770,6 @@ const char index_html[] PROGMEM = R"rawliteral(
       servoPwm: { id: 'servo-pwm', suffix: ' µs' },
       rpm2: { id: 'rpm2', suffix: ' RPM' },
       triggerFeed: { id: 'trigger-feed-sec', suffix: ' s' },
-      holguraHelperRpm: { id: 'holgura-helper-rpm', suffix: ' RPM' },
-      holguraHelperS: { id: 'holgura-helper-s', suffix: ' s' },
-      holguraHelperMs: { id: 'holgura-helper-absent-ms', suffix: ' ms' },
-      holguraFault: { id: 'holgura-fault-s', suffix: ' s' }
     };
     function refreshRoutineInfo() {
       Object.keys(routineInfoKeys).forEach(function(key) {
@@ -854,7 +807,6 @@ const char index_html[] PROGMEM = R"rawliteral(
     var cfgFieldIds = [
       'auto-rpm', 'auto-rev', 'rpm2', 'trigger-feed-sec',
       'tension-reverse-rpm', 'tension-fault-s', 'tension-cooldown', 'servo-pwm', 'refill-pulse-s',
-      'holgura-helper-rpm', 'holgura-helper-s', 'holgura-helper-absent-ms', 'holgura-fault-s'
     ];
     function markCfgDirty() { cfgDirty = true; }
     function bindCfgDirty() {
@@ -872,32 +824,15 @@ const char index_html[] PROGMEM = R"rawliteral(
       if (String(el.value) !== String(v)) el.value = v;
     }
     function applyTrigger2(t) {
-      var bufLed = document.getElementById('buffer-tension-led');
-      var bufBadge = document.getElementById('buffer-tension-badge');
-      var holgura = (t.holgura_present !== undefined) ? t.holgura_present : t.buffer_tension;
-      if (holgura) {
-        bufLed.className = 'led on';
-        bufBadge.className = 'badge on';
-        bufBadge.textContent = 'HOLGURA';
-      } else {
-        bufLed.className = 'led warning on';
-        bufBadge.className = 'badge warning on';
-        bufBadge.textContent = 'SIN HOLGURA';
-      }
       var trigLed = document.getElementById('trigger2-led');
       var trigBadge = document.getElementById('trigger2-badge');
       var trigActive = t.trigger_active;
       trigLed.className = 'led' + (trigActive ? ' on' : ' off');
       trigBadge.className = 'badge' + (trigActive ? ' on' : ' off');
       if (!trigActive) trigBadge.textContent = 'Inactivo';
-      else if (t.trigger_via === 'holgura_helper') trigBadge.textContent = 'Helper holgura';
       else trigBadge.textContent = 'Trigger TCP';
       syncCfg('rpm2', t.rpm_boost);
       syncCfg('trigger-feed-sec', t.trigger_feed_s);
-      syncCfg('holgura-helper-rpm', t.holgura_helper_rpm);
-      syncCfg('holgura-helper-s', t.holgura_helper_s);
-      syncCfg('holgura-helper-absent-ms', t.holgura_helper_absent_ms);
-      syncCfg('holgura-fault-s', t.holgura_fault_s);
       motor2Init = true;
       trigger2Init = true;
     }
@@ -923,15 +858,11 @@ const char index_html[] PROGMEM = R"rawliteral(
       var tfeed = parseFloat(document.getElementById('trigger-feed-sec').value);
       if (isNaN(tfeed) || tfeed < 0.1) tfeed = 2.0;
       if (tfeed > 60) tfeed = 60;
-      var hRpm = parseFloat(document.getElementById('holgura-helper-rpm').value);
       if (isNaN(hRpm) || hRpm < 1) hRpm = 60;
-      var hSec = parseFloat(document.getElementById('holgura-helper-s').value);
       if (isNaN(hSec) || hSec < 0.05) hSec = 1.0;
       if (hSec > 60) hSec = 60;
-      var hAbsMs = parseInt(document.getElementById('holgura-helper-absent-ms').value, 10);
       if (isNaN(hAbsMs) || hAbsMs < 20) hAbsMs = 100;
       if (hAbsMs > 5000) hAbsMs = 5000;
-      var hFault = parseFloat(document.getElementById('holgura-fault-s').value);
       if (isNaN(hFault) || hFault < 0.3) hFault = 1.5;
       if (hFault > 30) hFault = 30;
       var autoUrl = '/api/auto?rpm=' + encodeURIComponent(rpm)
@@ -945,10 +876,6 @@ const char index_html[] PROGMEM = R"rawliteral(
       if (pulseS > 10) pulseS = 10;
       var m2Url = '/api/motor2?rpm=' + encodeURIComponent(rpm2)
         + '&trigger_feed_s=' + encodeURIComponent(tfeed)
-        + '&holgura_helper_rpm=' + encodeURIComponent(hRpm)
-        + '&holgura_helper_s=' + encodeURIComponent(hSec)
-        + '&holgura_helper_absent_ms=' + encodeURIComponent(hAbsMs)
-        + '&holgura_fault_s=' + encodeURIComponent(hFault);
       var refillUrl = '/api/refill?pulse_s=' + encodeURIComponent(pulseS);
       fetch(autoUrl)
         .then(function(r) { return r.json(); })
@@ -1083,7 +1010,6 @@ const char index_html[] PROGMEM = R"rawliteral(
         else if (err.reason === 'cylinder_open') txt = (err.exxx || 'E055') + ': Pre-Feeder, Cilindro abierto';
         else if (err.reason === 'hose_absent') txt = (err.exxx || 'E056') + ': Pre-Feeder, Manguera ausente';
         else if (err.reason === 'buffer_timeout') txt = (err.exxx || 'E052') + ': Pre-Feeder, Buffer sin relleno';
-        else if (err.reason === 'holgura_timeout') txt = (err.exxx || 'E057') + ': Pre-Feeder, Sin holgura';
         else if (err.reason === 'operator_stop') txt = 'Detenido · Reset + Iniciar';
         else txt = err.tag || 'Error';
         if (txt.indexOf('Reset') < 0) txt += ' · Reset + Iniciar';
@@ -1106,11 +1032,6 @@ const char index_html[] PROGMEM = R"rawliteral(
       else if (a.state === 'buffer_fault') {
         ok = false;
         txt = 'Buffer no rellenó (10 s)';
-      }
-      else if (a.state === 'holgura_fault') {
-        ok = false;
-        var hf2 = document.getElementById('holgura-fault-s');
-        txt = 'Sin holgura (' + (hf2 ? hf2.value : '1.5') + ' s)';
       }
       else if (a.state === 'operator_stop') {
         ok = false;
@@ -1247,8 +1168,6 @@ const char index_html[] PROGMEM = R"rawliteral(
           reason = (data.error.exxx || data.error.tag || 'E056') + ': Pre-Feeder, Manguera ausente';
         } else if (data.error.reason === 'buffer_timeout') {
           reason = (data.error.exxx || data.error.tag || 'E052') + ': Pre-Feeder, Buffer sin relleno';
-        } else if (data.error.reason === 'holgura_timeout') {
-          reason = (data.error.exxx || data.error.tag || 'E057') + ': Pre-Feeder, Sin holgura';
         } else if (data.error.reason === 'operator_stop') {
           reason = 'Detenido · Reset + Iniciar';
         } else if (active && data.error.tag) {

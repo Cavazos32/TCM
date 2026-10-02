@@ -212,7 +212,6 @@ PF_ERRORS = (
         ("Tensioner L", 0x35),
         ("Cilindro L", 0x36),
         ("Manguera L", 0x37),
-        ("Holgura L", 0x38),
     )),
     ("R", (
         ("Buffer Full R", 0x2D),
@@ -220,7 +219,6 @@ PF_ERRORS = (
         ("Tensioner R", 0x2F),
         ("Cilindro R", 0x30),
         ("Manguera R", 0x31),
-        ("Holgura R", 0x32),
     )),
 )
 
@@ -231,12 +229,11 @@ _PF_SIDE_SENSOR_FIELDS = (
     ("tension", 0x35, 0x2F),
     ("cylinderOpen", 0x36, 0x30),
     ("hoseAbsent", 0x37, 0x31),
-    ("holgura", 0x38, 0x32),
 )
 
 # Sensor ON = OK (panel). EXXX solo con fault_active (timeout enclavado).
 _PF_OK_WHEN_ACTIVE = frozenset(
-    {TX_BUFFER_FULL_L, TX_BUFFER_FULL_R, TX_HOLGURA_L, TX_HOLGURA_R}
+    {TX_BUFFER_FULL_L, TX_BUFFER_FULL_R}
 )
 # EXXX solo vía fault_active / error enclavado del lado (no por sensor ON).
 # Incluye Buffer/Holgura (OK-when-active) y Tensión (inversión normal ≠ E054/E060).
@@ -244,8 +241,6 @@ _PF_EXXX_VIA_FAULT = frozenset(
     {
         TX_BUFFER_FULL_L,
         TX_BUFFER_FULL_R,
-        TX_HOLGURA_L,
-        TX_HOLGURA_R,
         TX_TENSION_L,
         TX_TENSION_R,
     }
@@ -826,20 +821,12 @@ class HmiState:
             return ""
 
     def pf_holgura_present(self, side: str) -> bool | None:
-        """Holgura L/R desde status Master: True=presente, False=ausente, None=sin dato.
-
-        Polaridad OK-when-active: sensor ON (errors[byte].active) = holgura OK.
-        """
+        """Compat API: Holgura eliminada del producto. Siempre True si hay dato de lado."""
         side_u = str(side or "").strip().upper()
-        byte = TX_HOLGURA_L if side_u == "L" else TX_HOLGURA_R if side_u == "R" else 0
-        if not byte:
+        if side_u not in ("L", "R"):
             return None
-        with self._lock:
-            info = self._pf.get("errors", {}).get(str(byte)) or {}
-            active = info.get("active")
-            if active is None:
-                return None
-            return bool(active)
+        # Sin sensor: settled ya no depende de holgura.
+        return True
 
     def pf_buffer_full(self, side: str) -> bool | None:
         """Buffer Full (home) L/R: True=lleno, False=no, None=sin dato."""

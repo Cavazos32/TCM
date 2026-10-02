@@ -33,9 +33,6 @@ static inline PfCmdScope pfMasterCmdScope(const String& cmd)
 
   if (cmd == "trigger"
       || cmd == "setRefillPulseS" || cmd == "refillPulseS"
-      || cmd == "setHolguraExtra" || cmd == "setHolguraFault" || cmd == "setHolguraFaultS"
-      || cmd == "setHolguraHelper" || cmd == "setHolguraHelperRpm"
-      || cmd == "setHolguraHelperS" || cmd == "setHolguraHelperAbsentMs"
       || cmd == "setDereelerLead" || cmd == "setDereelerLeadMs"
       || cmd == "setTriggerFeed" || cmd == "setTriggerCfg"
       || cmd == "setAllCfg" || cmd == "applyAllCfg")

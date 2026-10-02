@@ -28,21 +28,17 @@ const PF_SENSOR_IDS: Record<string, string> = {
   'Tensioner L': 'tensioner-l',
   'Cilindro L': 'cilindro-l',
   'Manguera L': 'manguera-l',
-  'Holgura L': 'holgura-l',
   'Buffer Full R': 'buf-full-r',
   'Buffer Max R': 'buf-max-r',
   'Tensioner R': 'tensioner-r',
   'Cilindro R': 'cilindro-r',
   'Manguera R': 'manguera-r',
-  'Holgura R': 'holgura-r',
 };
 
 // Sensor ON = OK (igual que HTML L/R). EXXX solo con fault_active (timeout).
 const PF_OK_WHEN_ACTIVE: Record<string, number> = {
   'Buffer Full L': 0x33,
   'Buffer Full R': 0x2d,
-  'Holgura L': 0x38,
-  'Holgura R': 0x32,
 };
 
 // Sensor ON = condición (inversión); EXXX solo con fault_active (timeout).

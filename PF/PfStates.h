@@ -40,13 +40,13 @@ enum PfErrorByte : uint8_t {
   PF_ERR_TENSION_R     = 0x2F,  // E054 C3 · TensionerR()
   PF_ERR_CILINDRO_R    = 0x30,  // E055 C3 · CilindroR()
   PF_ERR_MANGUERA_R    = 0x31,  // E056 C3 · MangueraR()
-  PF_ERR_HOLGURA_R     = 0x32,  // E057 C2 · HolguraR()
+  PF_ERR_HOLGURA_R     = 0x32,  // reservado (ex E057 Holgura) — no publicar
   PF_ERR_BUFFER_FULL_L = 0x33,  // E058 C1 · BufferFL()
   PF_ERR_BUFFER_MAX_L  = 0x34,  // E059 C3 · BufferML()
   PF_ERR_TENSION_L     = 0x35,  // E060 C3 · TensionerL()
   PF_ERR_CILINDRO_L    = 0x36,  // E061 C3 · CilindroL()
   PF_ERR_MANGUERA_L    = 0x37,  // E062 C3 · MangueraL()
-  PF_ERR_HOLGURA_L     = 0x38,  // E063 C2 · HolguraL()
+  PF_ERR_HOLGURA_L     = 0x38,  // reservado (ex E063 Holgura) — no publicar
   PF_ERR_NOT_INITIALIZED = 0x7D, // E069 C1 · PreFeederNotInitializedError()
 };
 
@@ -71,6 +71,7 @@ static inline bool pfIsStateByte(uint8_t b) {
 }
 
 static inline bool pfIsErrorByte(uint8_t b) {
+  // Holgura 0x32/0x38 reservados: aceptados en parse legacy, no se generan.
   return (b >= PF_ERR_BUFFER_FULL_R && b <= PF_ERR_HOLGURA_R)
       || (b >= PF_ERR_BUFFER_FULL_L && b <= PF_ERR_HOLGURA_L)
       || b == PF_ERR_NOT_INITIALIZED;
@@ -85,8 +86,6 @@ static inline ErrClass pfErrClass(uint8_t b) {
     case PF_ERR_NOT_INITIALIZED:
       return ERR_CLASS_C1;
     case PF_ERR_BUFFER_FULL_R:
-    case PF_ERR_HOLGURA_R:
-    case PF_ERR_HOLGURA_L:
       return ERR_CLASS_C2;
     case PF_ERR_BUFFER_MAX_R:
     case PF_ERR_TENSION_R:
@@ -103,8 +102,9 @@ static inline ErrClass pfErrClass(uint8_t b) {
 }
 
 static inline uint8_t pfTcpErrorByteFromId(PfErrorId id, char side) {
-  // Orden wire: buffer full, buffer max, tension, cilindro, manguera, holgura
-  static const int8_t offById[8] = { -1, 1, 2, 3, 4, 0, 5, -1 };
+  // Orden wire: buffer full, buffer max, tension, cilindro, manguera, (reserved 5)
+  // id6 (ex Holgura) → no publicar (−1).
+  static const int8_t offById[8] = { -1, 1, 2, 3, 4, 0, -1, -1 };
   if (id >= 8 || offById[id] < 0) return 0;
   return (side == 'R')
            ? (uint8_t)(PF_ERR_BUFFER_FULL_R + (uint8_t)offById[id])
