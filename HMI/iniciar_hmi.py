@@ -89,13 +89,46 @@ def _wait_and_open_browser(url: str, port: int) -> None:
             return
 
 
+def _npm_cmd() -> list[str]:
+    return ["npm.cmd"] if sys.platform == "win32" else ["npm"]
+
+
+def _ensure_frontend_deps() -> None:
+    """Instala node_modules si falta vite (típico en Jetson/RPi tras clonar)."""
+    frontend = HMI_ROOT / "frontend"
+    vite_bin = frontend / "node_modules" / ".bin" / (
+        "vite.cmd" if sys.platform == "win32" else "vite"
+    )
+    if vite_bin.is_file():
+        return
+    print("Instalando dependencias UI (npm install)...")
+    result = subprocess.run(
+        [*_npm_cmd(), "install"],
+        cwd=frontend,
+        shell=(sys.platform == "win32"),
+    )
+    if result.returncode != 0:
+        print("npm install fallo", file=sys.stderr)
+        _pause("Enter para cerrar ")
+        sys.exit(1)
+    if not vite_bin.is_file():
+        print(
+            "Tras npm install no aparece vite.\n"
+            "Comprueba Node.js 18+ en la Jetson: node -v && npm -v",
+            file=sys.stderr,
+        )
+        _pause("Enter para cerrar ")
+        sys.exit(1)
+
+
 def _build_frontend_if_needed() -> None:
     dist_index = HMI_ROOT / "frontend" / "dist" / "index.html"
     if dist_index.is_file():
         return
+    _ensure_frontend_deps()
     print("Compilando UI (frontend)...")
     result = subprocess.run(
-        ["npm", "run", "build"],
+        [*_npm_cmd(), "run", "build"],
         cwd=HMI_ROOT / "frontend",
         shell=(sys.platform == "win32"),
     )

@@ -71,6 +71,24 @@ if hmi_port_open; then
 fi
 
 if [[ ! -f "$DIST_INDEX" ]]; then
+  VITE_BIN="$HMI_ROOT/frontend/node_modules/.bin/vite"
+  if [[ ! -x "$VITE_BIN" ]]; then
+    echo "Instalando dependencias UI (npm install)..."
+    (
+      cd "$HMI_ROOT/frontend" || exit 1
+      npm install
+    )
+    if [[ $? -ne 0 ]]; then
+      echo "npm install fallo" >&2
+      read -r -p "Enter para cerrar "
+      exit 1
+    fi
+    if [[ ! -x "$VITE_BIN" ]]; then
+      echo "Tras npm install no aparece vite. Comprueba Node.js 18+: node -v && npm -v" >&2
+      read -r -p "Enter para cerrar "
+      exit 1
+    fi
+  fi
   echo "Compilando UI (frontend)..."
   (
     cd "$HMI_ROOT/frontend" || exit 1
