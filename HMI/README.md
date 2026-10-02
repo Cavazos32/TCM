@@ -85,6 +85,15 @@ chmod +x "Iniciar HMI.sh" scripts/start-hmi.sh
 
 Inicia el servidor en la terminal actual y abre el navegador (`xdg-open`). Si el servidor ya corre, solo abre la web. Opciones: `--port N`, `--no-browser`.
 
+### Lanzador Python (venv, Windows/Linux)
+
+```bash
+cd HMI
+python3 iniciar_hmi.py
+```
+
+Usa siempre `HMI/.venv` (si no existe, indica cómo crearlo). Opciones: `--port N`, `--no-browser`.
+
 ### Desarrollo UI (hot reload)
 
 Terminal 1 — backend:
