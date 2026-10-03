@@ -110,6 +110,8 @@ static uint32_t bufferFullDetectedMs = 0;
 static uint32_t servoForceStopMs = 0;
 static bool     waitingServoStopMeasurement = false;
 static bool     servoForceStopLogged = false;
+static bool     servoBufferFullCutLatched = false;
+static uint32_t loopBodyMaxMs = 0;
 
 // ====================== AUTO / FAULTS ======================
 bool      autoEnabled    = true;
@@ -437,13 +439,13 @@ static bool bufferFullRaw()
   return digitalRead(PIN_SENSOR_BUFFER_FULL) == HIGH;
 }
 
-// Flanco LOW→HIGH del sensor RAW (no filtrado). Solo log en el flanco.
+// Flancos RAW del sensor (no filtrado). HIGH inicia medición; LOW reinicia latch de corte.
 static void servoTimingOnBufferFullRawEdge()
 {
   const bool raw = bufferFullRaw();
+  const uint32_t now = millis();
   if (raw && !bufferFullRawPrev)
   {
-    const uint32_t now = millis();
     bufferFullDetectedMs = now;
     const bool alreadyStopped = !servoRunning
         && servoLastOutputUs == SERVO_PWM_NEUTRAL_US;
@@ -466,6 +468,13 @@ static void servoTimingOnBufferFullRawEdge()
                     (unsigned)servoLastOutputUs,
                     (int)servoRunning);
     }
+  }
+  else if (!raw && bufferFullRawPrev)
+  {
+    servoBufferFullCutLatched = false;
+    Serial.printf("[%s][SERVO_TIMING] BUFFER_FULL RAW LOW @ %lu ms\n",
+                  PREFEEDER_SIDE_TAG,
+                  (unsigned long)now);
   }
   bufferFullRawPrev = raw;
 }
@@ -510,14 +519,29 @@ static bool bufferFullStopNow()
 
 static void servoServiceBufferFullCut()
 {
-  static bool latched = false;
   if (!bufferFullStopNow())
   {
-    latched = false;
+    servoBufferFullCutLatched = false;
     return;
   }
-  const bool edge = !latched;
-  latched = true;
+  const bool edge = !servoBufferFullCutLatched;
+  const bool wasRunning = servoRunning
+      || servoLastOutputUs != SERVO_PWM_NEUTRAL_US;
+  const bool dirty = servoPinDirty;
+  const bool remux = dirty || (edge && !wasRunning);
+  if (edge || dirty)
+  {
+    const uint32_t dutyRead = ledcRead(PIN_SERVO_PWM);
+    Serial.printf("[%s][SERVO_TIMING] CUT edge=%d dirty=%d wasRunning=%d dutyRead=%lu remux=%d @ %lu ms\n",
+                  PREFEEDER_SIDE_TAG,
+                  edge ? 1 : 0,
+                  dirty ? 1 : 0,
+                  wasRunning ? 1 : 0,
+                  (unsigned long)dutyRead,
+                  remux ? 1 : 0,
+                  (unsigned long)millis());
+  }
+  servoBufferFullCutLatched = true;
   servoHardStopNeutral(edge);
 }
 
@@ -1762,6 +1786,7 @@ static bool motor2WaitStoppedTask(uint16_t timeoutMs = 200)
 static void motor2StopMotionOnly()
 {
   motor2->Stop();
+  servoMarkPinDirty();
   motor2WaitStoppedTask();
   commandedRpm2 = 0.0f;
 }
@@ -1769,6 +1794,7 @@ static void motor2StopMotionOnly()
 static void motor2BrakeAtRest()
 {
   motor2->Brake();
+  servoMarkPinDirty();
   motor2WaitStoppedTask();
   commandedRpm2 = 0.0f;
 }
@@ -3417,6 +3443,8 @@ void setup()
 
 void loop()
 {
+  const uint32_t loopBodyStartMs = millis();
+
   serviceHttp(12);
 
   servoTimingOnBufferFullRawEdge();
@@ -3460,4 +3488,14 @@ void loop()
   serviceRefillPulses();
   serviceAuto();
   serviceHttp(4);
+
+  const uint32_t loopBodyMs = (uint32_t)(millis() - loopBodyStartMs);
+  if (loopBodyMs > loopBodyMaxMs)
+  {
+    loopBodyMaxMs = loopBodyMs;
+    Serial.printf("[%s][SERVO_TIMING] LOOP body max=%lu ms @ %lu ms\n",
+                  PREFEEDER_SIDE_TAG,
+                  (unsigned long)loopBodyMs,
+                  (unsigned long)millis());
+  }
 }
