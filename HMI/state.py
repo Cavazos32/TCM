@@ -1491,6 +1491,8 @@ class HmiState:
             blocked = self._work_blocked_error()
             if blocked:
                 return {"ok": False, "error": blocked}
+            if self._cycle.is_purge_busy():
+                return {"ok": False, "error": "Purga en curso"}
             mm, rpm = self._mm, self._rpm
             model = self._models[self._selected_model_idx] if self._models else {}
             model_qty = int(model.get("qty", model.get("cantidad", 1)))
@@ -1501,9 +1503,6 @@ class HmiState:
             off = self.cmd_cycle_materialist(False)
             if not off.get("ok"):
                 return off
-        if self._pf_client.connected:
-            if not self._manual_pf(lambda: self._pf_client.cmd_start()):
-                return {"ok": False, "error": "PreFeeder no aceptó Start"}
         res = self._cycle.request_start(mm, use_qty, rpm)
         if not res.get("ok"):
             err = str(res.get("error") or "Start rechazado")
@@ -1512,6 +1511,10 @@ class HmiState:
                     self._banner = {"text": err, "kind": "error"}
                     _append_log(self._main_log, f"Start rechazado: {err}")
                 self._notify()
+            return res
+        if self._pf_client.connected:
+            if not self._manual_pf(lambda: self._pf_client.cmd_start()):
+                return {"ok": False, "error": "PreFeeder no aceptó Start"}
         return res
 
     def cmd_stop(self) -> dict:
@@ -1524,6 +1527,8 @@ class HmiState:
         return {"ok": ok_m}
 
     def cmd_resume(self) -> dict:
+        if self._cycle.is_purge_busy():
+            return {"ok": False, "error": "Purga en curso"}
         blocked = self._work_blocked_error()
         if blocked:
             return {"ok": False, "error": blocked}
@@ -1541,6 +1546,8 @@ class HmiState:
         return {"ok": self._manual_motion(lambda: self._client.cmd_resume())}
 
     def cmd_cycle_pause(self) -> dict:
+        if self._cycle.is_purge_busy():
+            return {"ok": False, "error": "Purga en curso"}
         return self._cycle.request_pause()
 
     def cmd_cycle_reset(self) -> dict:
@@ -1568,8 +1575,10 @@ class HmiState:
         Home de máquina (control de máquina):
         ASDA → posición 0 + encoders Set0 L/R + All Off neumática.
         No es Buscar HOME (0x01) ni Reset HMI.
-        Siempre accionable: con lote vivo pausa y re-arranca la pieza al Resume.
+        Siempre accionable salvo purga en curso: con lote vivo pausa y re-arranca la pieza al Resume.
         """
+        if self._cycle.is_purge_busy():
+            return {"ok": False, "error": "Purga en curso"}
         if self._cycle.is_active():
             # Home no es Stop: el lote queda en Pause y la pieza se re-arranca.
             self._cycle.restart_piece_after_manual_home()
@@ -1935,8 +1944,10 @@ class HmiState:
 
         El flag HMI solo queda ON si el PreFeeder aceptó 0x3F (HTML local idleMode).
         OFF: si no hay enlace PF, igual se sale del interlock HMI.
-        Siempre accionable: con lote vivo pausa y re-arranca la pieza al Resume.
+        Siempre accionable salvo purga en curso: con lote vivo pausa y re-arranca la pieza al Resume.
         """
+        if self._cycle.is_purge_busy():
+            return {"ok": False, "error": "Purga en curso"}
         if on and self._cycle.is_active() and not self._cycle.is_e050_materialist_wait():
             self._cycle.hold_lot_and_restart_piece(
                 "Materialista con lote vivo — Pause (progreso conservado)"
@@ -2000,10 +2011,10 @@ class HmiState:
         feed_mm: float | None = None,
         asda_mm: float | None = None,
     ) -> dict:
-        """Purga/refill material: ASDA park → espera Retry/Long/corte → feed → corte → HOME.
+        """Purga/refill material: ASDA park → Alimentar o Continuar purga → secuencia automática.
 
-        Siempre accionable (también con latch EXXX o lote vivo).
-        Start/Resume siguen bloqueados si hay latch; el EXXX no se borra.
+        Siempre accionable (también con latch EXXX o lote vivo), salvo si ya hay purga en curso.
+        Start/Resume/Pause/Home/Materialist bloqueados durante la purga; Stop activo.
         """
         with self._lock:
             rpm = self._rpm
@@ -2775,7 +2786,7 @@ class HmiState:
     def _work_blocked_error(self) -> str | None:
         """Motivo para rechazar Start/Resume. Latch EXXX o fallo PLC.
 
-        Purge / Home / Materialista no usan esta puerta.
+        Purge / Home / Materialista no usan esta puerta (salvo bloqueo explícito de purga en curso).
         """
         latch = self._error_policy.latch
         if latch.active:

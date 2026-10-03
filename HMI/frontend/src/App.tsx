@@ -13,7 +13,7 @@ import { AppProvider, useApp } from './context/AppContext';
 import { useHmiState } from './hooks/useHmiState';
 
 function AppMain() {
-  const { isSettingsOpen, setIsSettingsOpen, showLogs, debugMode } = useApp();
+  const { isSettingsOpen, setIsSettingsOpen, showLogs, debugMode, t } = useApp();
   const logsVisible = debugMode && showLogs;
   const [currentTab, setCurrentTab] = useState<TabType>('maquina');
   const [reconnecting, setReconnecting] = useState(false);
@@ -94,7 +94,10 @@ function AppMain() {
           else if (
             !view.machineState.errorActive &&
             !view.machineState.fault &&
-            !view.machineState.workBlocked
+            !view.machineState.workBlocked &&
+            // Purga activa: Espacio no inicia ni reanuda el ciclo.
+            !view.machineState.refillActive &&
+            !view.machineState.purgeHandsWarning
           ) {
             if (view.resumeEnabled) resume();
             else start();
@@ -118,6 +121,8 @@ function AppMain() {
     view.machineState.errorActive,
     view.machineState.fault,
     view.machineState.workBlocked,
+    view.machineState.refillActive,
+    view.machineState.purgeHandsWarning,
     view.resumeEnabled,
     isSettingsOpen,
     setIsSettingsOpen,
@@ -158,6 +163,17 @@ function AppMain() {
               )),
         }}
       />
+
+      {view.machineState.purgeHandsWarning && (
+        <div
+          id="purge-hands-warning"
+          role="alert"
+          aria-live="assertive"
+          className="sticky top-0 z-50 w-full bg-red-600 px-4 py-3 text-center text-lg sm:text-2xl font-black uppercase tracking-wide text-white shadow-lg animate-pulse"
+        >
+          {t('purge_hands_warning')}
+        </div>
+      )}
 
       <main className="flex-1 px-3 py-3 sm:px-5 w-full">
         {currentTab === 'maquina' && (

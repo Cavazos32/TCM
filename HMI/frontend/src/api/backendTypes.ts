@@ -86,6 +86,8 @@ export interface BackendCycleSnapshot {
   e050MaterialistRequested?: boolean;
   e050MaterialistWait?: boolean;
   refillSkipCut?: boolean;
+  /** Clave JSON que el backend debe emitir en snapshot.cycle (booleano). */
+  purgeHandsWarning?: boolean;
   config: BackendCycleConfig;
   /** Ausente en SSE slim (la UI conserva el último flow). */
   flow?: BackendFlowStep[];

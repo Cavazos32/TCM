@@ -316,8 +316,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
         ? 'review'
         : recoveryStage === 'working' ||
             recoveryStage === 'await_feed' ||
-            recoveryStage === 'after_feed' ||
-            recoveryStage === 'after_cut'
+            recoveryStage === 'after_feed'
           ? 'purge'
           : hasFault
             ? 'reset'
@@ -348,7 +347,6 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
       recoveryStage === 'purge_decide' ||
       recoveryStage === 'await_feed' ||
       recoveryStage === 'after_feed' ||
-      recoveryStage === 'after_cut' ||
       (recoveryStage === 'e050_materialist' &&
         !!machineState.recoveryAwaitingConfirm) ||
       recoveryStage === 'e050_finishing' ||
@@ -374,8 +372,6 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
             ? t('recovery_continue_title')
             : recoveryStage === 'purge_decide'
               ? t('recovery_purge_title')
-              : recoveryStage === 'after_cut'
-              ? t('refill_confirm_title_cut')
               : recoveryStage === 'working'
                 ? t('refill_confirm_title_working')
                 : recoveryStage === 'await_feed'
@@ -401,8 +397,6 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               ? t('recovery_continue_hint')
               : recoveryStage === 'purge_decide'
                 ? t('recovery_purge_hint')
-                : recoveryStage === 'after_cut'
-                ? t('refill_confirm_hint_cut')
                 : recoveryStage === 'working'
                   ? t('refill_confirm_hint_working')
                   : recoveryStage === 'await_feed'
@@ -455,7 +449,8 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
     !resumeEnabled ||
     machineState.refillAwaitingConfirm ||
     machineState.recoveryAwaitingConfirm ||
-    machineState.refillActive;
+    machineState.refillActive ||
+    machineState.purgeBusy;
   // Error activo: no producir. Materialist + JOG permanecen disponibles como antes.
   const pfProdLocked = hasFault;
   const pfInMaterialist =
@@ -747,7 +742,8 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                 <button
                   id="btn-pause-maquina"
                   onClick={onPause}
-                  disabled={!machineState.pauseEnabled || pfProdLocked}
+                  disabled={!machineState.pauseEnabled || pfProdLocked || machineState.purgeBusy}
+                  title={machineState.purgeBusy ? t('purge_busy_locked') : undefined}
                   className={`${btnBase} min-w-0 flex-1 disabled:opacity-40 disabled:cursor-not-allowed ${
                     machineState.isPaused
                       ? `${btnOn} text-white dark:text-slate-900`
@@ -764,7 +760,9 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                   onClick={onResume}
                   disabled={resumeDisabled}
                   title={
-                    showMachineResumeCoach
+                    machineState.purgeBusy
+                      ? t('purge_busy_locked')
+                      : showMachineResumeCoach
                       ? t('lot_recover_hint_resume')
                       : showMachineResetCoach
                         ? t('lot_recover_hint_reset')
@@ -815,10 +813,14 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                       }, wait);
                     });
                   }}
-                  disabled={!onMachineHome}
-                  title={t('btn_machine_home_hint')}
+                  disabled={!onMachineHome || machineState.purgeBusy}
+                  title={
+                    machineState.purgeBusy
+                      ? t('purge_busy_locked')
+                      : t('btn_machine_home_hint')
+                  }
                   className={`${btnBase} min-w-0 flex-1 ${
-                    !onMachineHome
+                    !onMachineHome || machineState.purgeBusy
                       ? 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed'
                       : btnFlash.home
                         ? btnHomeOn
@@ -832,14 +834,16 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                   id="btn-main-pf-materialist"
                   type="button"
                   onClick={onMaterialist}
-                  disabled={!onMaterialist}
+                  disabled={!onMaterialist || machineState.purgeBusy}
                   title={
-                    machineState.cycleMaterialist
+                    machineState.purgeBusy
+                      ? t('purge_busy_locked')
+                      : machineState.cycleMaterialist
                       ? t('pf_recover_hint_jog')
                       : t('pf_jog_need_materialist')
                   }
                   className={`${btnBase} min-w-0 flex-1 ${
-                    !onMaterialist
+                    !onMaterialist || machineState.purgeBusy
                       ? 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed'
                       : machineState.cycleMaterialist
                         ? btnMatOn
@@ -873,8 +877,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     {recoveryHint}
                   </p>
                 </div>
-                {(recoveryStage === 'await_feed' || recoveryStage === 'after_feed') &&
-                  onRefillRetry && (
+                {recoveryStage === 'await_feed' && onRefillRetry && (
                   <button
                     id="btn-recovery-refill-retry"
                     type="button"
@@ -896,21 +899,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 text-xs font-bold text-white disabled:opacity-40"
                   >
                     <Check className="h-3.5 w-3.5" />
-                    {skipCut
-                      ? t('btn_refill_confirm_continue')
-                      : t('btn_refill_confirm_next_cut')}
-                  </button>
-                )}
-                {recoveryStage === 'after_cut' && onRefillConfirm && (
-                  <button
-                    id="btn-recovery-asda-0"
-                    type="button"
-                    onClick={() => onRefillConfirm(true)}
-                    disabled={!machineState.refillAwaitingConfirm}
-                    className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 text-xs font-bold text-white disabled:opacity-40"
-                  >
-                    <Check className="h-3.5 w-3.5" />
-                    {t('btn_refill_confirm_yes')}
+                    {t('btn_refill_confirm_next_cut')}
                   </button>
                 )}
                 {recoveryStage === 'e050_materialist' &&
@@ -1023,27 +1012,21 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               <div className="flex flex-wrap items-center gap-3 rounded-lg border border-sky-300 dark:border-sky-700 bg-sky-50 dark:bg-sky-950/50 px-4 py-3">
                 <div className="min-w-0 flex-1">
                   <p className="text-xs font-bold text-sky-900 dark:text-sky-100">
-                    {machineState.refillPrompt === 'after_cut'
-                      ? t('refill_confirm_title_cut')
-                      : machineState.refillPrompt === 'working'
-                        ? t('refill_confirm_title_working')
-                        : machineState.refillPrompt === 'await_feed'
-                          ? t('refill_confirm_title_await')
-                          : t('refill_confirm_title_feed')}
+                    {machineState.refillPrompt === 'working'
+                      ? t('refill_confirm_title_working')
+                      : machineState.refillPrompt === 'await_feed'
+                        ? t('refill_confirm_title_await')
+                        : t('refill_confirm_title_feed')}
                   </p>
                   <p className="text-[11px] text-sky-800/80 dark:text-sky-200/80 mt-0.5">
-                    {machineState.refillPrompt === 'after_cut'
-                      ? t('refill_confirm_hint_cut')
-                      : machineState.refillPrompt === 'working'
-                        ? t('refill_confirm_hint_working')
-                        : machineState.refillPrompt === 'await_feed'
-                          ? t('refill_confirm_hint_await')
-                          : t('refill_confirm_hint_feed')}
+                    {machineState.refillPrompt === 'working'
+                      ? t('refill_confirm_hint_working')
+                      : machineState.refillPrompt === 'await_feed'
+                        ? t('refill_confirm_hint_await')
+                        : t('refill_confirm_hint_feed')}
                   </p>
                 </div>
-                {(machineState.refillPrompt === 'after_feed' ||
-                  machineState.refillPrompt === 'await_feed') &&
-                  onRefillRetry && (
+                {machineState.refillPrompt === 'await_feed' && onRefillRetry && (
                   <button
                     id="btn-refill-confirm-retry"
                     type="button"
@@ -1064,21 +1047,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 text-xs font-bold text-white shadow-2xs active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
                   >
                     <Check className="h-3.5 w-3.5" />
-                    {machineState.refillPrompt === 'after_cut'
-                      ? t('btn_refill_confirm_yes')
-                      : t('btn_refill_confirm_next_cut')}
-                  </button>
-                )}
-                {machineState.refillPrompt !== 'working' && (
-                  <button
-                    id="btn-refill-confirm-no"
-                    type="button"
-                    onClick={() => onRefillConfirm(false)}
-                    disabled={!machineState.refillAwaitingConfirm}
-                    className="flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3.5 py-2 text-xs font-bold text-slate-700 dark:text-slate-200 shadow-2xs active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                    {t('btn_refill_confirm_no')}
+                    {t('btn_refill_confirm_next_cut')}
                   </button>
                 )}
               </div>

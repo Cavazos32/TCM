@@ -1176,9 +1176,17 @@ static void feedSideFinish(bool sideR, FeedValResult result, uint8_t errByte, co
 }
 
 // Emite move solo en el servo de sideR. false = SDO posición falló (sin movimiento).
+static float feedSideEffectiveCreepMmS(bool sideR)
+{
+  FeedSideRt& s = feedSideAt(sideR);
+  // Purga: FEED_PURGE_CREEP_MM_S (50 mm/s). Ciclo normal: FEED_LASER_CREEP_MM_S (25 mm/s).
+  // feedMmSToPp satura a SERVO_MAX_PPS; halt evaluado en tick FSP_LASER_SEEK — validar sobrepaso en máquina.
+  return s.skipValidate ? FEED_PURGE_CREEP_MM_S : FEED_LASER_CREEP_MM_S;
+}
+
 static uint32_t feedSideCreepPp(bool sideR)
 {
-  return feedMmSToPp(FEED_LASER_CREEP_MM_S, sideR);
+  return feedMmSToPp(feedSideEffectiveCreepMmS(sideR), sideR);
 }
 
 static uint8_t feedSideNoFbErr(bool sideR)
@@ -1250,12 +1258,13 @@ static bool feedSideStartLaserSeek(bool sideR, uint32_t now, const char* why)
   }
 
   const float remainMm = s.huntLaser ? FEED_OM_PHYS_MAX_MM : 20.0f;
-  uint32_t creepMs = (uint32_t)(remainMm / FEED_LASER_CREEP_MM_S * 1000.0f) + 500u;
+  const float creepMmS = feedSideEffectiveCreepMmS(sideR);
+  uint32_t creepMs = (uint32_t)(remainMm / creepMmS * 1000.0f) + 500u;
   if (creepMs < feedLaserSeekMs) creepMs = feedLaserSeekMs;
   if (creepMs > 4000u) creepMs = 4000u;
   Serial.printf("FEED %c LASER_SEEK creep (%s) chunk=%.1fmm v=%.0fmm/s timeout=%lums\n",
                 sideR ? 'R' : 'L', why ? why : "?",
-                (double)FEED_LASER_CREEP_MM, (double)FEED_LASER_CREEP_MM_S,
+                (double)FEED_LASER_CREEP_MM, (double)creepMmS,
                 (unsigned long)creepMs);
   feedCanPrimeHaltDecelSide(sideR);
   s.laserSeekDone = true;

@@ -155,8 +155,10 @@
 #define FEED_LASER_SEEK_DIST_MARGIN 1.25f  // legacy; seek ya no usa un solo tramo
 #define FEED_LASER_HALT_BURST       3u     // CW Halt al flanco ON
 #define FEED_LASER_CREEP_MM         1.5f   // trozo máximo; tope de sobrepaso
-#define FEED_LASER_CREEP_MM_S       25.0f  // vel seek / hunt
+#define FEED_LASER_CREEP_MM_S       25.0f  // vel seek / hunt (ciclo normal)
 // Purga HMI (skipValidate): creep hasta LR-X ON; sin OM; timeout por lado.
+// Solo purga HMI (skipValidate). Valor inicial; Jesús prueba y ajusta tras reflashear.
+#define FEED_PURGE_CREEP_MM_S       50.0f
 #define FEED_PURGE_LASER_TIMEOUT_MS 10000u
 
 #define FEED_VELOCITY_PP_DEFAULT    FEED_SERVO_BASE_PP_DEFAULT
