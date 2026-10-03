@@ -119,6 +119,13 @@ export function mergeLogTail(
   return next.length > MAX_UI_LOGS ? next.slice(next.length - MAX_UI_LOGS) : next;
 }
 
+/** Purga activa en cualquier fase de la rutina (señales reales del snapshot de ciclo). */
+export function isPurgeBusy(
+  cycle: Pick<BackendSnapshot['cycle'], 'refillActive' | 'refillPrompt' | 'purgeHandsWarning'> | undefined
+): boolean {
+  return !!cycle && (!!cycle.refillActive || !!cycle.refillPrompt || !!cycle.purgeHandsWarning);
+}
+
 export function mapMachineState(
   snap: BackendSnapshot,
   targetQty: number
@@ -196,6 +203,8 @@ export function mapMachineState(
       String(cycle.recoveryPrompt || '').startsWith('e050_'),
     e050FinishPiece: !!cycle.e050FinishPiece,
     refillSkipCut: !!cycle.refillSkipCut,
+    purgeHandsWarning: !!cycle.purgeHandsWarning,
+    purgeBusy: isPurgeBusy(cycle),
     stepByStep: cycle.stepByStep ?? false,
     pauseEnabled:
       cycle.active &&

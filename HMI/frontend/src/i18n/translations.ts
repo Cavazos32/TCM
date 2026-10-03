@@ -156,9 +156,11 @@ export const translations = {
     e050_materialist_wait_hint: 'Carga el material. Al terminar, apaga la carga de material para continuar el lote.',
     btn_e050_no_materialist: 'No',
     btn_e050_yes_materialist: 'Sí',
-    btn_refill_confirm_continue: 'Continuar',
+    btn_refill_confirm_continue: 'Continuar purga',
     refill_confirm_hint_feed_nocut:
       'Después del avance hasta láser: Reintentar o Continuar (actuador lineal a 0, sin corte).',
+    purge_hands_warning: 'NO INTRODUCIR LAS MANOS',
+    purge_busy_locked: 'No disponible durante la purga. Para parar, usa Detener.',
     plc_manuals_locked:
       'PLC en error (issue): solo el cortador manual sigue activo. Reset para liberar el resto y All Off.',
     pf_recover_title: 'Recuperación del alimentador',
@@ -215,24 +217,24 @@ export const translations = {
     pf_jog_need_materialist: 'Activa la carga de material para usar el avance manual',
     btn_refill: 'Purga',
     btn_refill_confirm_yes: 'Siguiente: regresar actuador lineal a 0',
-    btn_refill_confirm_next_cut: 'Siguiente: cortar',
-    btn_refill_confirm_retry: 'Alimentar hasta láser',
+    btn_refill_confirm_next_cut: 'Continuar purga',
+    btn_refill_confirm_retry: 'Alimentar',
     btn_refill_confirm_long: 'Avance largo 100 mm',
     btn_refill_confirm_no: 'Cancelar: quedarse en posición de espera',
     refill_helpers_title: 'Ayudas de purga',
     refill_helpers_subtitle:
-      'Purga: posición de espera → Alimentar hasta láser → Siguiente: cortar → corte → Siguiente: actuador lineal a 0',
+      'Purga: posición de espera → Alimentar → Continuar purga → regreso automático a 0',
     refill_confirm_title_await: 'Actuador lineal en posición de espera: alimenta material',
     refill_confirm_hint_await:
-      'No hay avance automático. Pulsa Alimentar (hasta sensor láser ON, timeout 10 s) o Siguiente para cortar. Si un lado ya llegó, el otro sigue solo.',
+      'No hay avance automático. Pulsa Alimentar (avanza el material hasta el láser, máx. 10 s) o Continuar purga. Si un lado ya llegó, el otro sigue solo.',
     refill_confirm_hint_await_nocut:
       'No hay avance automático. Pulsa Alimentar (hasta láser) o Continuar (actuador lineal a 0, sin corte).',
-    refill_confirm_title_feed: 'Láser OK: ¿la manguera está bien?',
+    refill_confirm_title_feed: 'Material en el láser: ¿la manguera está bien?',
     refill_confirm_hint_feed:
-      'Reintentar (otra vez hasta láser) o Siguiente para cortar.',
+      'Revisa el material y pulsa Continuar purga.',
     refill_confirm_title_working: 'Purga en curso…',
     refill_confirm_hint_working:
-      'El actuador lineal va a la posición de espera. Luego pulsa Alimentar hasta láser o Siguiente para cortar; no alimenta material por sí sola.',
+      'El actuador lineal va a la posición de espera. Luego pulsa Alimentar o Continuar purga; no alimenta material por sí sola.',
     recovery_abort_title: '¿Cancelar el lote?',
     recovery_abort_hint: 'Después de la purga (o si el material ya está listo). Cancelar detiene el lote (E068); Continuar vuelve a empezar la pieza (espera a que el buffer del alimentador esté lleno).',
     btn_recovery_abort: 'Cancelar lote',
@@ -258,7 +260,7 @@ export const translations = {
     refill_confirm_hint: 'En posición de espera: Reintentar, Avance largo o Siguiente: cortar. Después del avance: Reintentar, Avance largo o Siguiente: cortar. Después del corte: Siguiente (actuador lineal a 0).',
     cfg_refill_mm: 'Avance de purga (mm)',
     cfg_refill_asda: 'Posición de espera del actuador lineal en purga (mm)',
-    cfg_refill_hint: 'En posición de espera: Reintentar = 55 mm, Avance largo = 100 mm o Siguiente para cortar (sin láser ni encoder externo). No alimenta sola.',
+    cfg_refill_hint: 'En posición de espera: Alimentar (hasta láser) o Continuar purga. La secuencia automática regresa el actuador a 0 sin corte.',
     cycle_step_status: 'Paso {step}/27',
     mm_rpm_label: 'Corte (mm / RPM)',
     running_model: 'Ejecutando: {model}',

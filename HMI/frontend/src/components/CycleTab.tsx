@@ -209,11 +209,9 @@ export const CycleTab: React.FC<CycleTabProps> = ({
           ? t('recovery_purge_title')
           : recoveryStage === 'continue_cycle'
           ? t('recovery_continue_title')
-          : recoveryStage === 'after_cut'
-            ? t('refill_confirm_title_cut')
-            : recoveryStage === 'await_feed'
-              ? t('refill_confirm_title_await')
-              : t('refill_confirm_title_feed');
+          : recoveryStage === 'await_feed'
+            ? t('refill_confirm_title_await')
+            : t('refill_confirm_title_feed');
   const recoveryHint = trayFull
     ? t('tray_full_hint').replace('{n}', String(machineState.trayPieces || ''))
     : e050Ask
@@ -234,24 +232,18 @@ export const CycleTab: React.FC<CycleTabProps> = ({
         ? t('recovery_purge_hint')
         : recoveryStage === 'continue_cycle'
         ? t('recovery_continue_hint')
-        : recoveryStage === 'after_cut'
-          ? t('refill_confirm_hint_cut')
-          : recoveryStage === 'await_feed'
-            ? skipCut
-              ? t('refill_confirm_hint_await_nocut')
-              : t('refill_confirm_hint_await')
-            : skipCut
-              ? t('refill_confirm_hint_feed_nocut')
-              : t('refill_confirm_hint_feed');
-  const nextFeedLabel = skipCut
-    ? t('btn_refill_confirm_continue')
-    : t('btn_refill_confirm_next_cut');
+        : recoveryStage === 'await_feed'
+          ? skipCut
+            ? t('refill_confirm_hint_await_nocut')
+            : t('refill_confirm_hint_await')
+          : skipCut
+            ? t('refill_confirm_hint_feed_nocut')
+            : t('refill_confirm_hint_feed');
   // Refill manual: solo banner sky. Amber = recovery/E050/tray.
   const showRecoveryActions =
     !showManualRefill &&
     (recoveryStage === 'await_feed' ||
       recoveryStage === 'after_feed' ||
-      recoveryStage === 'after_cut' ||
       (e050Ask && !!machineState.recoveryAwaitingConfirm) ||
       recoveryStage === 'e050_finishing' ||
       recoveryStage === 'e050_materialist_wait' ||
@@ -374,7 +366,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
   /** Idle en paso a paso → Siguiente arranca el lote (no solo cambia el highlight). */
   const canStartStepRun =
     stepModeActive && !cycleActive && Boolean(onStart) && !workBlocked;
-  const canExecuteNext = showStepNext || canStartStepRun;
+  const canExecuteNext = (showStepNext || canStartStepRun) && !machineState.purgeBusy;
 
   const handleStartStepMode = () => {
     onSetStepByStep?.(true);
@@ -530,8 +522,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
               {recoveryHint}
             </p>
           </div>
-          {(recoveryStage === 'await_feed' || recoveryStage === 'after_feed') &&
-            onRefillRetry && (
+          {recoveryStage === 'await_feed' && onRefillRetry && (
             <button
               id="btn-cycle-recovery-retry"
               type="button"
@@ -553,19 +544,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
               className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40"
             >
               <Check className="h-3.5 w-3.5" />
-              {nextFeedLabel}
-            </button>
-          )}
-          {recoveryStage === 'after_cut' && onRefillConfirm && (
-            <button
-              id="btn-cycle-recovery-asda-0"
-              type="button"
-              onClick={() => onRefillConfirm(true)}
-              disabled={!machineState.refillAwaitingConfirm}
-              className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40"
-            >
-              <Check className="h-3.5 w-3.5" />
-              {t('btn_refill_confirm_yes')}
+              {t('btn_refill_confirm_next_cut')}
             </button>
           )}
           {e050Ask && machineState.recoveryAwaitingConfirm && onRecoveryReview && (
@@ -676,27 +655,21 @@ export const CycleTab: React.FC<CycleTabProps> = ({
         <div className="flex flex-wrap items-center gap-3 rounded-xl border border-sky-300 dark:border-sky-700 bg-sky-50 dark:bg-sky-950/50 px-4 py-3 shadow-2xs">
           <div className="min-w-0 flex-1">
             <p className="text-xs font-bold text-sky-900 dark:text-sky-100">
-              {machineState.refillPrompt === 'after_cut'
-                ? t('refill_confirm_title_cut')
-                : machineState.refillPrompt === 'working'
-                  ? t('refill_confirm_title_working')
-                  : machineState.refillPrompt === 'await_feed'
-                    ? t('refill_confirm_title_await')
-                    : t('refill_confirm_title_feed')}
+              {machineState.refillPrompt === 'working'
+                ? t('refill_confirm_title_working')
+                : machineState.refillPrompt === 'await_feed'
+                  ? t('refill_confirm_title_await')
+                  : t('refill_confirm_title_feed')}
             </p>
             <p className="text-[11px] text-sky-800/80 dark:text-sky-200/80 mt-0.5">
-              {machineState.refillPrompt === 'after_cut'
-                ? t('refill_confirm_hint_cut')
-                : machineState.refillPrompt === 'working'
-                  ? t('refill_confirm_hint_working')
-                  : machineState.refillPrompt === 'await_feed'
-                    ? t('refill_confirm_hint_await')
-                    : t('refill_confirm_hint_feed')}
+              {machineState.refillPrompt === 'working'
+                ? t('refill_confirm_hint_working')
+                : machineState.refillPrompt === 'await_feed'
+                  ? t('refill_confirm_hint_await')
+                  : t('refill_confirm_hint_feed')}
             </p>
           </div>
-          {(machineState.refillPrompt === 'after_feed' ||
-            machineState.refillPrompt === 'await_feed') &&
-            onRefillRetry && (
+          {machineState.refillPrompt === 'await_feed' && onRefillRetry && (
             <button
               id="btn-cycle-refill-retry"
               type="button"
@@ -717,21 +690,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
               className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <Check className="h-3.5 w-3.5" />
-              {machineState.refillPrompt === 'after_cut'
-                ? t('btn_refill_confirm_yes')
-                : t('btn_refill_confirm_next_cut')}
-            </button>
-          )}
-          {machineState.refillPrompt !== 'working' && (
-            <button
-              id="btn-cycle-refill-no"
-              type="button"
-              onClick={() => onRefillConfirm(false)}
-              disabled={!machineState.refillAwaitingConfirm}
-              className="flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-200 disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              <X className="h-3.5 w-3.5" />
-              {t('btn_refill_confirm_no')}
+              {t('btn_refill_confirm_next_cut')}
             </button>
           )}
         </div>
@@ -826,7 +785,9 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                   onClick={handleNextStep}
                   disabled={!canExecuteNext}
                   title={
-                    showStepNext
+                    machineState.purgeBusy
+                      ? t('purge_busy_locked')
+                      : showStepNext
                       ? t('btn_next_step')
                       : canStartStepRun
                       ? t('btn_next_step_start')

@@ -7,6 +7,7 @@ import {
   mapAndonState,
   mapAppConfig,
   mapCycleConfig,
+  isPurgeBusy,
   mapMachineState,
   mapMotionState,
   mapPlcState,
@@ -76,6 +77,8 @@ const DEFAULT_MACHINE: MachineState = {
   e050Lot: false,
   e050FinishPiece: false,
   refillSkipCut: false,
+  purgeHandsWarning: false,
+  purgeBusy: false,
   stepByStep: false,
   pauseEnabled: false,
   progress: 0,
@@ -153,6 +156,8 @@ export function useHmiState() {
   const targetQtyTouchedRef = useRef(false);
   const lastModelIdxRef = useRef<number | null>(null);
   const snapRef = useRef<BackendSnapshot | null>(null);
+  /** Purga activa (último snapshot): bloquea Pausa, Posición inicial y Carga de material. */
+  const purgeBusyNow = () => isPurgeBusy(snapRef.current?.cycle);
   const logsRef = useRef<LogEntry[]>([]);
   /** Claves de líneas ya limpiadas: evita que un SSE en vuelo las vuelva a sembrar. */
   const blockedLogKeysRef = useRef<Set<string>>(new Set());
@@ -305,10 +310,12 @@ export function useHmiState() {
   }, []);
 
   const resume = useCallback(() => {
+    if (purgeBusyNow()) return;
     api.resumeMachine().catch(() => {});
   }, []);
 
   const pauseCycle = useCallback(() => {
+    if (purgeBusyNow()) return;
     api.pauseCycle().catch(() => {});
   }, []);
 
@@ -325,6 +332,7 @@ export function useHmiState() {
   }, []);
 
   const machineHomeCmd = useCallback(async () => {
+    if (purgeBusyNow()) return;
     try {
       const res = await api.machineHome();
       if (res.ok === false && res.error) window.alert(String(res.error));
@@ -339,6 +347,7 @@ export function useHmiState() {
   }, []);
 
   const toggleCycleMaterialist = useCallback(() => {
+    if (purgeBusyNow()) return;
     const snap = snapRef.current;
     const cur =
       view.machineState.cycleMaterialist || !!(snap?.cycle.materialist ?? false);
@@ -684,6 +693,7 @@ export function useHmiState() {
   }, []);
 
   const pfMaterialist = useCallback(() => {
+    if (purgeBusyNow()) return;
     api.prefeederAction('materialist').catch(() => {});
   }, []);
 

@@ -110,7 +110,7 @@ export interface MachineState {
   cycleBusy: boolean;
   refillActive: boolean;
   refillAwaitingConfirm: boolean;
-  /** working | await_feed | after_feed | after_cut | "" */
+  /** working | await_feed | after_feed | "" (after_cut ya no existe en la purga nueva) */
   refillPrompt: string;
   /** abort_decide | pre_purge_decide | review_piece | continue_cycle | tray_full | e050_* | "" */
   recoveryPrompt: string;
@@ -121,6 +121,10 @@ export interface MachineState {
   e050Lot: boolean;
   e050FinishPiece: boolean;
   refillSkipCut: boolean;
+  /** Advertencia 'NO INTRODUCIR LAS MANOS': activa toda la rutina automática de purga. */
+  purgeHandsWarning: boolean;
+  /** Derivado: purga activa en cualquier fase. Bloquea Pausa, Posición inicial y Carga de material. */
+  purgeBusy: boolean;
   stepByStep: boolean;
   pauseEnabled: boolean;
   progress: number;
