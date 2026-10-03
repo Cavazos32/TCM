@@ -18,6 +18,8 @@ Sí se rechaza con falla activa, sin enlace Master↔esclavo, Buffer Max en el i
 
 **Buffer Full** corta Servo+DeReeler (AUTO); **no** aborta un TFEED en curso.
 
+**Pause (In process OFF):** aborta DeReeler, servo **y M2 timed feed** al instante. El esclavo latcha `tfeedIncomplete` + `tfeedResumeSec` (segundos restantes). Al **Resume**, `cycle.py` re-manda trigger **solo** en lados incompletos, con duración parcial (`value` en `0x4C`/`0x51`). Tfeed ya completado → sin retry. **Stop `0x2B`** no latcha ni retry. Fin de lote / Materialista sin cambio.
+
 ---
 
 ## Trigger de ciclo (paso 3, pre-feed CAN)
@@ -36,7 +38,7 @@ Sí se rechaza con falla activa, sin enlace Master↔esclavo, Buffer Max en el i
 | C2 / reinicio de la **1ª** pieza | **Omite** | Regla de 1ª |
 | C3 misma pieza post-paso 3 | **Omite** | No re-manda |
 | C3 Resume → pieza siguiente | **Trigger** | Flujo normal de esa pieza |
-| Pause / Resume normal | **Omite** | No re-manda Tfeed |
+| Pause / Resume normal | **Retry parcial** si Tfeed abortado | Paso 3 omite; Resume completa solo lo pendiente |
 | C1, Stop o aborto | **Omite** | |
 | PreFeeder sin enlace | **Omite** | |
 | Lado no en `feedSides` | **Omite** ese lado | |

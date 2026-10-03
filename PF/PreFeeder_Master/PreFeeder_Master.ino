@@ -69,7 +69,6 @@ struct SideView {
   bool tension = false;
   bool cylinderOpen = false;
   bool hoseAbsent = false;
-  bool holgura = false;
   bool autoEnabled = false;
   String autoState = "off";
   bool error = false;
@@ -78,7 +77,9 @@ struct SideView {
   bool idleMode = false;
   bool inProcess = false;
   bool sensorsArmed = false;
-  bool triggerActive = false;  // Motor2 Tfeed / helper holgura en curso
+  bool triggerActive = false;  // Motor2 Tfeed en curso
+  bool tfeedIncomplete = false;  // Pause: Tfeed abortado antes de completar
+  float tfeedResumeSec = 0.0f;   // Segundos restantes para retry parcial
   bool refillMaterial = false;
   bool refillDereeler = false;
   bool refillServo = false;
@@ -191,7 +192,7 @@ static bool pfDispatchCmd(const String& cmd, const String& val, char sideArg)
   const PfCmdScope scope = pfMasterCmdScope(cmd);
   if (scope == PfCmdScope::Global)
   {
-    // setInProcess con side L|R: solo ese esclavo (lote L-only no arma holgura del otro).
+    // setInProcess con side L|R: solo ese esclavo (lote L-only no arma el otro lado).
     if ((cmd == "setInProcess" || cmd == "inProcess")
         && (sideArg == 'L' || sideArg == 'R'))
       return pfSendSideCmd(sideArg, cmd, val);
@@ -313,7 +314,6 @@ static void parseSideSnapshot(const char* j, SideView& s)
   s.tension = jBool(j, "tension", s.tension);
   s.cylinderOpen = jBool(j, "cylinderOpen", s.cylinderOpen);
   s.hoseAbsent = jBool(j, "hoseAbsent", s.hoseAbsent);
-  s.holgura = jBool(j, "holgura", s.holgura);
   s.autoEnabled = jBool(j, "autoEnabled", s.autoEnabled);
   String st = jStr(j, "autoState");
   if (st.length()) s.autoState = st;
@@ -321,6 +321,8 @@ static void parseSideSnapshot(const char* j, SideView& s)
   s.inProcess = jBool(j, "inProcess", s.inProcess);
   s.sensorsArmed = jBool(j, "sensorsArmed", s.sensorsArmed);
   s.triggerActive = jBool(j, "triggerActive", s.triggerActive);
+  s.tfeedIncomplete = jBool(j, "tfeedIncomplete", s.tfeedIncomplete);
+  s.tfeedResumeSec = jFloat(j, "tfeedResumeSec", s.tfeedResumeSec);
   s.refillMaterial = jBool(j, "refillMaterial", s.refillMaterial);
   s.refillDereeler = jBool(j, "refillDereeler", s.refillDereeler);
   s.refillServo = jBool(j, "refillServo", s.refillServo);
@@ -356,11 +358,15 @@ static void parseSideEvent(const char* line, SideView& s)
   else if (field == "tension") s.tension = jBool(line, "value", s.tension);
   else if (field == "cylinderOpen") s.cylinderOpen = jBool(line, "value", s.cylinderOpen);
   else if (field == "hoseAbsent") s.hoseAbsent = jBool(line, "value", s.hoseAbsent);
-  else if (field == "holgura") s.holgura = jBool(line, "value", s.holgura);
   else if (field == "idleMode") s.idleMode = jBool(line, "value", s.idleMode);
   else if (field == "inProcess") s.inProcess = jBool(line, "value", s.inProcess);
   else if (field == "sensorsArmed") s.sensorsArmed = jBool(line, "value", s.sensorsArmed);
   else if (field == "triggerActive") s.triggerActive = jBool(line, "value", s.triggerActive);
+  else if (field == "tfeedIncomplete")
+  {
+    s.tfeedIncomplete = jBool(line, "value", s.tfeedIncomplete);
+    s.tfeedResumeSec = jFloat(line, "tfeedResumeSec", s.tfeedResumeSec);
+  }
   else if (field == "refill")
   {
     s.refillMaterial = jBool(line, "material", s.refillMaterial);
@@ -607,13 +613,14 @@ static void appendSideJson(String& j, const char* key, const SideView& s)
   j += ",\"tension\":"; j += s.tension ? "true" : "false";
   j += ",\"cylinderOpen\":"; j += s.cylinderOpen ? "true" : "false";
   j += ",\"hoseAbsent\":"; j += s.hoseAbsent ? "true" : "false";
-  j += ",\"holgura\":"; j += s.holgura ? "true" : "false";
   j += ",\"autoEnabled\":"; j += s.autoEnabled ? "true" : "false";
   j += ",\"autoState\":"; jsonAppendStr(j, s.autoState);
   j += ",\"idleMode\":"; j += s.idleMode ? "true" : "false";
   j += ",\"inProcess\":"; j += s.inProcess ? "true" : "false";
   j += ",\"sensorsArmed\":"; j += s.sensorsArmed ? "true" : "false";
   j += ",\"triggerActive\":"; j += s.triggerActive ? "true" : "false";
+  j += ",\"tfeedIncomplete\":"; j += s.tfeedIncomplete ? "true" : "false";
+  j += ",\"tfeedResumeSec\":"; j += String(s.tfeedResumeSec, 2);
   j += ",\"refillMaterial\":"; j += s.refillMaterial ? "true" : "false";
   j += ",\"refillDereeler\":"; j += s.refillDereeler ? "true" : "false";
   j += ",\"refillServo\":"; j += s.refillServo ? "true" : "false";
@@ -975,12 +982,11 @@ static void pfTcpPushStateIfChanged()
 static bool pfSideErrFlag(const SideView& s, uint8_t idx)
 {
   switch (idx) {
-    // Buffer Full / Holgura / Tensión: EXXX solo con fallo enclavado (timeout).
+    // Buffer Full / Tensión: EXXX solo con fallo enclavado (timeout).
     // Sensor tensión ON = inversión normal, no E054/E060.
-    // No publicar s.home / s.holgura / s.tension como active del opcode.
+    // No publicar s.home / s.tension como active del opcode.
     case 0: return s.error && pfErrorIdFromWireCode(s.errorCode) == PF_ERR_BUFFER;
     case 2: return s.error && pfErrorIdFromWireCode(s.errorCode) == PF_ERR_TENSION;
-    case 5: return s.error && pfErrorIdFromWireCode(s.errorCode) == PF_ERR_HOLGURA;
     // Instantáneos: sensor activo = condición de fallo (misma polaridad que EXXX)
     case 1: return s.endstop || (s.error && pfErrorIdFromWireCode(s.errorCode) == PF_ERR_ENDSTOP);
     case 3: return s.cylinderOpen || (s.error && pfErrorIdFromWireCode(s.errorCode) == PF_ERR_CYLINDER);
@@ -991,7 +997,7 @@ static bool pfSideErrFlag(const SideView& s, uint8_t idx)
 
 static void pfTcpPushSideErrors(char side, SideView& s, bool* lastFlags, bool force = false)
 {
-  for (uint8_t i = 0; i < 6; i++)
+  for (uint8_t i = 0; i < 5; i++)
   {
     const bool now = pfSideErrFlag(s, i);
     if (!force && now == lastFlags[i]) continue;
@@ -1043,7 +1049,7 @@ static String pfTcpStatusJson()
 static void pfTcpPushFullSnapshot()
 {
   // Orden: eventos + status antes de state. Así la HMI aplica status.error
-  // (fallo enclavado real) y puede descartar espejos viejos de sensor Buffer/Holgura
+  // (fallo enclavado real) y puede descartar espejos viejos de sensor Buffer
   // antes de intentar Set al ver PF_ST_ERROR.
   pfTcpPushErrorEvents(true);
   pfTcpTx(pfTcpStatusJson());
@@ -1182,11 +1188,11 @@ static bool pfTcpDoByte(uint8_t cmdByte)
       break;
     }
     case PF_CMD_TRIGGER_R:
-      ok = pfDispatchCmd("trigger", "", 'R');
+      ok = pfDispatchCmd("trigger", pfTcpCmdValue, 'R');
       if (!ok) err = "TriggerR sin enlace R";
       break;
     case PF_CMD_TRIGGER_L:
-      ok = pfDispatchCmd("trigger", "", 'L');
+      ok = pfDispatchCmd("trigger", pfTcpCmdValue, 'L');
       if (!ok) err = "TriggerL sin enlace L";
       break;
     default:

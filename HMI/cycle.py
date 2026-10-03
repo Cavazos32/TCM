@@ -440,6 +440,8 @@ class CycleHost(Protocol):
     def pf_holgura_present(self, side: str) -> bool | None: ...
     def pf_buffer_full(self, side: str) -> bool | None: ...
     def pf_trigger_active(self, side: str) -> bool | None: ...
+    def pf_tfeed_incomplete(self, side: str) -> bool: ...
+    def pf_tfeed_resume_sec(self, side: str) -> float: ...
     def pf_auto_filling(self, side: str) -> bool | None: ...
     def pf_request_status(self) -> bool: ...
     def pf_status_seq(self) -> int: ...
@@ -497,8 +499,9 @@ class CycleHost(Protocol):
     def cmd_pf_start(self) -> bool: ...
     def cmd_pf_stop(self) -> bool: ...
     def cmd_pf_in_process(self, on: bool = True) -> bool: ...
-    def cmd_pf_trigger_r(self) -> bool: ...
-    def cmd_pf_trigger_l(self) -> bool: ...
+    def cmd_pf_trigger_r(self, sec: float | None = None) -> bool: ...
+    def cmd_pf_trigger_l(self, sec: float | None = None) -> bool: ...
+    def cmd_pf_trigger_side(self, side: str, sec: float | None = None) -> bool: ...
     def cmd_cycle_materialist(self, on: bool = True) -> dict[str, Any]: ...
     def clear_e050_latch_for_materialist(self) -> bool: ...
     def apply_detail_error(self, code_or_byte: str | int) -> bool: ...
@@ -569,6 +572,8 @@ class CycleRunner:
         self._flow_interrupt = threading.Event()
         # In process OFF por Pause/Error; Resume/Busy rearma. Evita doble OFF/ON.
         self._pf_held_idle = False
+        # Pause: Tfeed abortado por lado → retry parcial al Resume (sec; 0=default PF).
+        self._pf_tfeed_resume: dict[str, float] = {}
         # Resume / Continuar ciclo: misma espera Buffer Full que Start (hilo de ciclo).
         self._resume_need_buffer_full = False
         self._lot_rpm = 1200.0
@@ -814,6 +819,7 @@ class CycleRunner:
         self._last_ok = False
         self._abort_needs_ack = False
         self._pf_held_idle = False
+        self._pf_tfeed_resume = {}
         self._resume_need_buffer_full = False
         with self._lock:
             self._refill_mode = False
@@ -867,6 +873,7 @@ class CycleRunner:
         self._host.clear_motion_wait_flags()
         self._host.cmd_motion_stop()
         self._host.cmd_pf_stop()
+        self._pf_tfeed_resume = {}
         self._resume_need_buffer_full = False
         # Stop no toca PLC (válvulas: All Off / Reset PLC propios).
         self._timing_note_event("stop", "Stop operador", "0x041")
@@ -1411,8 +1418,98 @@ class CycleRunner:
         if self._host.cmd_pf_in_process(False):
             self._pf_held_idle = True
             self._host.cycle_log(f"PreFeeder: In process OFF → Idle ({reason})")
+            if reason == "Pause":
+                self._pf_capture_tfeed_incomplete()
         else:
             self._host.cycle_log("PreFeeder: In process OFF falló")
+
+    def _pf_capture_tfeed_incomplete(self) -> None:
+        """Tras Pause: leer latch PF por lado (Tfeed abortado antes de completar)."""
+        self._pf_tfeed_resume = {}
+        if not self._use_prefeeder():
+            return
+        deadline = time.monotonic() + 0.5
+        seq0 = self._host.pf_status_seq()
+        while time.monotonic() < deadline:
+            self._host.pf_request_status()
+            for side in self._feed_side_list():
+                if self._host.pf_tfeed_incomplete(side):
+                    self._pf_tfeed_resume[side] = self._host.pf_tfeed_resume_sec(side)
+            if self._host.pf_status_seq() > seq0:
+                break
+            time.sleep(0.05)
+        if not self._pf_tfeed_resume:
+            return
+        parts: list[str] = []
+        for side in sorted(self._pf_tfeed_resume):
+            sec = self._pf_tfeed_resume[side]
+            parts.append(
+                f"{side}:{sec:.2f}s" if sec > 0.05 else f"{side}:full"
+            )
+        self._host.cycle_log(
+            "PreFeeder: Tfeed incompleto — retry pendiente "
+            + " ".join(parts)
+        )
+
+    def _wait_pf_trigger_done(
+        self, sides: list[str], timeout_s: float = 30.0
+    ) -> bool:
+        """Espera fin de Tfeed activo en los lados indicados."""
+        if not sides:
+            return True
+        deadline = time.monotonic() + max(0.0, float(timeout_s))
+        while time.monotonic() < deadline:
+            if self._should_abort():
+                return False
+            self._host.pf_request_status()
+            pending = [
+                s
+                for s in sides
+                if self._host.pf_trigger_active(s) is True
+            ]
+            if not pending:
+                return True
+            time.sleep(0.05)
+        self._host.cycle_log(
+            f"PreFeeder: timeout {timeout_s:.1f}s fin Tfeed retry"
+        )
+        self._raise_fault("pf_trigger")
+        return False
+
+    def _pf_retry_incomplete_tfeed(self) -> bool:
+        """Resume: re-ejecutar solo Tfeed abortado en Pause (duración parcial)."""
+        if not self._pf_tfeed_resume:
+            return True
+        if not self.get_config().pf_trigger_enabled:
+            self._host.cycle_log(
+                "PreFeeder: Tfeed retry omitido (deshabilitado)"
+            )
+            self._pf_tfeed_resume = {}
+            return True
+        if not self._use_prefeeder():
+            self._pf_tfeed_resume = {}
+            return True
+        sides = list(self._pf_tfeed_resume.keys())
+        op = self._begin_op("pf_tfeed_retry")
+        for side, sec in list(self._pf_tfeed_resume.items()):
+            retry_sec = sec if sec > 0.05 else None
+            if not self._host.cmd_pf_trigger_side(side, retry_sec):
+                self._end_op(op, ok=False)
+                self._raise_fault("pf_trigger")
+                self._host.cycle_log(
+                    f"PreFeeder: Tfeed retry falló lado {side}"
+                )
+                return False
+        if not self._wait_pf_trigger_done(sides):
+            self._end_op(op, ok=False)
+            return False
+        self._end_op(op, ok=True)
+        self._host.cycle_log(
+            "PreFeeder: Tfeed retry OK lados="
+            + "".join(sorted(sides))
+        )
+        self._pf_tfeed_resume = {}
+        return True
 
     def _pf_arm_fill_for_buffer_full(self, reason: str) -> None:
         """Start 0x2A + In process ON: ventana de relleno abierta.
@@ -3526,6 +3623,8 @@ class CycleRunner:
             with self._lock:
                 self._resume_need_buffer_full = False
             return True
+        if self._pf_tfeed_resume and not self._pf_retry_incomplete_tfeed():
+            return False
         with self._lock:
             if not force and not self._resume_need_buffer_full:
                 return True
@@ -4866,6 +4965,7 @@ class CycleRunner:
         self._recovery_skip_feed = False
         self._material_feed_done = False
         self._recovery_skip_pf_trigger = False
+        self._pf_tfeed_resume = {}
         self._flow_interrupt.clear()
         refill = False
         with self._lock:

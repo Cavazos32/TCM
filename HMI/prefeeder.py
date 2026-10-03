@@ -136,11 +136,17 @@ class PreFeederClient(ModuleTcpClient):
             command=cmd, value="1" if on else "0", side=side_u
         )
 
-    def cmd_trigger_r(self) -> bool:
-        return self.cmd_byte(CMD_TRIGGER_R)
+    def cmd_trigger_r(self, sec: float | None = None) -> bool:
+        extra: dict[str, str] = {}
+        if sec is not None and sec > 0.05:
+            extra["value"] = f"{sec:.2f}"
+        return self.cmd_byte(CMD_TRIGGER_R, **extra)
 
-    def cmd_trigger_l(self) -> bool:
-        return self.cmd_byte(CMD_TRIGGER_L)
+    def cmd_trigger_l(self, sec: float | None = None) -> bool:
+        extra: dict[str, str] = {}
+        if sec is not None and sec > 0.05:
+            extra["value"] = f"{sec:.2f}"
+        return self.cmd_byte(CMD_TRIGGER_L, **extra)
 
     def cmd_status(self) -> bool:
         return self.cmd_byte(TX_PF_IDLE)

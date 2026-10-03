@@ -40,13 +40,13 @@ enum PfErrorByte : uint8_t {
   PF_ERR_TENSION_R     = 0x2F,  // E054 C3 · TensionerR()
   PF_ERR_CILINDRO_R    = 0x30,  // E055 C3 · CilindroR()
   PF_ERR_MANGUERA_R    = 0x31,  // E056 C3 · MangueraR()
-  PF_ERR_HOLGURA_R     = 0x32,  // E057 C2 · HolguraR()
+  PF_ERR_HOLGURA_R     = 0x32,  // reservado (ex E057) — no publicar
   PF_ERR_BUFFER_FULL_L = 0x33,  // E058 C1 · BufferFL()
   PF_ERR_BUFFER_MAX_L  = 0x34,  // E059 C3 · BufferML()
   PF_ERR_TENSION_L     = 0x35,  // E060 C3 · TensionerL()
   PF_ERR_CILINDRO_L    = 0x36,  // E061 C3 · CilindroL()
   PF_ERR_MANGUERA_L    = 0x37,  // E062 C3 · MangueraL()
-  PF_ERR_HOLGURA_L     = 0x38,  // E063 C2 · HolguraL()
+  PF_ERR_HOLGURA_L     = 0x38,  // reservado (ex E063) — no publicar
   PF_ERR_NOT_INITIALIZED = 0x7D, // E069 C1 · PreFeederNotInitializedError()
 };
 
@@ -86,13 +86,13 @@ static inline const char* pfTcpErrorName(uint8_t byteCode) {
     case PF_ERR_TENSION_R:     return "TensionerR";
     case PF_ERR_CILINDRO_R:    return "CilindroR";
     case PF_ERR_MANGUERA_R:    return "MangueraR";
-    case PF_ERR_HOLGURA_R:     return "HolguraR";
+    case PF_ERR_HOLGURA_R:     return "reserved";
     case PF_ERR_BUFFER_FULL_L: return "BufferFL";
     case PF_ERR_BUFFER_MAX_L:  return "BufferML";
     case PF_ERR_TENSION_L:     return "TensionerL";
     case PF_ERR_CILINDRO_L:    return "CilindroL";
     case PF_ERR_MANGUERA_L:    return "MangueraL";
-    case PF_ERR_HOLGURA_L:     return "HolguraL";
+    case PF_ERR_HOLGURA_L:     return "reserved";
     case PF_ERR_NOT_INITIALIZED: return "NotInitialized";
     default:                   return "unknown";
   }

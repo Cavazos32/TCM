@@ -109,7 +109,7 @@ button.primary{background:var(--accent);border-color:var(--accent);color:#0d1117
 </section>
 </div>
 <script>
-var SENS=[['home','Buffer Full'],['endstop','Buffer Max'],['tension','Tensión'],['cylinderOpen','Cilindro abierto'],['hoseAbsent','Manguera ausente'],['holgura','Holgura']];
+var SENS=[['home','Buffer Full'],['endstop','Buffer Max'],['tension','Tensión'],['cylinderOpen','Cilindro abierto'],['hoseAbsent','Manguera ausente']];
 function mkSens(id){var el=document.getElementById(id);el.innerHTML=SENS.map(function(s){return '<div class="row"><span>'+s[1]+'</span><span class="dot" id="'+id+'-'+s[0]+'"></span></div>';}).join('');}
 mkSens('sens-l');mkSens('sens-r');
 function setDot(id,on,alarm){var d=document.getElementById(id);if(!d)return;d.className='dot'+(alarm?' alarm':(on?' on':''));}

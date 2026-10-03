@@ -1,0 +1,5 @@
+Revisar:
+1. Revisar el tiempo de giro en sentido contrario, probablemente ocupe reducirse.
+2. Revisar el timeout de inversion de giro, evidentemente debe ser mayor al tiempo de giro.
+3. Despues de un error, si un se detuvo el feeder del prefeeder a mitad de su proceso, al dar resumir compensara los restante del ultimo proceso.
+4. Despues de un error, dar Reset - Start Prefeeder - Start Machine / resumir.

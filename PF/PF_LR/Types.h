@@ -9,8 +9,7 @@ enum Motor2Phase : uint8_t {
 
 enum Motor2FeedSource : uint8_t {
   M2_FEED_NONE = 0,
-  M2_FEED_TCP,
-  M2_FEED_HOLGURA
+  M2_FEED_TCP
 };
 
 enum SystemFault : uint8_t {
@@ -20,7 +19,6 @@ enum SystemFault : uint8_t {
   FAULT_CYLINDER_OPEN,
   FAULT_HOSE_ABSENT,
   FAULT_BUFFER_TIMEOUT,
-  FAULT_HOLGURA_TIMEOUT,
   FAULT_OPERATOR_STOP
 };
 
@@ -35,6 +33,5 @@ enum AutoState : uint8_t {
   AUTO_CYLINDER_FAULT,
   AUTO_HOSE_FAULT,
   AUTO_BUFFER_FAULT,
-  AUTO_HOLGURA_FAULT,
   AUTO_OPERATOR_STOP
 };

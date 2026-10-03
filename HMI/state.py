@@ -342,6 +342,8 @@ class HmiState:
                 "L": {
                     "autoState": None,
                     "triggerActive": None,
+                    "tfeedIncomplete": False,
+                    "tfeedResumeSec": 0.0,
                     "idleMode": False,
                     "refillMaterial": False,
                     "refillDereeler": False,
@@ -352,6 +354,8 @@ class HmiState:
                 "R": {
                     "autoState": None,
                     "triggerActive": None,
+                    "tfeedIncomplete": False,
+                    "tfeedResumeSec": 0.0,
                     "idleMode": False,
                     "refillMaterial": False,
                     "refillDereeler": False,
@@ -858,6 +862,27 @@ class HmiState:
             if val is None:
                 return None
             return bool(val)
+
+    def pf_tfeed_incomplete(self, side: str) -> bool:
+        """Pause abortó Tfeed antes de completar (latch PF)."""
+        side_u = str(side or "").strip().upper()
+        if side_u not in ("L", "R"):
+            return False
+        with self._lock:
+            info = (self._pf.get("sides") or {}).get(side_u) or {}
+            return bool(info.get("tfeedIncomplete"))
+
+    def pf_tfeed_resume_sec(self, side: str) -> float:
+        """Segundos restantes para retry parcial; 0 = duración default PF."""
+        side_u = str(side or "").strip().upper()
+        if side_u not in ("L", "R"):
+            return 0.0
+        with self._lock:
+            info = (self._pf.get("sides") or {}).get(side_u) or {}
+            try:
+                return max(0.0, float(info.get("tfeedResumeSec") or 0.0))
+            except (TypeError, ValueError):
+                return 0.0
 
     def pf_auto_filling(self, side: str) -> bool | None:
         """True si autoState está rellenando buffer (cw / servo_lead)."""
@@ -1429,11 +1454,19 @@ class HmiState:
         self._manual_pf(lambda: self._pf_client.cmd_in_process(False, other))
         return ok
 
-    def cmd_pf_trigger_r(self) -> bool:
-        return self._manual_pf(self._pf_client.cmd_trigger_r)
+    def cmd_pf_trigger_r(self, sec: float | None = None) -> bool:
+        return self._manual_pf(lambda: self._pf_client.cmd_trigger_r(sec))
 
-    def cmd_pf_trigger_l(self) -> bool:
-        return self._manual_pf(self._pf_client.cmd_trigger_l)
+    def cmd_pf_trigger_l(self, sec: float | None = None) -> bool:
+        return self._manual_pf(lambda: self._pf_client.cmd_trigger_l(sec))
+
+    def cmd_pf_trigger_side(self, side: str, sec: float | None = None) -> bool:
+        side_u = str(side or "").strip().upper()
+        if side_u == "R":
+            return self.cmd_pf_trigger_r(sec)
+        if side_u == "L":
+            return self.cmd_pf_trigger_l(sec)
+        return False
 
     def get_cycle_config(self) -> dict:
         return self._cycle.get_config().to_dict()
@@ -3668,6 +3701,8 @@ class HmiState:
             {
                 "autoState": None,
                 "triggerActive": None,
+                "tfeedIncomplete": False,
+                "tfeedResumeSec": 0.0,
                 "idleMode": False,
                 "refillMaterial": False,
                 "refillDereeler": False,
@@ -3676,6 +3711,19 @@ class HmiState:
                 "refillPulseS": 1.0,
             },
         )
+        if "tfeedIncomplete" in side:
+            inc = bool(side.get("tfeedIncomplete"))
+            if runtime.get("tfeedIncomplete") != inc:
+                runtime["tfeedIncomplete"] = inc
+                changed = True
+        if "tfeedResumeSec" in side:
+            try:
+                rsec = max(0.0, float(side.get("tfeedResumeSec") or 0.0))
+            except (TypeError, ValueError):
+                rsec = 0.0
+            if runtime.get("tfeedResumeSec") != rsec:
+                runtime["tfeedResumeSec"] = rsec
+                changed = True
         if "idleMode" in side:
             idle = bool(side.get("idleMode"))
             if runtime.get("idleMode") != idle:

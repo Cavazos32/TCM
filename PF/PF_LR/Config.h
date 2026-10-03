@@ -38,7 +38,6 @@ constexpr uint8_t  FAULT_CODE_BASE     = 30;
 constexpr uint8_t PIN_SENSOR_BUFFER_FULL = 19;  // HIGH = activo
 constexpr uint8_t PIN_SENSOR_TENSION     = 23;  // HIGH = activo
 constexpr uint8_t PIN_SENSOR_BUFFER_MAX  = 21;  // HIGH = activo
-constexpr uint8_t PIN_SENSOR_HOLGURA     = 22;  // HIGH = OK; LOW = helper
 constexpr uint8_t PIN_SENSOR_CILINDRO    = 25;
 constexpr uint8_t PIN_SENSOR_HOSE_BELT   = 27;  // HIGH = cinta/manguera ausente
 constexpr int PIN_DEREELER_PUL           = 32;
@@ -46,7 +45,7 @@ constexpr int PIN_DEREELER_MOSFET        = 33;
 constexpr uint8_t DEREELER_DIR_CW_LEVEL  = LOW;
 constexpr uint8_t DEREELER_DIR_CCW_LEVEL = HIGH;
 constexpr int PIN_FEEDER_PUL             = 18;  // DIR/EN fijos en driver
-constexpr uint8_t PIN_SERVO_PWM          = 15;
+constexpr uint8_t PIN_SERVO_PWM          = 26;
 
 // ====================== SERVO ======================
 constexpr uint16_t SERVO_PWM_MIN_US       = 500;
@@ -96,19 +95,8 @@ constexpr float TENSION_REVERSE_RPM_DEFAULT = 30.0f;
 constexpr float TENSION_REVERSE_RPM_MIN     = MOTOR_RPM_MIN;
 constexpr float TENSION_REVERSE_RPM_MAX     = MOTOR_RPM_MAX;
 
-// ====================== BUFFER / HOLGURA ======================
+// ====================== BUFFER ======================
 constexpr float BUFFER_REFILL_FAULT_SEC = 10.0f;
-constexpr float M2_HOLGURA_FAULT_SEC      = 1.5f;   // ausencia acumulada tras Full visto → PF_ERR_HOLGURA
-constexpr float M2_HOLGURA_FAULT_SEC_MIN  = 0.3f;
-constexpr float M2_HOLGURA_FAULT_SEC_MAX  = 30.0f;
-constexpr uint32_t M2_HOLGURA_FILTER_MS   = 80;
-constexpr uint32_t M2_HOLGURA_HELPER_ABSENT_MS     = 100;  // ausente ≥ esto → helper feed
-constexpr uint32_t M2_HOLGURA_HELPER_ABSENT_MS_MIN = 20;
-constexpr uint32_t M2_HOLGURA_HELPER_ABSENT_MS_MAX = 5000;
-constexpr float M2_HOLGURA_HELPER_RPM_DEFAULT = MOTOR_RPM_DEFAULT;
-constexpr float M2_HOLGURA_HELPER_SEC_DEFAULT = 1.0f;
-constexpr float M2_HOLGURA_HELPER_SEC_MIN     = 0.05f;
-constexpr float M2_HOLGURA_HELPER_SEC_MAX     = 60.0f;
 constexpr uint32_t BUFFER_FULL_ON_FILTER_MS  = 80;
 constexpr uint32_t BUFFER_FULL_OFF_FILTER_MS = 200;
 constexpr uint32_t BUFFER_FULL_GLITCH_MS     = 40;
