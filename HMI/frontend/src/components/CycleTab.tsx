@@ -205,6 +205,8 @@ export const CycleTab: React.FC<CycleTabProps> = ({
         ? t('recovery_pre_purge_title')
       : recoveryStage === 'review_piece'
         ? t('recovery_review_title')
+        : recoveryStage === 'verify_piece'
+          ? t('verify_piece_title')
         : recoveryStage === 'purge_decide'
           ? t('recovery_purge_title')
           : recoveryStage === 'continue_cycle'
@@ -228,6 +230,8 @@ export const CycleTab: React.FC<CycleTabProps> = ({
       ? t('recovery_pre_purge_hint')
       : recoveryStage === 'review_piece'
       ? t('recovery_review_hint')
+      : recoveryStage === 'verify_piece'
+        ? t('verify_piece_hint')
       : recoveryStage === 'purge_decide'
         ? t('recovery_purge_hint')
         : recoveryStage === 'continue_cycle'
@@ -250,6 +254,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
       recoveryStage === 'abort_decide' ||
       recoveryStage === 'pre_purge_decide' ||
       recoveryStage === 'review_piece' ||
+      recoveryStage === 'verify_piece' ||
       recoveryStage === 'purge_decide' ||
       recoveryStage === 'continue_cycle' ||
       trayFull);
@@ -622,6 +627,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
             </>
           )}
           {(recoveryStage === 'review_piece' ||
+            recoveryStage === 'verify_piece' ||
             recoveryStage === 'continue_cycle') &&
             onRecoveryReview && (
             <button
@@ -634,6 +640,8 @@ export const CycleTab: React.FC<CycleTabProps> = ({
               <Check className="h-3.5 w-3.5" />
               {recoveryStage === 'continue_cycle'
                 ? t('btn_recovery_continue')
+                : recoveryStage === 'verify_piece'
+                  ? t('btn_verify_piece_continue')
                 : t('btn_recovery_review_ok')}
             </button>
           )}

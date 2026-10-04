@@ -88,6 +88,7 @@ export interface BackendCycleSnapshot {
   refillSkipCut?: boolean;
   /** Clave JSON que el backend debe emitir en snapshot.cycle (booleano). */
   purgeHandsWarning?: boolean;
+  asdaMoveWarning?: boolean;
   config: BackendCycleConfig;
   /** Ausente en SSE slim (la UI conserva el último flow). */
   flow?: BackendFlowStep[];

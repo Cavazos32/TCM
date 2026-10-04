@@ -216,7 +216,8 @@ E050 (Encoder / aire, manguera o cilindro). **Fuera de lote** (y durante refill/
 Con **pieza/lote en curso** (no refill): Pause. HMI pregunta si requiere Materialist.
 
 1. **No Materialist** → recuperación unificada del lote (Reset → purga → abort_decide → Resume → pieza → review → purga).  
-2. **Sí Materialist** → se libera solo el latch E050 para entrar a Materialist; HOME de esa ruta; esperar Materialist OFF; continuar lote.
+2. **Sí Materialist** con **pieza en curso** → se libera solo el latch E050; banner `asdaMoveWarning` («El ASDA se va a mover…») mientras el ASDA termina la pieza; tras depósito y registro, prompt `verify_piece` (un botón Continuar); luego HOME de esa ruta; esperar Materialist OFF; continuar lote.  
+3. **Sí Materialist** **sin pieza en curso** → se libera el latch E050; HOME de esa ruta; esperar Materialist OFF; continuar lote (sin banner ni `verify_piece`).
 
 **Purga / Home / Materialist con latch (incl. E050):** el operador puede accionarlos **con el latch aún activo** (salvo la excepción de bloqueo durante purga en curso). No liberan el EXXX. Start y Resume siguen bloqueados.  
 **Flujo de purga (sin corte):** ASDA → park (`refill_asda_mm`) → Holder+Encoder ON → **Entrada 1** (`await_feed`): **Alimentar** (feed creep hasta láser ON, timeout 10 s, lados independientes, sin OM) o **Continuar purga** (sin feed) → **Entrada 2** (`after_feed`): solo **Continuar purga** → banner `purgeHandsWarning` ON → espera 0,3 s → ASDA a 0 → pinzas cierran → ASDA a la 1.ª posición de depósito (`depositExtraMm` del batch 1, sin sumar longitud de modelo ni `cut_offset_mm`) → pinzas abren → soplador + ASDA a 0 (WIP delivery). Sin pulso de corte ni prompt `after_cut`.  
