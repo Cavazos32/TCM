@@ -112,7 +112,7 @@ export interface MachineState {
   refillAwaitingConfirm: boolean;
   /** working | await_feed | after_feed | "" (after_cut ya no existe en la purga nueva) */
   refillPrompt: string;
-  /** abort_decide | pre_purge_decide | review_piece | continue_cycle | tray_full | e050_* | "" */
+  /** abort_decide | pre_purge_decide | review_piece | verify_piece | continue_cycle | tray_full | e050_* | "" */
   recoveryPrompt: string;
   recoveryAwaitingConfirm: boolean;
   /** Piezas por tray antes de pausar para vaciar (0 = sin tope). */
@@ -123,6 +123,8 @@ export interface MachineState {
   refillSkipCut: boolean;
   /** Advertencia 'NO INTRODUCIR LAS MANOS': activa toda la rutina automática de purga. */
   purgeHandsWarning: boolean;
+  /** E050+Materialista con pieza: ASDA termina la pieza (banner global). */
+  asdaMoveWarning: boolean;
   /** Derivado: purga activa en cualquier fase. Bloquea Pausa, Posición inicial y Carga de material. */
   purgeBusy: boolean;
   stepByStep: boolean;

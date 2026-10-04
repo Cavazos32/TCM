@@ -154,6 +154,13 @@ export const translations = {
     e050_materialist_finish_hint: 'La falla E050 aceptó la carga de material. Se termina la pieza en curso; luego posición inicial y carga de material.',
     e050_materialist_wait_title: 'Carga de material activa',
     e050_materialist_wait_hint: 'Carga el material. Al terminar, apaga la carga de material para continuar el lote.',
+    asda_move_warning:
+      'El ASDA se va a mover y terminará la pieza: no introduzcas las manos',
+    verify_piece_title: 'Verifica la pieza',
+    verify_piece_hint: 'El ASDA terminó. Revisa la pieza y pulsa Continuar',
+    btn_verify_piece_continue: 'Continuar',
+    asda_move_busy_locked:
+      'No disponible mientras el ASDA termina la pieza. Para parar, usa Detener.',
     btn_e050_no_materialist: 'No',
     btn_e050_yes_materialist: 'Sí',
     btn_refill_confirm_continue: 'Continuar purga',

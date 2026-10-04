@@ -296,7 +296,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
             recoveryStage === 'after_feed') &&
             skipCut)
         ? 'empty'
-        : recoveryStage === 'review_piece'
+        : recoveryStage === 'review_piece' || recoveryStage === 'verify_piece'
           ? 'review'
           : hasFault
             ? 'reset'
@@ -352,6 +352,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
       recoveryStage === 'e050_finishing' ||
       recoveryStage === 'e050_materialist_wait' ||
       recoveryStage === 'review_piece' ||
+      recoveryStage === 'verify_piece' ||
       recoveryStage === 'continue_cycle' ||
       trayFull);
   const recoveryTitle = trayFull
@@ -368,6 +369,8 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
           ? t('recovery_pre_purge_title')
         : recoveryStage === 'review_piece'
           ? t('recovery_review_title')
+          : recoveryStage === 'verify_piece'
+            ? t('verify_piece_title')
           : recoveryStage === 'continue_cycle'
             ? t('recovery_continue_title')
             : recoveryStage === 'purge_decide'
@@ -393,6 +396,8 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
             ? t('recovery_pre_purge_hint')
         : recoveryStage === 'review_piece'
             ? t('recovery_review_hint')
+            : recoveryStage === 'verify_piece'
+              ? t('verify_piece_hint')
             : recoveryStage === 'continue_cycle'
               ? t('recovery_continue_hint')
               : recoveryStage === 'purge_decide'
@@ -743,7 +748,13 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                   id="btn-pause-maquina"
                   onClick={onPause}
                   disabled={!machineState.pauseEnabled || pfProdLocked || machineState.purgeBusy}
-                  title={machineState.purgeBusy ? t('purge_busy_locked') : undefined}
+                  title={
+                    machineState.asdaMoveWarning
+                      ? t('asda_move_busy_locked')
+                      : machineState.purgeBusy
+                        ? t('purge_busy_locked')
+                        : undefined
+                  }
                   className={`${btnBase} min-w-0 flex-1 disabled:opacity-40 disabled:cursor-not-allowed ${
                     machineState.isPaused
                       ? `${btnOn} text-white dark:text-slate-900`
@@ -760,13 +771,15 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                   onClick={onResume}
                   disabled={resumeDisabled}
                   title={
-                    machineState.purgeBusy
-                      ? t('purge_busy_locked')
-                      : showMachineResumeCoach
-                      ? t('lot_recover_hint_resume')
-                      : showMachineResetCoach
-                        ? t('lot_recover_hint_reset')
-                        : undefined
+                    machineState.asdaMoveWarning
+                      ? t('asda_move_busy_locked')
+                      : machineState.purgeBusy
+                        ? t('purge_busy_locked')
+                        : showMachineResumeCoach
+                          ? t('lot_recover_hint_resume')
+                          : showMachineResetCoach
+                            ? t('lot_recover_hint_reset')
+                            : undefined
                   }
                   className={`group ${btnBase} min-w-0 flex-1 disabled:opacity-40 disabled:cursor-not-allowed ${
                     showMachineResumeCoach ? btnNeedGo : btnIdle
@@ -815,9 +828,11 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                   }}
                   disabled={!onMachineHome || machineState.purgeBusy}
                   title={
-                    machineState.purgeBusy
-                      ? t('purge_busy_locked')
-                      : t('btn_machine_home_hint')
+                    machineState.asdaMoveWarning
+                      ? t('asda_move_busy_locked')
+                      : machineState.purgeBusy
+                        ? t('purge_busy_locked')
+                        : t('btn_machine_home_hint')
                   }
                   className={`${btnBase} min-w-0 flex-1 ${
                     !onMachineHome || machineState.purgeBusy
@@ -836,11 +851,13 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                   onClick={onMaterialist}
                   disabled={!onMaterialist || machineState.purgeBusy}
                   title={
-                    machineState.purgeBusy
-                      ? t('purge_busy_locked')
-                      : machineState.cycleMaterialist
-                      ? t('pf_recover_hint_jog')
-                      : t('pf_jog_need_materialist')
+                    machineState.asdaMoveWarning
+                      ? t('asda_move_busy_locked')
+                      : machineState.purgeBusy
+                        ? t('purge_busy_locked')
+                        : machineState.cycleMaterialist
+                          ? t('pf_recover_hint_jog')
+                          : t('pf_jog_need_materialist')
                   }
                   className={`${btnBase} min-w-0 flex-1 ${
                     !onMaterialist || machineState.purgeBusy
@@ -979,6 +996,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                   </>
                 )}
                 {(recoveryStage === 'review_piece' ||
+                  recoveryStage === 'verify_piece' ||
                   recoveryStage === 'continue_cycle') &&
                   onRecoveryReview && (
                   <button
@@ -991,6 +1009,8 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     <Check className="h-3.5 w-3.5" />
                     {recoveryStage === 'continue_cycle'
                       ? t('btn_recovery_continue')
+                      : recoveryStage === 'verify_piece'
+                        ? t('btn_verify_piece_continue')
                       : t('btn_recovery_review_ok')}
                   </button>
                 )}

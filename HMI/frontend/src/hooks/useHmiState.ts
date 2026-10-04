@@ -78,6 +78,7 @@ const DEFAULT_MACHINE: MachineState = {
   e050FinishPiece: false,
   refillSkipCut: false,
   purgeHandsWarning: false,
+  asdaMoveWarning: false,
   purgeBusy: false,
   stepByStep: false,
   pauseEnabled: false,

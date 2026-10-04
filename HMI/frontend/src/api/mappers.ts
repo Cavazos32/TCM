@@ -121,9 +121,20 @@ export function mergeLogTail(
 
 /** Purga activa en cualquier fase de la rutina (señales reales del snapshot de ciclo). */
 export function isPurgeBusy(
-  cycle: Pick<BackendSnapshot['cycle'], 'refillActive' | 'refillPrompt' | 'purgeHandsWarning'> | undefined
+  cycle:
+    | Pick<
+        BackendSnapshot['cycle'],
+        'refillActive' | 'refillPrompt' | 'purgeHandsWarning' | 'asdaMoveWarning'
+      >
+    | undefined
 ): boolean {
-  return !!cycle && (!!cycle.refillActive || !!cycle.refillPrompt || !!cycle.purgeHandsWarning);
+  return (
+    !!cycle &&
+    (!!cycle.refillActive ||
+      !!cycle.refillPrompt ||
+      !!cycle.purgeHandsWarning ||
+      !!cycle.asdaMoveWarning)
+  );
 }
 
 export function mapMachineState(
@@ -204,6 +215,7 @@ export function mapMachineState(
     e050FinishPiece: !!cycle.e050FinishPiece,
     refillSkipCut: !!cycle.refillSkipCut,
     purgeHandsWarning: !!cycle.purgeHandsWarning,
+    asdaMoveWarning: !!cycle.asdaMoveWarning,
     purgeBusy: isPurgeBusy(cycle),
     stepByStep: cycle.stepByStep ?? false,
     pauseEnabled:

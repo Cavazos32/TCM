@@ -530,6 +530,7 @@ class CycleRunner:
         self._refill_reject = threading.Event()
         self._refill_retry = threading.Event()
         self._purge_hands_warning = False
+        self._asda_move_warning = False
         # Lote vivo: Purge corre dentro del hilo del lote (feed_mm, asda_mm).
         self._lot_purge_request: tuple[float | None, float | None] | None = None
         self._suspend_piece_watch = False
@@ -548,7 +549,7 @@ class CycleRunner:
         self._recovery = ""  # common lot recovery context | e050_materialist
         # Tras error: lote vivo → Reset → purga → abort_decide → Resume → pieza → review → purga.
         self._recovery_after_error = False
-        self._recovery_prompt = ""  # "" | pre_purge_decide | abort_decide | review_piece | continue_cycle | tray_full | e050_materialist
+        self._recovery_prompt = ""  # "" | pre_purge_decide | abort_decide | review_piece | verify_piece | continue_cycle | tray_full | e050_materialist
         self._recovery_awaiting = False
         self._pending_lot_decision = False
         self._recovery_confirm = threading.Event()
@@ -644,6 +645,9 @@ class CycleRunner:
                 ),
                 "purgeHandsWarning": bool(
                     self._purge_hands_warning and self._refill_mode and self._active
+                ),
+                "asdaMoveWarning": bool(
+                    self._asda_move_warning and self._active
                 ),
                 "step": self._step,
                 "stepName": STEP_NAMES.get(self._step, ""),
@@ -843,6 +847,7 @@ class CycleRunner:
             self._refill_awaiting_confirm = False
             self._refill_prompt = ""
             self._purge_hands_warning = False
+            self._asda_move_warning = False
             self._pieces_per_rep = int(pieces_per_rep)
             self._reset_ct_clocks_locked()
         self._set_state(TX_BUSY)
@@ -884,6 +889,7 @@ class CycleRunner:
             self._refill_awaiting_confirm = False
             self._refill_prompt = ""
             self._purge_hands_warning = False
+            self._asda_move_warning = False
             self._recovery_awaiting = False
             self._recovery_prompt = ""
             self._pending_lot_decision = False
@@ -1015,6 +1021,7 @@ class CycleRunner:
             return {"ok": True, "abort": True}
         if not self._recovery_awaiting or prompt not in (
             "review_piece",
+            "verify_piece",
             "purge_decide",
             "continue_cycle",
             "tray_full",
@@ -1047,6 +1054,7 @@ class CycleRunner:
             if not self._host.clear_e050_latch_for_materialist():
                 self._e050_materialist_requested = False
                 self._e050_finish_piece = False
+                self._asda_move_warning = False
                 self._recovery_prompt = "e050_materialist"
                 self._recovery_awaiting = True
                 return {"ok": False, "error": "No se pudo liberar E050 para iniciar Materialista"}
@@ -1054,6 +1062,7 @@ class CycleRunner:
             self._recovery = "e050_materialist"
             if self._e050_finish_piece:
                 self._recovery_prompt = "e050_finishing"
+                self._asda_move_warning = True
             self._pause.clear()
             with self._lock:
                 self._sync_pause_exclusion_locked(time.monotonic())
@@ -1069,6 +1078,8 @@ class CycleRunner:
                 if prompt == "tray_full"
                 else "purga"
                 if prompt == "purge_decide"
+                else "pieza verificada (Materialista)"
+                if prompt == "verify_piece"
                 else "pieza revisada"
             )
             self._recovery_confirm.set()
@@ -1248,6 +1259,7 @@ class CycleRunner:
             self._refill_awaiting_confirm = False
             self._refill_prompt = ""
             self._purge_hands_warning = False
+            self._asda_move_warning = False
             self._refill_mode = True
             self._active = True
         self._set_state(TX_BUSY)
@@ -1329,6 +1341,7 @@ class CycleRunner:
         self._refill_awaiting_confirm = False
         self._refill_prompt = ""
         self._purge_hands_warning = False
+        self._asda_move_warning = False
         self._refill_confirm.clear()
         self._refill_reject.clear()
         self._refill_retry.clear()
@@ -1349,6 +1362,7 @@ class CycleRunner:
         self._recovery_confirm.clear()
         self._recovery_reject.clear()
         self._e050_finish_piece = False
+        self._asda_move_warning = False
 
     def _cancel_wip_blower(self) -> None:
         """Corta durationSec del blower. No es All Off ni pulso KEEP."""
@@ -1796,8 +1810,15 @@ class CycleRunner:
         if self._should_abort():
             return False
         self._release_e050_finish_pause()
+        with self._lock:
+            self._asda_move_warning = False
         if self._e050_finish_piece:
-            self._host.cycle_log("E050: pieza terminada y depositada → confirmar HOME")
+            self._host.cycle_log("E050: pieza terminada y depositada → verificar pieza")
+            if self._wait_recovery_prompt("verify_piece") != "ok":
+                return False
+            with self._lock:
+                self._recovery_prompt = ""
+            self._host.cycle_log("E050: pieza verificada → HOME")
         else:
             self._host.cycle_log("E050: sin pieza en curso → HOME")
         self._host.clear_motion_wait_flags()
@@ -1838,6 +1859,7 @@ class CycleRunner:
             self._recovery_awaiting = False
             self._e050_materialist_requested = False
             self._e050_finish_piece = False
+            self._asda_move_warning = False
             self._recovery_after_error = False
             self._recovery = ""
         self._host.cycle_log("E050: Materialista OFF → continuar lote")
@@ -1929,6 +1951,7 @@ class CycleRunner:
         self._e050_finish_piece = False
         self._e050_materialist_requested = False
         self._e050_materialist_wait = False
+        self._asda_move_warning = False
         self._recovery_after_error = False
         self._recovery_confirm.clear()
         self._recovery_reject.clear()
