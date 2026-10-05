@@ -21,6 +21,16 @@ export const translations = {
     shortcuts_start_stop: 'Iniciar/Detener',
     settings: 'Configuración',
     open_settings: 'Abrir configuración',
+    btn_parametros: 'Parámetros',
+    btn_back_maquina: 'Volver a Máquina',
+    parametros_password_title: 'Contraseña de Parámetros',
+    parametros_password_hint: 'Escribe la contraseña para acceder a la configuración técnica.',
+    section_proceso: 'Proceso',
+    section_lote: 'Lote / Producción',
+    section_operacion_manual: 'Operación / Manual',
+    section_alimentador: 'Alimentador (PreFeeder)',
+    machine_standby: 'Máquina en espera',
+    indications_idle_sub: 'La máquina se encuentra en espera.',
 
     // Navigation
     tab_maquina: 'Máquina',
@@ -434,6 +444,7 @@ export const translations = {
     // Settings Drawer
     settings_title: 'Configuración',
     settings_desc: 'Apariencia y estado de la conexión con los módulos',
+    settings_desc_app: 'Apariencia e información del sistema',
     appearance_title: 'Apariencia',
     theme_light: 'Claro',
     theme_dark: 'Oscuro',

@@ -9,17 +9,21 @@ import { PlcTab } from './components/PlcTab';
 import { PreFeederTab } from './components/PreFeederTab';
 import { AndonTab } from './components/AndonTab';
 import { SettingsDrawer } from './components/SettingsDrawer';
+import { ParametrosPasswordModal } from './components/ParametrosPasswordModal';
 import { AppProvider, useApp } from './context/AppContext';
 import { useHmiState } from './hooks/useHmiState';
 
+type ViewMode = 'maquina' | 'parametros';
+
 function AppMain() {
-  const { isSettingsOpen, setIsSettingsOpen, showLogs, debugMode, t } = useApp();
+  const { isSettingsOpen, setIsSettingsOpen, showLogs, debugMode, disableDebugMode } = useApp();
   const logsVisible = debugMode && showLogs;
+  const [viewMode, setViewMode] = useState<ViewMode>('maquina');
   const [currentTab, setCurrentTab] = useState<TabType>('maquina');
+  const [showParamPassword, setShowParamPassword] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
   const hmi = useHmiState();
   const { view } = hmi;
-  // Callbacks estables (useCallback en el hook); no depender del objeto `hmi` entero.
   const {
     onTabChange,
     reconnectNetwork,
@@ -40,34 +44,66 @@ function AppMain() {
     }
   }, [reconnectNetwork]);
 
+  const enterParametrosView = useCallback(
+    (initialTab: TabType = 'cycle') => {
+      setViewMode('parametros');
+      setCurrentTab(initialTab);
+      onTabChange(initialTab);
+    },
+    [onTabChange]
+  );
+
   const handleTabChange = useCallback(
     (tab: TabType) => {
-      if (!debugMode && tab !== 'maquina') return;
+      if (tab === 'maquina') {
+        setViewMode('maquina');
+        setCurrentTab('maquina');
+        onTabChange('maquina');
+        return;
+      }
+      if (!debugMode) return;
+      setViewMode('parametros');
       setCurrentTab(tab);
       onTabChange(tab);
     },
     [onTabChange, debugMode]
   );
 
+  const handleOpenParametros = useCallback(() => {
+    if (debugMode) {
+      enterParametrosView(currentTab === 'maquina' ? 'cycle' : currentTab);
+    } else {
+      setShowParamPassword(true);
+    }
+  }, [debugMode, enterParametrosView, currentTab]);
+
+  const handleBackToMaquina = useCallback(() => {
+    setViewMode('maquina');
+    setCurrentTab('maquina');
+    onTabChange('maquina');
+  }, [onTabChange]);
+
   const handleDebugModeDisable = useCallback(() => {
     if (view.machineState.stepByStep) {
       void setCycleStepByStep(false);
     }
-    if (currentTab !== 'maquina') {
-      setCurrentTab('maquina');
-      onTabChange('maquina');
-    }
-  }, [
-    currentTab,
-    onTabChange,
-    setCycleStepByStep,
-    view.machineState.stepByStep,
-  ]);
+    setViewMode('maquina');
+    setCurrentTab('maquina');
+    onTabChange('maquina');
+  }, [onTabChange, setCycleStepByStep, view.machineState.stepByStep]);
+
+  const handleExitParametros = useCallback(() => {
+    disableDebugMode();
+    handleDebugModeDisable();
+  }, [disableDebugMode, handleDebugModeDisable]);
 
   useEffect(() => {
-    if (!debugMode && currentTab !== 'maquina') {
-      setCurrentTab('maquina');
-      onTabChange('maquina');
+    if (!debugMode) {
+      setViewMode('maquina');
+      if (currentTab !== 'maquina') {
+        setCurrentTab('maquina');
+        onTabChange('maquina');
+      }
     }
   }, [debugMode, currentTab, onTabChange]);
 
@@ -89,13 +125,12 @@ function AppMain() {
       else if (debugMode && e.key === '6') handleTabChange('andon');
       else if (e.code === 'Space') {
         e.preventDefault();
-        if (currentTab === 'maquina') {
+        if (viewMode === 'maquina') {
           if (view.machineState.isRunning) stop();
           else if (
             !view.machineState.errorActive &&
             !view.machineState.fault &&
             !view.machineState.workBlocked &&
-            // Purga activa: Espacio no inicia ni reanuda el ciclo.
             !view.machineState.refillActive &&
             !view.machineState.purgeHandsWarning &&
             !view.machineState.asdaMoveWarning
@@ -106,6 +141,8 @@ function AppMain() {
         }
       } else if (e.key === 'Escape') {
         if (isSettingsOpen) setIsSettingsOpen(false);
+        else if (showParamPassword) setShowParamPassword(false);
+        else if (viewMode === 'parametros') handleBackToMaquina();
         else {
           stop();
           motionStop();
@@ -117,7 +154,7 @@ function AppMain() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [
-    currentTab,
+    viewMode,
     view.machineState.isRunning,
     view.machineState.errorActive,
     view.machineState.fault,
@@ -127,8 +164,10 @@ function AppMain() {
     view.machineState.asdaMoveWarning,
     view.resumeEnabled,
     isSettingsOpen,
+    showParamPassword,
     setIsSettingsOpen,
     handleTabChange,
+    handleBackToMaquina,
     debugMode,
     stop,
     start,
@@ -137,57 +176,48 @@ function AppMain() {
     pfStop,
   ]);
 
+  const showMaquina = viewMode === 'maquina';
+  const showParametros = viewMode === 'parametros' && debugMode;
+
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans flex flex-col antialiased selection:bg-slate-800 dark:selection:bg-slate-200 selection:text-white dark:selection:text-slate-900 transition-colors">
-      <Header onOpenSettings={() => setIsSettingsOpen(true)} />
-
-      <Navigation
-        currentTab={currentTab}
-        onSelectTab={handleTabChange}
-        motionConn={view.motionState.connection}
-        plcConn={view.plcState.connection}
-        preFeederConn={view.preFeederState.connection}
-        andonConn={view.andonConn}
-        hasErrors={{
-          motion:
-            view.motionState.hasError ||
-            (!!view.machineState.errorActive &&
-              (view.machineState.faultModule || '').toLowerCase().includes('motion')),
-          plc:
-            view.plcState.hasError ||
-            (!!view.machineState.errorActive &&
-              (view.machineState.faultModule || '').toLowerCase().includes('plc')),
-          prefeeder:
-            view.preFeederState.hasError ||
-            (!!view.machineState.errorActive &&
-              /pre-?feeder|\bpf\b/.test(
-                (view.machineState.faultModule || '').toLowerCase()
-              )),
-        }}
+      <Header
+        onOpenSettings={() => setIsSettingsOpen(true)}
+        onOpenParametros={handleOpenParametros}
+        parametrosActive={showParametros}
       />
 
-      {view.machineState.purgeHandsWarning ? (
-        <div
-          id="purge-hands-warning"
-          role="alert"
-          aria-live="assertive"
-          className="sticky top-0 z-50 w-full bg-red-600 px-4 py-3 text-center text-lg sm:text-2xl font-black uppercase tracking-wide text-white shadow-lg animate-pulse"
-        >
-          {t('purge_hands_warning')}
-        </div>
-      ) : view.machineState.asdaMoveWarning ? (
-        <div
-          id="asda-move-warning"
-          role="alert"
-          aria-live="assertive"
-          className="sticky top-0 z-50 w-full bg-red-600 px-4 py-3 text-center text-lg sm:text-2xl font-black uppercase tracking-wide text-white shadow-lg animate-pulse"
-        >
-          {t('asda_move_warning')}
-        </div>
-      ) : null}
+      {showParametros && (
+        <Navigation
+          currentTab={currentTab}
+          onSelectTab={handleTabChange}
+          motionConn={view.motionState.connection}
+          plcConn={view.plcState.connection}
+          preFeederConn={view.preFeederState.connection}
+          andonConn={view.andonConn}
+          hasErrors={{
+            motion:
+              view.motionState.hasError ||
+              (!!view.machineState.errorActive &&
+                (view.machineState.faultModule || '').toLowerCase().includes('motion')),
+            plc:
+              view.plcState.hasError ||
+              (!!view.machineState.errorActive &&
+                (view.machineState.faultModule || '').toLowerCase().includes('plc')),
+            prefeeder:
+              view.preFeederState.hasError ||
+              (!!view.machineState.errorActive &&
+                /pre-?feeder|\bpf\b/.test(
+                  (view.machineState.faultModule || '').toLowerCase()
+                )),
+          }}
+          onBackToMaquina={handleBackToMaquina}
+          onExitParametros={handleExitParametros}
+        />
+      )}
 
       <main className="flex-1 px-3 py-3 sm:px-5 w-full">
-        {currentTab === 'maquina' && (
+        {showMaquina && (
           <MaquinaTab
             machineState={view.machineState}
             motionState={view.motionState}
@@ -223,19 +253,20 @@ function AppMain() {
             onRecoveryReview={(ok) => {
               void hmi.confirmRecoveryReview(ok);
             }}
-            onGotoCycle={debugMode ? () => handleTabChange('cycle') : undefined}
             onPfStart={hmi.pfStart}
             onPfStop={hmi.pfStop}
             onPfReset={hmi.pfReset}
             onPfRefill={hmi.pfRefill}
             onMaterialist={hmi.toggleCycleMaterialist}
+            purgeHandsWarning={view.machineState.purgeHandsWarning}
+            asdaMoveWarning={view.machineState.asdaMoveWarning}
             showLogs={logsVisible}
             logs={logsVisible ? hmi.filterLogs('ALL') : []}
             onClearLogs={() => hmi.clearLogs('all')}
           />
         )}
 
-        {debugMode && currentTab === 'cycle' && (
+        {showParametros && currentTab === 'cycle' && (
           <CycleTab
             machineState={view.machineState}
             cycleConfig={view.cycleConfig}
@@ -269,7 +300,7 @@ function AppMain() {
           />
         )}
 
-        {debugMode && currentTab === 'motion' && (
+        {showParametros && currentTab === 'motion' && (
           <MotionTab
             motionState={view.motionState}
             onUpdateTargetPos={(pos) => hmi.setMmRpm(pos, view.motionState.rpm)}
@@ -291,13 +322,16 @@ function AppMain() {
             onReloadFeedOffset={() => {
               void hmi.reloadFeedOffset();
             }}
+            safetyExhaust={view.machineState.safetyExhaust}
+            onReconnectNetwork={handleReconnectNetwork}
+            reconnecting={reconnecting}
             showLogs={logsVisible}
             logs={logsVisible ? hmi.filterLogs('MOTION') : []}
             onClearLogs={() => hmi.clearLogs('motion')}
           />
         )}
 
-        {debugMode && currentTab === 'plc' && (
+        {showParametros && currentTab === 'plc' && (
           <PlcTab
             plcState={view.plcState}
             onToggleValve={hmi.toggleValve}
@@ -305,13 +339,15 @@ function AppMain() {
             onBlowerSecChange={hmi.setBlowerSec}
             onResetPlc={hmi.plcReset}
             onAllOff={hmi.plcAllOff}
+            onReconnectNetwork={handleReconnectNetwork}
+            reconnecting={reconnecting}
             showLogs={logsVisible}
             logs={logsVisible ? hmi.filterLogs('PLC') : []}
             onClearLogs={() => hmi.clearLogs('plc')}
           />
         )}
 
-        {debugMode && currentTab === 'prefeeder' && (
+        {showParametros && currentTab === 'prefeeder' && (
           <PreFeederTab
             preFeederState={view.preFeederState}
             cycleMaterialist={view.machineState.cycleMaterialist}
@@ -323,22 +359,27 @@ function AppMain() {
             onBusy={hmi.toggleCycleBusy}
             onTriggerR={hmi.pfTriggerR}
             onTriggerL={hmi.pfTriggerL}
+            onReconnectNetwork={handleReconnectNetwork}
+            reconnecting={reconnecting}
             showLogs={logsVisible}
             logs={logsVisible ? hmi.filterLogs('PREFEEDER') : []}
             onClearLogs={() => hmi.clearLogs('prefeeder')}
           />
         )}
 
-        {debugMode && currentTab === 'andon' && (
+        {showParametros && currentTab === 'andon' && (
           <AndonTab
             andonState={view.andonState}
             machineByte={view.andonState.machineByte ?? view.machineState.machineByte}
             machineName={view.machineState.machineName}
             buzzerMute={view.andonBuzzerMute}
+            onBuzzerMute={hmi.setAndonBuzzerMute}
             onSetOut={hmi.andonSetOut}
             onAllOff={hmi.andonAllOff}
             onResumeAuto={hmi.andonResumeAuto}
             onMachineState={hmi.andonMachineState}
+            onReconnectNetwork={handleReconnectNetwork}
+            reconnecting={reconnecting}
             showLogs={logsVisible}
             logs={logsVisible ? hmi.filterLogs('ANDON') : []}
             onClearLogs={() => hmi.clearLogs('andon')}
@@ -349,17 +390,16 @@ function AppMain() {
       <SettingsDrawer
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
-        motionConn={view.motionState.connection}
-        plcConn={view.plcState.connection}
-        preFeederConn={view.preFeederState.connection}
-        andonConn={view.andonConn}
-        andonBuzzerMute={view.andonBuzzerMute}
-        onAndonBuzzerMute={hmi.setAndonBuzzerMute}
-        safetyExhaust={view.machineState.safetyExhaust}
         connected={view.connected}
-        onReconnectNetwork={handleReconnectNetwork}
-        reconnecting={reconnecting}
-        onDebugModeDisable={handleDebugModeDisable}
+      />
+
+      <ParametrosPasswordModal
+        isOpen={showParamPassword}
+        onClose={() => setShowParamPassword(false)}
+        onUnlocked={() => {
+          setShowParamPassword(false);
+          enterParametrosView('cycle');
+        }}
       />
     </div>
   );

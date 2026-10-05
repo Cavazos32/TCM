@@ -1,12 +1,18 @@
 import React from 'react';
-import { Menu, Cpu } from 'lucide-react';
+import { Menu, Cpu, Settings2 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 
 interface HeaderProps {
   onOpenSettings: () => void;
+  onOpenParametros: () => void;
+  parametrosActive?: boolean;
 }
 
-export const Header: React.FC<HeaderProps> = ({ onOpenSettings }) => {
+export const Header: React.FC<HeaderProps> = ({
+  onOpenSettings,
+  onOpenParametros,
+  parametrosActive = false,
+}) => {
   const { t } = useApp();
 
   return (
@@ -42,6 +48,21 @@ export const Header: React.FC<HeaderProps> = ({ onOpenSettings }) => {
             </p>
           </div>
         </div>
+
+        <button
+          id="btn-parametros"
+          type="button"
+          onClick={onOpenParametros}
+          title={t('btn_parametros')}
+          className={`flex items-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-bold transition shadow-2xs active:scale-95 cursor-pointer ${
+            parametrosActive
+              ? 'border-sky-600 bg-sky-700 text-white ring-2 ring-sky-400/40'
+              : 'border-sky-300 dark:border-sky-700 bg-sky-50 dark:bg-sky-950/40 text-sky-900 dark:text-sky-100 hover:bg-sky-100 dark:hover:bg-sky-900/50'
+          }`}
+        >
+          <Settings2 className="h-4 w-4" />
+          <span>{t('btn_parametros')}</span>
+        </button>
       </div>
     </header>
   );

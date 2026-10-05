@@ -12,10 +12,14 @@ import {
 } from 'lucide-react';
 import { MotionState, LogEntry } from '../types';
 import { LogTerminal } from './LogTerminal';
+import { ModuleConnectionPanel } from './ModuleConnectionPanel';
 import { useApp } from '../context/AppContext';
 
 interface MotionTabProps {
   motionState: MotionState;
+  safetyExhaust?: boolean;
+  onReconnectNetwork?: () => void;
+  reconnecting?: boolean;
   onUpdateTargetPos: (pos: number) => void;
   onUpdateRpm: (rpm: number) => void;
   onUpdateOffsetL?: (offset: number) => void;
@@ -57,11 +61,15 @@ export const MotionTab: React.FC<MotionTabProps> = ({
   onTestCanR,
   onSaveFeedOffset,
   onReloadFeedOffset,
+  safetyExhaust = false,
+  onReconnectNetwork,
+  reconnecting = false,
   showLogs = true,
   logs,
   onClearLogs,
 }) => {
   const { t } = useApp();
+  const safetyOk = !safetyExhaust;
   // Posición ASDA: internamente negativa; en UI se muestra y edita como magnitud positiva.
   const toDisplayMm = (internalMm: number) => -internalMm;
   const toInternalMm = (displayMm: number) => -displayMm;
@@ -179,6 +187,52 @@ export const MotionTab: React.FC<MotionTabProps> = ({
 
   return (
     <div className="space-y-4">
+      <div className="grid gap-4 md:grid-cols-2">
+        <ModuleConnectionPanel
+          label={t('motion_node')}
+          conn={motionState.connection}
+          onReconnectAll={onReconnectNetwork}
+          reconnecting={reconnecting}
+          showReconnect={!!onReconnectNetwork}
+        />
+        <div
+          id="dbg-safety-exhaust"
+          title={t('safety_exhaust_hint')}
+          className={`rounded-xl border p-3.5 shadow-2xs select-none ${
+            safetyOk
+              ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-950/30 ring-2 ring-emerald-500/20'
+              : 'border-red-500 bg-red-50 dark:bg-red-950/40 ring-2 ring-red-500/25 animate-pulse'
+          }`}
+        >
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <span
+                className={`h-2.5 w-2.5 rounded-full ${
+                  safetyOk ? 'bg-emerald-500' : 'bg-red-500'
+                }`}
+              />
+              <div>
+                <div className="text-xs font-bold">{t('safety_exhaust')}</div>
+                <div className="text-[10px] text-slate-500 dark:text-slate-400">
+                  {safetyOk
+                    ? t('safety_exhaust_on_desc')
+                    : t('safety_exhaust_off_desc')}
+                </div>
+              </div>
+            </div>
+            <span
+              className={`text-[10px] font-bold ${
+                safetyOk
+                  ? 'text-emerald-700 dark:text-emerald-300'
+                  : 'text-red-700 dark:text-red-300'
+              }`}
+            >
+              {safetyOk ? t('safety_exhaust_on') : t('safety_exhaust_off')}
+            </span>
+          </div>
+        </div>
+      </div>
+
       {/* Status / link */}
       <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-2.5 text-slate-800 dark:text-slate-200 shadow-2xs flex flex-wrap items-center justify-between gap-3 transition-colors">
         <div className="flex items-center gap-3">
