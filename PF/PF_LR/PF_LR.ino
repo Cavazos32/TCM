@@ -3433,7 +3433,10 @@ void loop()
     else if (bufferFullStopNow())
     {
       servoTimingOnForceStopFromBufferFull();
-      servoServiceBufferFullCut();
+      // Mismo camino de parada del servo usado por Detener HTML:
+      // marcar pin dirty para que servoStop() fuerce remux + neutro.
+      servoMarkPinDirty();
+      servoStop();
       forceStopDereelerAndServo();
       if (autoEnabled && systemFault == FAULT_NONE
           && (autoState == AUTO_SERVO_LEAD || autoState == AUTO_CW || autoState == AUTO_CCW))
