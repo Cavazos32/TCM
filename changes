@@ -4,4 +4,5 @@ Revisar:
 3. Despues de un error, si un se detuvo el feeder del prefeeder a mitad de su proceso, al dar resumir compensara los restante del ultimo proceso.
 4. Despues de un error, Reset basta (Detener no hace falta) — Start Prefeeder - Start Machine / resumir.
 5. PF L/R: Buffer Full corta y reanuda RC Servo + DeReeler solo (sin Detener ni Reset). Flashear PF y Motion.
-Comentario de prueba del equipo (Stark): acceso confirmado.
+6. Purga (ruta nueva): dos confirmaciones y banner «NO INTRODUCIR LAS MANOS» hasta que el ASDA regrese a 0; al cerrar el gripper corta, espera y mueve el ASDA al depósito.
+7. E050 + Materialista con pieza en curso: aviso «El ASDA se va a mover» mientras termina la pieza, y «Verifica la pieza» con Continuar antes del HOME y Materialista.
