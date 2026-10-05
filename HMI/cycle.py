@@ -1222,7 +1222,7 @@ class CycleRunner:
         """Purga/refill: ASDA park → holder → Alimentar o Continuar purga → secuencia automática.
 
         Tras park: Alimentar hasta láser ON (timeout 10 s, lados independientes)
-        o Continuar purga (sin feed). Tras feed: Continuar purga. Sin corte.
+        o Continuar purga (sin feed). Tras feed: Continuar purga. Con corte antes del depósito.
         """
         with self._lock:
             if self._purge_busy_locked():
@@ -4024,8 +4024,34 @@ class CycleRunner:
                 self._refill_awaiting_confirm = False
             self._host.cycle_notify()
 
+    def _run_purge_cut(self, cfg: CycleConfig) -> bool:
+        """Corte en purga (misma secuencia que ciclo normal, sin holder ni drenaje PLC).
+
+        False = abort. Res de emergencia si abort tras Set.
+        """
+        cut_sides = CycleConfig.normalize_feed_sides(cfg.feed_sides)
+        self._host.cycle_log(f"Cortador ON (Set) lados={cut_sides}")
+        self._host.cmd_plc_cutters(True, sides=cut_sides, force=True)
+        self._mark_cutter_set()
+        pulse_ms = max(150, int(cfg.cutter_pulse_ms or 150))
+        if self._pausable_delay(pulse_ms):
+            self._host.cmd_plc_cutters(False, sides=cut_sides, force=True)
+            return False
+        self._host.cmd_plc_cutters(False, sides=cut_sides, force=True)
+        self._mark_cutter_res()
+        self._host.cycle_log(f"Cortador OFF (Res) lados={cut_sides}")
+        post_ms = int(cfg.cutter_post_ms or 0)
+        if self._pausable_delay(post_ms):
+            return False
+        if self._ensure_cutter_settled_before_travel(cut_sides):
+            return False
+        return True
+
     def _run_purge_auto_sequence(self, rpm: float, cfg: CycleConfig) -> bool:
-        """Secuencia automática tras la 2.ª confirmación CONTINUAR PURGA."""
+        """Secuencia automática tras la 2.ª confirmación CONTINUAR PURGA.
+
+        Tras cerrar pinzas: corte (pulso + post + asiento) y luego ASDA al depósito.
+        """
         saved_lineal_sec = self._last_lineal_sec
         saved_lineal_mm = self._last_lineal_mm
         try:
@@ -4046,6 +4072,9 @@ class CycleRunner:
             self._host.cycle_log("Purga: pinzas CIERRAN")
             self._host.cmd_plc_gripper(True)
             if self._pausable_delay(int(cfg.grippers_on_ms or 0)):
+                return False
+
+            if not self._run_purge_cut(cfg):
                 return False
 
             dep_mm = self._deposit_extra_mm(1)
