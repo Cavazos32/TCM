@@ -2,6 +2,6 @@ Revisar:
 1. Revisar el tiempo de giro en sentido contrario, probablemente ocupe reducirse.
 2. Revisar el timeout de inversion de giro, evidentemente debe ser mayor al tiempo de giro.
 3. Despues de un error, si un se detuvo el feeder del prefeeder a mitad de su proceso, al dar resumir compensara los restante del ultimo proceso.
-4. Despues de un error, dar Reset - Start Prefeeder - Start Machine / resumir.
+4. Despues de un error, Reset basta (Detener no hace falta) — Start Prefeeder - Start Machine / resumir.
 5. PF L/R: Buffer Full corta y reanuda RC Servo + DeReeler solo (sin Detener ni Reset). Flashear PF y Motion.
 Comentario de prueba del equipo (Stark): acceso confirmado.
