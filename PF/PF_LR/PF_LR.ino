@@ -367,7 +367,7 @@ static void clearFillUntilReady(const char* reason);
 static void serviceFillUntilReady();
 static bool bufferFullAllowsMotion();
 static void forceStopDereelerAndServo();
-static void servoServiceBufferFullCut();
+static void bufferFullApplyHoldStop();
 static void dereelerDirCw();
 static void dereelerDirReverse();
 static void dereelerDirApply(bool reverse);
@@ -415,7 +415,7 @@ static void serviceServoPwm()
   }
   if (bufferFullStopNow())
   {
-    servoServiceBufferFullCut();
+    servoAssertNeutral(false);
     return;
   }
   if (servoShouldRunAuto())
@@ -508,19 +508,6 @@ static bool bufferFullStopNow()
   return bufferFullStable || bufferFullRaw();
 }
 
-static void servoServiceBufferFullCut()
-{
-  static bool latched = false;
-  if (!bufferFullStopNow())
-  {
-    latched = false;
-    return;
-  }
-  const bool edge = !latched;
-  latched = true;
-  servoHardStopNeutral(edge);
-}
-
 static bool bufferFullAllowsMotion()
 {
   return !bufferFullStable
@@ -589,6 +576,26 @@ static void forceStopDereelerAndServo()
   commandedRpm = 0.0f;
   tensionReverseUntilMs = 0;
   dereelerDirCw();
+}
+
+// Buffer Full: misma parada física que Detener (forceStopDereelerAndServo vía stopAllMotors),
+// sin autoDisable — autoEnabled permanece TRUE y autoState pasa a HOME_HOLD.
+static void bufferFullApplyHoldStop()
+{
+  if (!bufferFullStopNow())
+    return;
+
+  servoTimingOnForceStopFromBufferFull();
+  forceStopDereelerAndServo();
+
+  if (!idleMode && autoEnabled && systemFault == FAULT_NONE
+      && (autoState == AUTO_SERVO_LEAD || autoState == AUTO_CW || autoState == AUTO_CCW
+          || autoState == AUTO_HOME_HOLD))
+  {
+    if (autoState != AUTO_HOME_HOLD)
+      DBG_PRINTLN("AUTO: Buffer Full -> HOME_HOLD (force stop)");
+    autoState = AUTO_HOME_HOLD;
+  }
 }
 
 static bool bufferMaxActive()
@@ -1000,8 +1007,8 @@ static void beginAutoCwWithServoLead()
   // Protección local para el arranque automático que escribe PWM directamente.
   if (!idleMode && bufferFullStopNow())
   {
+    forceStopDereelerAndServo();
     autoState = AUTO_HOME_HOLD;
-    servoHardStopNeutral(true);
     return;
   }
 
@@ -1030,7 +1037,7 @@ static void resumeAutoFromSensors()
     enterSystemFault(FAULT_ENDSTOP);
     return;
   }
-  if (bufferFullActive())
+  if (bufferFullStopNow())
   {
     forceStopDereelerAndServo();
     autoState = AUTO_HOME_HOLD;
@@ -1547,15 +1554,7 @@ static void serviceAuto()
 
   if (bufferFullStopNow())
   {
-    servoTimingOnForceStopFromBufferFull();
-    forceStopDereelerAndServo();
-    if (autoState == AUTO_SERVO_LEAD || autoState == AUTO_CW || autoState == AUTO_CCW
-        || autoState == AUTO_HOME_HOLD)
-    {
-      if (autoState != AUTO_HOME_HOLD)
-        DBG_PRINTLN("AUTO: Buffer Full -> HOME_HOLD (force stop)");
-      autoState = AUTO_HOME_HOLD;
-    }
+    bufferFullApplyHoldStop();
     syncServoToAutoState();
     return;
   }
@@ -3430,15 +3429,6 @@ void loop()
       if (systemFault != FAULT_ENDSTOP)
         enterSystemFault(FAULT_ENDSTOP, false);
     }
-    else if (bufferFullStopNow())
-    {
-      servoTimingOnForceStopFromBufferFull();
-      servoServiceBufferFullCut();
-      forceStopDereelerAndServo();
-      if (autoEnabled && systemFault == FAULT_NONE
-          && (autoState == AUTO_SERVO_LEAD || autoState == AUTO_CW || autoState == AUTO_CCW))
-        autoState = AUTO_HOME_HOLD;
-    }
   }
 
   peerLogWifi();
@@ -3450,7 +3440,6 @@ void loop()
   }
   peerService();
   serviceHttp(8);
-  serviceServoPwm();
 
   updateBufferMaxFaultMonitor();
   updateCylinderFaultMonitor();
@@ -3459,5 +3448,6 @@ void loop()
   updateBufferRefillFaultMonitor();
   serviceRefillPulses();
   serviceAuto();
+  serviceServoPwm();
   serviceHttp(4);
 }
