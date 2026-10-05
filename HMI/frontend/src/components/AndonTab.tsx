@@ -2,12 +2,15 @@ import React from 'react';
 import {
   Lightbulb,
   Volume2,
+  VolumeX,
   PowerOff,
   RotateCcw,
   Circle,
+  Check,
 } from 'lucide-react';
 import { AndonState, LogEntry } from '../types';
 import { LogTerminal } from './LogTerminal';
+import { ModuleConnectionPanel } from './ModuleConnectionPanel';
 import { useApp } from '../context/AppContext';
 
 interface AndonTabProps {
@@ -15,6 +18,9 @@ interface AndonTabProps {
   machineByte?: number;
   machineName?: string;
   buzzerMute?: boolean;
+  onBuzzerMute?: (mute: boolean) => void;
+  onReconnectNetwork?: () => void;
+  reconnecting?: boolean;
   onSetOut: (out: 'green' | 'yellow' | 'red' | 'buzzer', on: boolean) => void;
   onAllOff: () => void;
   onResumeAuto: () => void;
@@ -82,6 +88,9 @@ export const AndonTab: React.FC<AndonTabProps> = ({
   machineByte,
   machineName,
   buzzerMute = false,
+  onBuzzerMute,
+  onReconnectNetwork,
+  reconnecting = false,
   onSetOut,
   onAllOff,
   onResumeAuto,
@@ -99,6 +108,41 @@ export const AndonTab: React.FC<AndonTabProps> = ({
 
   return (
     <div className="space-y-4">
+      <div className="grid gap-4 md:grid-cols-2">
+        <ModuleConnectionPanel
+          label={t('andon_node')}
+          conn={s.connection}
+          onReconnectAll={onReconnectNetwork}
+          reconnecting={reconnecting}
+        />
+        {onBuzzerMute && (
+          <button
+            type="button"
+            onClick={() => onBuzzerMute(!buzzerMute)}
+            className={`flex w-full items-center justify-between rounded-xl border p-3.5 text-left transition shadow-2xs ${
+              buzzerMute
+                ? 'border-amber-500 bg-amber-50 dark:bg-amber-950/30 ring-2 ring-amber-500/20'
+                : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/50'
+            }`}
+          >
+            <div className="flex items-center gap-2.5">
+              {buzzerMute ? (
+                <VolumeX className="h-4 w-4 text-amber-600" />
+              ) : (
+                <Volume2 className="h-4 w-4 text-slate-500" />
+              )}
+              <div>
+                <div className="text-xs font-bold">{t('andon_buzzer_mute_title')}</div>
+                <div className="text-[10px] text-slate-500 dark:text-slate-400">
+                  {buzzerMute ? t('andon_buzzer_muted') : t('andon_buzzer_on')}
+                </div>
+              </div>
+            </div>
+            {buzzerMute && <Check className="h-4 w-4 text-amber-600" />}
+          </button>
+        )}
+      </div>
+
       <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-2.5 shadow-2xs flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <span

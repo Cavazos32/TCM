@@ -8,10 +8,13 @@ import {
 } from 'lucide-react';
 import { PreFeederState, LogEntry, PreFeederSensor } from '../types';
 import { LogTerminal } from './LogTerminal';
+import { ModuleConnectionPanel } from './ModuleConnectionPanel';
 import { useApp } from '../context/AppContext';
 
 interface PreFeederTabProps {
   preFeederState: PreFeederState;
+  onReconnectNetwork?: () => void;
+  reconnecting?: boolean;
   cycleMaterialist?: boolean;
   cycleBusy?: boolean;
   onStart: () => void;
@@ -34,6 +37,8 @@ export const PreFeederTab: React.FC<PreFeederTabProps> = ({
   onStop,
   onReset,
   onBusy,
+  onReconnectNetwork,
+  reconnecting = false,
   showLogs = true,
   logs,
   onClearLogs,
@@ -117,6 +122,13 @@ export const PreFeederTab: React.FC<PreFeederTabProps> = ({
 
   return (
     <div className="space-y-4">
+      <ModuleConnectionPanel
+        label={t('prefeeder_node')}
+        conn={preFeederState.connection}
+        onReconnectAll={onReconnectNetwork}
+        reconnecting={reconnecting}
+      />
+
       {/* Unified Compact Status & Link Bar */}
       <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-2.5 text-slate-800 dark:text-slate-200 shadow-2xs flex flex-wrap items-center justify-between gap-3 transition-colors">
         <div className="flex items-center gap-3">

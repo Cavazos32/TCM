@@ -8,10 +8,13 @@ import {
 } from 'lucide-react';
 import { PlcState, LogEntry } from '../types';
 import { LogTerminal } from './LogTerminal';
+import { ModuleConnectionPanel } from './ModuleConnectionPanel';
 import { useApp } from '../context/AppContext';
 
 interface PlcTabProps {
   plcState: PlcState;
+  onReconnectNetwork?: () => void;
+  reconnecting?: boolean;
   onToggleValve: (valveId: string) => void;
   valveBusy?: Record<string, boolean>;
   onBlowerSecChange: (sec: number) => void;
@@ -29,6 +32,8 @@ export const PlcTab: React.FC<PlcTabProps> = ({
   onBlowerSecChange,
   onResetPlc,
   onAllOff,
+  onReconnectNetwork,
+  reconnecting = false,
   showLogs = true,
   logs,
   onClearLogs,
@@ -43,6 +48,13 @@ export const PlcTab: React.FC<PlcTabProps> = ({
 
   return (
     <div className="space-y-4">
+      <ModuleConnectionPanel
+        label={t('plc_node')}
+        conn={plcState.connection}
+        onReconnectAll={onReconnectNetwork}
+        reconnecting={reconnecting}
+      />
+
       {/* Unified Compact Status & Link Bar */}
       <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-2.5 text-slate-800 dark:text-slate-200 shadow-2xs flex flex-wrap items-center justify-between gap-3 transition-colors">
         <div className="flex items-center gap-3">
