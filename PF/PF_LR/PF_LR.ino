@@ -415,7 +415,10 @@ static void serviceServoPwm()
   }
   if (bufferFullStopNow())
   {
-    servoAssertNeutral(false);
+    // Mismo camino de parada del servo usado por Detener HTML:
+    // marcar pin dirty para que servoStop() fuerce remux + neutro.
+    servoMarkPinDirty();
+    servoStop();
     return;
   }
   if (servoShouldRunAuto())
