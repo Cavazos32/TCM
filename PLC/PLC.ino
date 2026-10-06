@@ -1,5 +1,5 @@
 // PLCA — esclavo I/O TubeCut: sensores de seguridad + válvulas.
-// WiFi STA 10.10.32.50 | TCP servidor :8766 | JSON + newline (PreFeeder / TCM).
+// WiFi STA 10.10.32.51 | TCP servidor :8766 | JSON + newline (PreFeeder / TCM).
 //
 // RESUMEN:
 //   · Lee 6 entradas (pinzas, sujetador, cortador, manguera A/B, bandeja) con debounce.
@@ -1074,7 +1074,7 @@ void setup()
 {
   Serial.begin(115200);
   Serial.println();
-  Serial.println("PLCA esclavo — sensores + válvulas — 10.10.32.50:8766");
+  Serial.println("PLCA esclavo — sensores + válvulas — 10.10.32.51:8766");
 
   pinMode(PIN_CUTTER, INPUT_PULLUP);
   pinMode(PIN_GRIPPER, INPUT_PULLUP);

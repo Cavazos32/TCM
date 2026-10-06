@@ -5,7 +5,7 @@ Interfaz maestro en Python (Flask) + React/Vite para los módulos de máquina v�
 | Módulo | IP:puerto por defecto |
 |--------|------------------------|
 | Motion | `10.10.32.20:8767` |
-| PLC | `10.10.32.50:8766` |
+| PLC | `10.10.32.51:8766` |
 | PreFeeder | `10.10.32.100:8768` |
 
 ## Estructura

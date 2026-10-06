@@ -5,12 +5,12 @@
 
 // PLCA — MCU I/O TubeCut (sensores + válvulas).
 // Esclavo TCP :8766 (mismo framing JSON+newline que PreFeeder / sensor_tubecut).
-// IP fija .50 — TCM u otro maestro se conectan como clientes.
+// IP fija .51 — TCM u otro maestro se conectan como clientes.
 // Pines: Doc/gpio_list_updated.md (fuente de verdad).
 
 static const char* WIFI_SSID = "R&D_TCM";
 static const char* WIFI_PASS = "TCM2026!r&d";
-static const IPAddress STA_IP(10, 10, 32, 50);
+static const IPAddress STA_IP(10, 10, 32, 51);
 static const IPAddress STA_GW(10, 10, 32, 72);
 static const IPAddress STA_MASK(255, 255, 255, 0);
 
