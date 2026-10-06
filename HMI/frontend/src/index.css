@@ -13,13 +13,13 @@ body,
 }
 
 html {
-  /* Escala base: tipografía y espaciado rem más legibles en pantalla de planta */
-  font-size: 112.5%; /* 18px si el navegador usa 16px */
+  /* Escala base: legible en pantalla de planta sin forzar scroll vertical */
+  font-size: 100%;
 }
 
 body {
   background-color: #f8fafc; /* slate-50 */
-  overflow-x: hidden;
+  overflow: hidden;
 }
 
 html.dark body {
