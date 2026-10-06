@@ -238,9 +238,9 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
         : t('machine_standby');
 
   const btnBase =
-    'flex items-center justify-center gap-2 rounded-lg border font-bold transition shadow-2xs active:scale-[0.98] w-full';
-  const btnPrimary = 'px-4 py-4 text-base';
-  const btnSecondary = 'px-3 py-3 text-sm';
+    'flex items-center justify-center gap-1.5 rounded-lg border font-bold transition shadow-2xs active:scale-[0.98] w-full min-h-0 flex-1';
+  const btnPrimary = 'px-2 py-2 text-sm';
+  const btnSecondary = 'px-2 py-1.5 text-xs';
   const btnIdle =
     'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700';
   const btnOn =
@@ -474,15 +474,17 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
     showManualRefill;
 
   const sectionTitle =
-    'text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 mb-3';
+    'text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 mb-1.5 shrink-0';
+  const panelCls =
+    'rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-2xs flex flex-col min-h-0';
 
   return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-start">
-        {/* PROCESO — columna izquierda */}
-        <section className="xl:col-span-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 shadow-2xs">
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="grid min-h-0 flex-1 grid-cols-12 gap-2 items-stretch">
+        {/* PROCESO — columna izquierda (altura completa) */}
+        <section className={`col-span-12 xl:col-span-2 p-2.5 ${panelCls}`}>
           <h2 className={sectionTitle}>{t('section_proceso')}</h2>
-          <div className="flex flex-col gap-2.5">
+          <div className="flex min-h-0 flex-1 flex-col gap-1.5">
             <button
               id="btn-start-maquina"
               onClick={onStart}
@@ -587,18 +589,19 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
           </div>
         </section>
 
-        {/* LOTE / PRODUCCIÓN — columna central */}
-        <section className="xl:col-span-7 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 shadow-2xs">
-          <div className="flex items-center gap-2.5 mb-4">
-            <Sliders className="h-5 w-5 text-slate-600 dark:text-slate-400" />
-            <h2 className="text-sm font-bold uppercase tracking-wider text-slate-800 dark:text-slate-200">
+        {/* Centro: LOTE arriba + INDICACIONES abajo */}
+        <div className="col-span-12 xl:col-span-7 flex min-h-0 flex-col gap-2">
+        <section className={`flex min-h-0 flex-1 flex-col p-2.5 sm:p-3 ${panelCls}`}>
+          <div className="mb-2 flex shrink-0 items-center gap-2">
+            <Sliders className="h-4 w-4 text-slate-600 dark:text-slate-400" />
+            <h2 className="text-xs font-bold uppercase tracking-wider text-slate-800 dark:text-slate-200">
               {t('section_lote')}
             </h2>
           </div>
 
-          {/* Banner de estado dentro de Lote */}
+          {/* Banner de estado */}
           <div
-            className={`rounded-lg border px-4 py-3 mb-5 flex flex-wrap items-center justify-between gap-3 transition-colors ${
+            className={`mb-2.5 shrink-0 rounded-lg border px-3 py-2 flex flex-col gap-0.5 transition-colors ${
               hasFault || interlockError
                 ? 'border-red-300 dark:border-red-800 bg-red-50/80 dark:bg-red-950/40'
                 : machineState.isRunning
@@ -608,9 +611,9 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     : 'border-emerald-200 dark:border-emerald-900/60 bg-emerald-50/60 dark:bg-emerald-950/30'
             }`}
           >
-            <div className="flex items-center gap-3 min-w-0">
+            <div className="flex min-w-0 items-center gap-2">
               <div
-                className={`h-3.5 w-3.5 shrink-0 rounded-full ${
+                className={`h-2.5 w-2.5 shrink-0 rounded-full ${
                   hasFault || interlockError
                     ? 'bg-red-500'
                     : machineState.isRunning
@@ -621,7 +624,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                 }`}
               />
               <span
-                className={`text-base font-bold tracking-tight uppercase min-w-0 truncate ${
+                className={`text-sm font-bold tracking-tight uppercase min-w-0 truncate ${
                   hasFault || interlockError
                     ? 'text-red-700 dark:text-red-300'
                     : machineState.isRunning
@@ -643,7 +646,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                         : t('state_ready')}
               </span>
               {hasFault && faultCount >= 1 ? (
-                <span className="rounded border border-red-300 dark:border-red-800 bg-red-100 dark:bg-red-950/60 px-2 py-0.5 font-mono text-xs font-semibold text-red-700 dark:text-red-300 shrink-0">
+                <span className="shrink-0 rounded border border-red-300 dark:border-red-800 bg-red-100 dark:bg-red-950/60 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-red-700 dark:text-red-300">
                   {t(faultCount === 1 ? 'status_error_qty' : 'status_errors_qty', {
                     count: faultCount,
                   })}
@@ -651,15 +654,15 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               ) : null}
             </div>
             {statusSubtitle && (
-              <span className="text-sm text-slate-600 dark:text-slate-400 font-medium">
+              <span className="pl-4 text-xs text-slate-600 dark:text-slate-400 font-medium">
                 {statusSubtitle}
               </span>
             )}
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-5">
-            <div className="space-y-2">
-              <label htmlFor="select-modelo" className="text-sm font-semibold text-slate-700 dark:text-slate-300 block">
+          <div className="mb-2 grid shrink-0 grid-cols-3 gap-2">
+            <div className="min-w-0 space-y-0.5">
+              <label htmlFor="select-modelo" className="block truncate text-[11px] font-semibold text-slate-700 dark:text-slate-300">
                 {t('model')}
               </label>
               <select
@@ -667,7 +670,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                 value={selectedModelIndex}
                 onChange={(e) => onModelSelect(Number(e.target.value))}
                 disabled={machineState.isRunning}
-                className="w-full appearance-none rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-3.5 py-2.5 text-sm font-medium text-slate-900 dark:text-slate-100 shadow-2xs focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-400 disabled:opacity-50"
+                className="w-full appearance-none truncate rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-2 py-1.5 text-xs font-medium text-slate-900 dark:text-slate-100 shadow-2xs focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-400 disabled:opacity-50"
               >
                 {models.map((m, i) => (
                   <option key={m.name} value={i}>
@@ -677,8 +680,8 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
               </select>
             </div>
 
-            <div className="space-y-2">
-              <label htmlFor="input-general-offset" className="text-sm font-semibold text-slate-700 dark:text-slate-300 block">
+            <div className="min-w-0 space-y-0.5">
+              <label htmlFor="input-general-offset" className="block truncate text-[11px] font-semibold text-slate-700 dark:text-slate-300">
                 {t('cfg_cut_offset')}
               </label>
               <div className="relative flex items-center gap-1">
@@ -697,14 +700,14 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                       e.currentTarget.blur();
                     }
                   }}
-                  className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 pl-3.5 pr-12 py-2.5 text-sm font-mono font-medium text-slate-900 dark:text-slate-100 shadow-2xs focus:border-sky-500 focus:outline-none"
+                  className="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 py-1.5 pl-2 pr-9 text-xs font-mono font-medium text-slate-900 dark:text-slate-100 shadow-2xs focus:border-sky-500 focus:outline-none"
                 />
-                <span className="absolute right-3.5 text-sm font-mono text-slate-400 pointer-events-none">mm</span>
+                <span className="pointer-events-none absolute right-2 text-[10px] font-mono text-slate-400">mm</span>
               </div>
             </div>
 
-            <div className="space-y-2">
-              <label htmlFor="input-target-pieces" className="text-sm font-semibold text-slate-700 dark:text-slate-300">
+            <div className="min-w-0 space-y-0.5">
+              <label htmlFor="input-target-pieces" className="block truncate text-[11px] font-semibold text-slate-700 dark:text-slate-300">
                 {t('target_pieces')}
               </label>
               <div className="relative flex items-center">
@@ -716,12 +719,12 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                   value={machineState.targetPieces || ''}
                   onChange={(e) => onTargetPiecesChange(Math.max(1, parseInt(e.target.value, 10) || 1))}
                   disabled={machineState.isRunning}
-                  className="w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 pl-3.5 pr-12 py-2.5 text-sm font-mono font-medium text-slate-900 dark:text-slate-100 shadow-2xs focus:border-sky-500 focus:outline-none disabled:opacity-50"
+                  className="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 py-1.5 pl-2 pr-8 text-xs font-mono font-medium text-slate-900 dark:text-slate-100 shadow-2xs focus:border-sky-500 focus:outline-none disabled:opacity-50"
                 />
-                <span className="absolute right-3.5 text-sm font-mono text-slate-400 pointer-events-none">pz</span>
+                <span className="pointer-events-none absolute right-2 text-[10px] font-mono text-slate-400">pz</span>
               </div>
               {feedSides === 'LR' && (machineState.targetPieces || 0) >= 1 && (
-                <p className="text-xs leading-tight text-slate-400 dark:text-slate-500 pl-0.5">
+                <p className="truncate pl-0.5 text-[10px] leading-tight text-slate-400 dark:text-slate-500">
                   {(machineState.targetPieces || 0) % 2 === 0
                     ? t('target_pieces_mirror', {
                         n: Math.floor((machineState.targetPieces || 0) / 2),
@@ -732,17 +735,17 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
             </div>
           </div>
 
-          <div className="rounded-lg bg-slate-50 dark:bg-slate-800/60 p-4 border border-slate-200/80 dark:border-slate-800">
-            <div className="mb-2.5 flex items-center justify-between text-sm font-mono flex-wrap gap-1">
-              <span className="text-slate-700 dark:text-slate-300 flex items-center gap-2 font-sans text-sm font-semibold">
-                <Clock className="h-4 w-4 text-slate-500" />
+          <div className="min-h-0 flex-1 rounded-lg border border-slate-200/80 bg-slate-50 p-2 dark:border-slate-800 dark:bg-slate-800/60">
+            <div className="mb-1 flex items-center justify-between gap-1">
+              <span className="flex min-w-0 items-center gap-1 truncate font-sans text-[11px] font-semibold text-slate-700 dark:text-slate-300">
+                <Clock className="h-3 w-3 shrink-0 text-slate-500" />
                 {machineState.cycleActive ? t('current_cycle_progress') : t('total_production_progress')}
               </span>
-              <span className="font-bold text-emerald-600 dark:text-emerald-400 text-sm">
+              <span className="shrink-0 text-xs font-bold text-emerald-600 dark:text-emerald-400">
                 {stepProgress}%
               </span>
             </div>
-            <div className="h-3.5 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700 p-0.5 mb-2.5">
+            <div className="mb-1.5 h-2.5 w-full overflow-hidden rounded-full bg-slate-200 p-0.5 dark:bg-slate-700">
               <div
                 className={`h-full rounded-full transition-all duration-300 ${
                   machineState.isRunning
@@ -754,11 +757,11 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                 style={{ width: `${stepProgress}%` }}
               />
             </div>
-            <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-xs font-mono text-slate-600 dark:text-slate-400">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] font-mono text-slate-600 dark:text-slate-400">
               <span>
                 {t('pieces')}:{' '}
                 <strong className="text-slate-800 dark:text-slate-200">
-                  {machineState.piecesCount} / {machineState.targetPieces}
+                  {machineState.piecesCount}/{machineState.targetPieces}
                 </strong>
               </span>
               <span>
@@ -787,11 +790,266 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
           </div>
         </section>
 
-        {/* OPERACIÓN / MANUAL + ALIMENTADOR — columna derecha */}
-        <div className="xl:col-span-3 flex flex-col gap-4">
-          <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 shadow-2xs">
+        {/* INDICACIONES — franja inferior del centro */}
+        <section className={`shrink-0 p-2.5 ${panelCls}`}>
+          <div className="mb-1 flex shrink-0 items-center gap-1.5">
+            <MessageSquare className="h-3.5 w-3.5 text-slate-500 dark:text-slate-400" />
+            <h2 className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">
+              {t('process_assist_title')}
+            </h2>
+          </div>
+
+          <div
+            className={`max-h-[7.5rem] overflow-y-auto rounded-lg border p-2 ${
+              purgeHandsWarning || asdaMoveWarning
+                ? 'border-red-400 dark:border-red-700 bg-red-50 dark:bg-red-950/40'
+                : hasIndicationsContent
+                  ? 'border-sky-200 dark:border-sky-800 bg-sky-50/50 dark:bg-sky-950/20'
+                  : 'border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-800/40'
+            }`}
+          >
+            {purgeHandsWarning && (
+              <div
+                id="purge-hands-warning"
+                role="alert"
+                aria-live="assertive"
+                className="mb-1 text-center text-xs font-black uppercase tracking-wide text-red-700 dark:text-red-200 animate-pulse"
+              >
+                {t('purge_hands_warning')}
+              </div>
+            )}
+            {asdaMoveWarning && !purgeHandsWarning && (
+              <div
+                id="asda-move-warning"
+                role="alert"
+                aria-live="assertive"
+                className="mb-1 text-center text-xs font-black uppercase tracking-wide text-red-700 dark:text-red-200 animate-pulse"
+              >
+                {t('asda_move_warning')}
+              </div>
+            )}
+
+            {!hasIndicationsContent && (
+              <div className="flex items-center justify-center gap-2 py-0.5 text-center">
+                <Info className="h-4 w-4 shrink-0 text-sky-400 dark:text-sky-500" />
+                <p className="text-xs font-medium text-slate-600 dark:text-slate-300">
+                  {t('process_assist_idle')}
+                </p>
+              </div>
+            )}
+
+            {hasFault && modKind === 'other' && machineState.fault && (
+              <p className="mb-1 text-[11px] text-red-700 dark:text-red-300">
+                {machineState.fault} — {t('module_recovery_use_machine')}
+              </p>
+            )}
+
+            {showPfCoach && (
+              <p className="mb-1 text-[11px] text-amber-800 dark:text-amber-200">
+                {resumeEnabled
+                  ? t('pf_recover_hint_jog_resume')
+                  : t('pf_recover_hint_jog')}
+              </p>
+            )}
+
+            {showRecoveryActions && (
+              <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-300 bg-amber-50 px-2 py-1.5 dark:border-amber-700 dark:bg-amber-950/50">
+                <div className="min-w-0 flex-1">
+                  <p className="text-[11px] font-bold text-amber-900 dark:text-amber-100">
+                    {recoveryTitle}
+                  </p>
+                  <p className="mt-0.5 text-[10px] text-amber-800/80 dark:text-amber-200/80">
+                    {recoveryHint}
+                  </p>
+                </div>
+                {recoveryStage === 'await_feed' && onRefillRetry && (
+                  <button
+                    id="btn-recovery-refill-retry"
+                    type="button"
+                    onClick={onRefillRetry}
+                    disabled={!machineState.refillAwaitingConfirm}
+                    className="flex items-center gap-1 rounded-md bg-amber-500 px-2 py-1 text-[10px] font-bold text-white hover:bg-amber-600 disabled:opacity-40"
+                  >
+                    <RotateCcw className="h-3 w-3" />
+                    {t('btn_refill_confirm_retry')}
+                  </button>
+                )}
+                {(recoveryStage === 'after_feed' || recoveryStage === 'await_feed') &&
+                  onRefillConfirm && (
+                  <button
+                    id="btn-recovery-next-cut"
+                    type="button"
+                    onClick={() => onRefillConfirm(true)}
+                    disabled={!machineState.refillAwaitingConfirm}
+                    className="flex items-center gap-1 rounded-md bg-emerald-600 px-2 py-1 text-[10px] font-bold text-white hover:bg-emerald-700 disabled:opacity-40"
+                  >
+                    <Check className="h-3 w-3" />
+                    {t('btn_refill_confirm_next_cut')}
+                  </button>
+                )}
+                {recoveryStage === 'e050_materialist' &&
+                  machineState.recoveryAwaitingConfirm &&
+                  onRecoveryReview && (
+                  <>
+                    <button
+                      id="btn-recovery-e050-no"
+                      type="button"
+                      onClick={() => onRecoveryReview(false)}
+                      disabled={!machineState.recoveryAwaitingConfirm}
+                      className="flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-[10px] font-bold text-slate-700 disabled:opacity-40 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200"
+                    >
+                      <X className="h-3 w-3" />
+                      {t('btn_e050_no_materialist')}
+                    </button>
+                    <button
+                      id="btn-recovery-e050-yes"
+                      type="button"
+                      onClick={() => onRecoveryReview(true)}
+                      disabled={!machineState.recoveryAwaitingConfirm}
+                      className="flex items-center gap-1 rounded-md bg-emerald-600 px-2 py-1 text-[10px] font-bold text-white hover:bg-emerald-700 disabled:opacity-40"
+                    >
+                      <Check className="h-3 w-3" />
+                      {t('btn_e050_yes_materialist')}
+                    </button>
+                  </>
+                )}
+                {recoveryStage === 'abort_decide' && onRecoveryReview && (
+                  <>
+                    <button
+                      id="btn-recovery-abort-cycle"
+                      type="button"
+                      onClick={() => onRecoveryReview(false)}
+                      disabled={!machineState.recoveryAwaitingConfirm}
+                      className="flex items-center gap-1 rounded-md bg-red-600 px-2 py-1 text-[10px] font-bold text-white hover:bg-red-700 disabled:opacity-40"
+                    >
+                      <X className="h-3 w-3" />
+                      {t('btn_recovery_abort')}
+                    </button>
+                    <button
+                      id="btn-recovery-abort-continue"
+                      type="button"
+                      onClick={() => onRecoveryReview(true)}
+                      disabled={!machineState.recoveryAwaitingConfirm}
+                      className="flex items-center gap-1 rounded-md bg-emerald-600 px-2 py-1 text-[10px] font-bold text-white hover:bg-emerald-700 disabled:opacity-40"
+                    >
+                      <Check className="h-3 w-3" />
+                      {t('btn_recovery_abort_continue')}
+                    </button>
+                  </>
+                )}
+                {(recoveryStage === 'purge_decide' ||
+                  recoveryStage === 'pre_purge_decide') &&
+                  onRecoveryReview && (
+                  <>
+                    <button
+                      id="btn-recovery-purge-yes"
+                      type="button"
+                      onClick={() => onRecoveryReview(true)}
+                      disabled={!machineState.recoveryAwaitingConfirm}
+                      className="flex items-center gap-1 rounded-md bg-emerald-600 px-2 py-1 text-[10px] font-bold text-white hover:bg-emerald-700 disabled:opacity-40"
+                    >
+                      <Check className="h-3 w-3" />
+                      {t('btn_recovery_purge_yes')}
+                    </button>
+                    <button
+                      id="btn-recovery-purge-no"
+                      type="button"
+                      onClick={() => onRecoveryReview(false)}
+                      disabled={!machineState.recoveryAwaitingConfirm}
+                      className="flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-[10px] font-bold text-slate-700 disabled:opacity-40 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200"
+                    >
+                      <X className="h-3 w-3" />
+                      {t('btn_recovery_purge_no')}
+                    </button>
+                  </>
+                )}
+                {(recoveryStage === 'review_piece' ||
+                  recoveryStage === 'verify_piece' ||
+                  recoveryStage === 'continue_cycle') &&
+                  onRecoveryReview && (
+                  <button
+                    id="btn-recovery-review-ok"
+                    type="button"
+                    onClick={() => onRecoveryReview(true)}
+                    disabled={!machineState.recoveryAwaitingConfirm}
+                    className="flex items-center gap-1 rounded-md bg-emerald-600 px-2 py-1 text-[10px] font-bold text-white hover:bg-emerald-700 disabled:opacity-40"
+                  >
+                    <Check className="h-3 w-3" />
+                    {recoveryStage === 'continue_cycle'
+                      ? t('btn_recovery_continue')
+                      : recoveryStage === 'verify_piece'
+                        ? t('btn_verify_piece_continue')
+                      : t('btn_recovery_review_ok')}
+                  </button>
+                )}
+                {trayFull && onRecoveryReview && (
+                  <button
+                    id="btn-recovery-tray-emptied"
+                    type="button"
+                    onClick={() => onRecoveryReview(true)}
+                    disabled={!machineState.recoveryAwaitingConfirm}
+                    className="flex items-center gap-1 rounded-md bg-emerald-600 px-2 py-1 text-[10px] font-bold text-white hover:bg-emerald-700 disabled:opacity-40"
+                  >
+                    <Check className="h-3 w-3" />
+                    {t('btn_tray_emptied')}
+                  </button>
+                )}
+              </div>
+            )}
+
+            {showManualRefill && (
+              <div className="flex flex-wrap items-center gap-2 rounded-md border border-sky-300 bg-sky-50 px-2 py-1.5 dark:border-sky-700 dark:bg-sky-950/50">
+                <div className="min-w-0 flex-1">
+                  <p className="text-[11px] font-bold text-sky-900 dark:text-sky-100">
+                    {machineState.refillPrompt === 'working'
+                      ? t('refill_confirm_title_working')
+                      : machineState.refillPrompt === 'await_feed'
+                        ? t('refill_confirm_title_await')
+                        : t('refill_confirm_title_feed')}
+                  </p>
+                  <p className="mt-0.5 text-[10px] text-sky-800/80 dark:text-sky-200/80">
+                    {machineState.refillPrompt === 'working'
+                      ? t('refill_confirm_hint_working')
+                      : machineState.refillPrompt === 'await_feed'
+                        ? t('refill_confirm_hint_await')
+                        : t('refill_confirm_hint_feed')}
+                  </p>
+                </div>
+                {machineState.refillPrompt === 'await_feed' && onRefillRetry && (
+                  <button
+                    id="btn-refill-confirm-retry"
+                    type="button"
+                    onClick={onRefillRetry}
+                    disabled={!machineState.refillAwaitingConfirm}
+                    className="flex items-center gap-1 rounded-md bg-amber-500 px-2 py-1 text-[10px] font-bold text-white hover:bg-amber-600 disabled:opacity-40"
+                  >
+                    <RotateCcw className="h-3 w-3" />
+                    {t('btn_refill_confirm_retry')}
+                  </button>
+                )}
+                {machineState.refillPrompt !== 'working' && (
+                  <button
+                    id="btn-refill-confirm-yes"
+                    type="button"
+                    onClick={() => onRefillConfirm!(true)}
+                    disabled={!machineState.refillAwaitingConfirm}
+                    className="flex items-center gap-1 rounded-md bg-emerald-600 px-2 py-1 text-[10px] font-bold text-white hover:bg-emerald-700 disabled:opacity-40"
+                  >
+                    <Check className="h-3 w-3" />
+                    {t('btn_refill_confirm_next_cut')}
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        </section>
+        </div>
+
+        {/* OPERACIÓN / MANUAL + ALIMENTADOR — columna derecha (altura completa) */}
+        <div className="col-span-12 xl:col-span-3 flex min-h-0 flex-col gap-2">
+          <section className={`flex min-h-0 flex-1 flex-col p-2.5 ${panelCls}`}>
             <h2 className={sectionTitle}>{t('section_operacion_manual')}</h2>
-            <div className="flex flex-col gap-2.5">
+            <div className="flex min-h-0 flex-1 flex-col gap-1.5">
               <button
                 id="btn-refill-maquina"
                 type="button"
@@ -870,14 +1128,14 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
             </div>
           </section>
 
-          <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 shadow-2xs">
-            <div className="flex items-center gap-2 mb-3">
-              <Layers className="h-4 w-4 text-slate-500 dark:text-slate-400" />
-              <h2 className="text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">
+          <section className={`flex min-h-0 flex-1 flex-col p-2.5 ${panelCls}`}>
+            <div className="mb-1.5 flex shrink-0 items-center gap-1.5">
+              <Layers className="h-3.5 w-3.5 text-slate-500 dark:text-slate-400" />
+              <h2 className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">
                 {t('section_alimentador')}
               </h2>
             </div>
-            <div className="flex flex-col gap-2.5">
+            <div className="flex min-h-0 flex-1 flex-col gap-1.5">
               <button
                 id="btn-main-pf-start"
                 type="button"
@@ -928,263 +1186,6 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
           </section>
         </div>
       </div>
-
-      {/* INDICACIONES — bloque único abajo */}
-      <section className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 shadow-2xs">
-        <div className="flex items-center gap-2 mb-3">
-          <MessageSquare className="h-4 w-4 text-slate-500 dark:text-slate-400" />
-          <h2 className="text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">
-            {t('process_assist_title')}
-          </h2>
-        </div>
-
-        <div
-          className={`rounded-lg border p-4 sm:p-5 min-h-[5rem] ${
-            purgeHandsWarning || asdaMoveWarning
-              ? 'border-red-400 dark:border-red-700 bg-red-50 dark:bg-red-950/40'
-              : hasIndicationsContent
-                ? 'border-sky-200 dark:border-sky-800 bg-sky-50/50 dark:bg-sky-950/20'
-                : 'border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-800/40'
-          }`}
-        >
-          {purgeHandsWarning && (
-            <div
-              id="purge-hands-warning"
-              role="alert"
-              aria-live="assertive"
-              className="mb-3 text-center text-base sm:text-lg font-black uppercase tracking-wide text-red-700 dark:text-red-200 animate-pulse"
-            >
-              {t('purge_hands_warning')}
-            </div>
-          )}
-          {asdaMoveWarning && !purgeHandsWarning && (
-            <div
-              id="asda-move-warning"
-              role="alert"
-              aria-live="assertive"
-              className="mb-3 text-center text-base sm:text-lg font-black uppercase tracking-wide text-red-700 dark:text-red-200 animate-pulse"
-            >
-              {t('asda_move_warning')}
-            </div>
-          )}
-
-          {!hasIndicationsContent && (
-            <div className="flex flex-col items-center justify-center text-center py-2 gap-2">
-              <Info className="h-8 w-8 text-sky-400 dark:text-sky-500" />
-              <p className="text-base font-semibold text-slate-700 dark:text-slate-200">
-                {t('process_assist_idle')}
-              </p>
-              <p className="text-sm text-slate-500 dark:text-slate-400">
-                {t('indications_idle_sub')}
-              </p>
-            </div>
-          )}
-
-          {hasFault && modKind === 'other' && machineState.fault && (
-            <p className="text-sm text-red-700 dark:text-red-300 mb-3">
-              {machineState.fault} — {t('module_recovery_use_machine')}
-            </p>
-          )}
-
-          {showPfCoach && (
-            <p className="text-sm text-amber-800 dark:text-amber-200 mb-3">
-              {resumeEnabled
-                ? t('pf_recover_hint_jog_resume')
-                : t('pf_recover_hint_jog')}
-            </p>
-          )}
-
-          {showRecoveryActions && (
-            <div className="flex flex-wrap items-center gap-3 rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/50 px-4 py-3.5">
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-bold text-amber-900 dark:text-amber-100">
-                  {recoveryTitle}
-                </p>
-                <p className="text-xs text-amber-800/80 dark:text-amber-200/80 mt-0.5">
-                  {recoveryHint}
-                </p>
-              </div>
-              {recoveryStage === 'await_feed' && onRefillRetry && (
-                <button
-                  id="btn-recovery-refill-retry"
-                  type="button"
-                  onClick={onRefillRetry}
-                  disabled={!machineState.refillAwaitingConfirm}
-                  className="flex items-center gap-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 px-3.5 py-2 text-xs font-bold text-white disabled:opacity-40"
-                >
-                  <RotateCcw className="h-3.5 w-3.5" />
-                  {t('btn_refill_confirm_retry')}
-                </button>
-              )}
-              {(recoveryStage === 'after_feed' || recoveryStage === 'await_feed') &&
-                onRefillConfirm && (
-                <button
-                  id="btn-recovery-next-cut"
-                  type="button"
-                  onClick={() => onRefillConfirm(true)}
-                  disabled={!machineState.refillAwaitingConfirm}
-                  className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 text-xs font-bold text-white disabled:opacity-40"
-                >
-                  <Check className="h-3.5 w-3.5" />
-                  {t('btn_refill_confirm_next_cut')}
-                </button>
-              )}
-              {recoveryStage === 'e050_materialist' &&
-                machineState.recoveryAwaitingConfirm &&
-                onRecoveryReview && (
-                <>
-                  <button
-                    id="btn-recovery-e050-no"
-                    type="button"
-                    onClick={() => onRecoveryReview(false)}
-                    disabled={!machineState.recoveryAwaitingConfirm}
-                    className="flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3.5 py-2 text-xs font-bold text-slate-700 dark:text-slate-200 disabled:opacity-40"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                    {t('btn_e050_no_materialist')}
-                  </button>
-                  <button
-                    id="btn-recovery-e050-yes"
-                    type="button"
-                    onClick={() => onRecoveryReview(true)}
-                    disabled={!machineState.recoveryAwaitingConfirm}
-                    className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 text-xs font-bold text-white disabled:opacity-40"
-                  >
-                    <Check className="h-3.5 w-3.5" />
-                    {t('btn_e050_yes_materialist')}
-                  </button>
-                </>
-              )}
-              {recoveryStage === 'abort_decide' && onRecoveryReview && (
-                <>
-                  <button
-                    id="btn-recovery-abort-cycle"
-                    type="button"
-                    onClick={() => onRecoveryReview(false)}
-                    disabled={!machineState.recoveryAwaitingConfirm}
-                    className="flex items-center gap-1.5 rounded-lg bg-red-600 hover:bg-red-700 px-3.5 py-2 text-xs font-bold text-white disabled:opacity-40"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                    {t('btn_recovery_abort')}
-                  </button>
-                  <button
-                    id="btn-recovery-abort-continue"
-                    type="button"
-                    onClick={() => onRecoveryReview(true)}
-                    disabled={!machineState.recoveryAwaitingConfirm}
-                    className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 text-xs font-bold text-white disabled:opacity-40"
-                  >
-                    <Check className="h-3.5 w-3.5" />
-                    {t('btn_recovery_abort_continue')}
-                  </button>
-                </>
-              )}
-              {(recoveryStage === 'purge_decide' ||
-                recoveryStage === 'pre_purge_decide') &&
-                onRecoveryReview && (
-                <>
-                  <button
-                    id="btn-recovery-purge-yes"
-                    type="button"
-                    onClick={() => onRecoveryReview(true)}
-                    disabled={!machineState.recoveryAwaitingConfirm}
-                    className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 text-xs font-bold text-white disabled:opacity-40"
-                  >
-                    <Check className="h-3.5 w-3.5" />
-                    {t('btn_recovery_purge_yes')}
-                  </button>
-                  <button
-                    id="btn-recovery-purge-no"
-                    type="button"
-                    onClick={() => onRecoveryReview(false)}
-                    disabled={!machineState.recoveryAwaitingConfirm}
-                    className="flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3.5 py-2 text-xs font-bold text-slate-700 dark:text-slate-200 disabled:opacity-40"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                    {t('btn_recovery_purge_no')}
-                  </button>
-                </>
-              )}
-              {(recoveryStage === 'review_piece' ||
-                recoveryStage === 'verify_piece' ||
-                recoveryStage === 'continue_cycle') &&
-                onRecoveryReview && (
-                <button
-                  id="btn-recovery-review-ok"
-                  type="button"
-                  onClick={() => onRecoveryReview(true)}
-                  disabled={!machineState.recoveryAwaitingConfirm}
-                  className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 text-xs font-bold text-white disabled:opacity-40"
-                >
-                  <Check className="h-3.5 w-3.5" />
-                  {recoveryStage === 'continue_cycle'
-                    ? t('btn_recovery_continue')
-                    : recoveryStage === 'verify_piece'
-                      ? t('btn_verify_piece_continue')
-                    : t('btn_recovery_review_ok')}
-                </button>
-              )}
-              {trayFull && onRecoveryReview && (
-                <button
-                  id="btn-recovery-tray-emptied"
-                  type="button"
-                  onClick={() => onRecoveryReview(true)}
-                  disabled={!machineState.recoveryAwaitingConfirm}
-                  className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 text-xs font-bold text-white disabled:opacity-40"
-                >
-                  <Check className="h-3.5 w-3.5" />
-                  {t('btn_tray_emptied')}
-                </button>
-              )}
-            </div>
-          )}
-
-          {showManualRefill && (
-            <div className="flex flex-wrap items-center gap-3 rounded-lg border border-sky-300 dark:border-sky-700 bg-sky-50 dark:bg-sky-950/50 px-4 py-3">
-              <div className="min-w-0 flex-1">
-                <p className="text-xs font-bold text-sky-900 dark:text-sky-100">
-                  {machineState.refillPrompt === 'working'
-                    ? t('refill_confirm_title_working')
-                    : machineState.refillPrompt === 'await_feed'
-                      ? t('refill_confirm_title_await')
-                      : t('refill_confirm_title_feed')}
-                </p>
-                <p className="text-[11px] text-sky-800/80 dark:text-sky-200/80 mt-0.5">
-                  {machineState.refillPrompt === 'working'
-                    ? t('refill_confirm_hint_working')
-                    : machineState.refillPrompt === 'await_feed'
-                      ? t('refill_confirm_hint_await')
-                      : t('refill_confirm_hint_feed')}
-                </p>
-              </div>
-              {machineState.refillPrompt === 'await_feed' && onRefillRetry && (
-                <button
-                  id="btn-refill-confirm-retry"
-                  type="button"
-                  onClick={onRefillRetry}
-                  disabled={!machineState.refillAwaitingConfirm}
-                  className="flex items-center gap-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 px-3.5 py-2 text-xs font-bold text-white shadow-2xs active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
-                >
-                  <RotateCcw className="h-3.5 w-3.5" />
-                  {t('btn_refill_confirm_retry')}
-                </button>
-              )}
-              {machineState.refillPrompt !== 'working' && (
-                <button
-                  id="btn-refill-confirm-yes"
-                  type="button"
-                  onClick={() => onRefillConfirm!(true)}
-                  disabled={!machineState.refillAwaitingConfirm}
-                  className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3.5 py-2 text-xs font-bold text-white shadow-2xs active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
-                >
-                  <Check className="h-3.5 w-3.5" />
-                  {t('btn_refill_confirm_next_cut')}
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-      </section>
 
       {showLogs && (
         <LogTerminal title={t('logs_title')} logs={logs} onClear={onClearLogs} filterModule="ALL" />

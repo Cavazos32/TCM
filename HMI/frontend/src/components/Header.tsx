@@ -17,7 +17,7 @@ export const Header: React.FC<HeaderProps> = ({
 
   return (
     <header className="border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-2xs transition-colors">
-      <div className="mx-auto flex w-full items-center justify-between px-3 py-3 sm:px-5">
+      <div className="mx-auto flex w-full shrink-0 items-center justify-between px-3 py-2 sm:px-4">
         <div className="flex items-center gap-3">
           <button
             id="btn-app-settings-menu"

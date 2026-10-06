@@ -180,7 +180,7 @@ function AppMain() {
   const showParametros = viewMode === 'parametros' && debugMode;
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans flex flex-col antialiased selection:bg-slate-800 dark:selection:bg-slate-200 selection:text-white dark:selection:text-slate-900 transition-colors">
+    <div className="flex h-screen flex-col overflow-hidden bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans antialiased selection:bg-slate-800 dark:selection:bg-slate-200 selection:text-white dark:selection:text-slate-900 transition-colors">
       <Header
         onOpenSettings={() => setIsSettingsOpen(true)}
         onOpenParametros={handleOpenParametros}
@@ -216,8 +216,9 @@ function AppMain() {
         />
       )}
 
-      <main className="flex-1 px-3 py-3 sm:px-5 w-full">
+      <main className="flex min-h-0 flex-1 flex-col px-2 py-2 sm:px-3 w-full overflow-hidden">
         {showMaquina && (
+          <div className="min-h-0 flex-1">
           <MaquinaTab
             machineState={view.machineState}
             motionState={view.motionState}
@@ -264,6 +265,7 @@ function AppMain() {
             logs={logsVisible ? hmi.filterLogs('ALL') : []}
             onClearLogs={() => hmi.clearLogs('all')}
           />
+          </div>
         )}
 
         {showParametros && currentTab === 'cycle' && (
