@@ -6,6 +6,7 @@ import {
   mapAndonConnection,
   mapAndonState,
   mapAppConfig,
+  mapChecklistState,
   mapCycleConfig,
   isPurgeBusy,
   mapMachineState,
@@ -29,6 +30,7 @@ import type {
   PreFeederState,
   TabType,
 } from '../types';
+import type { ChecklistState } from '../types/checklist';
 
 /** Bloqueo tras toggle: evita doble click ON→OFF antes de que el KEEP/pulso asiente. */
 const VALVE_TOGGLE_LOCK_MS = 450;
@@ -42,6 +44,8 @@ export interface HmiViewState {
   andonState: AndonState;
   andonConn: ConnectionState;
   andonBuzzerMute: boolean;
+  maintenanceCycleCount: number;
+  checklistState: ChecklistState;
   cycleConfig: CycleConfig;
   cycleStep: number;
   cycleActive: boolean;
@@ -142,6 +146,20 @@ export function useHmiState() {
     },
     andonConn: { connected: false, ip: '10.10.32.61', port: 8769 },
     andonBuzzerMute: false,
+    maintenanceCycleCount: 0,
+    checklistState: {
+      required: false,
+      lastCompletedAt: null,
+      currentStepId: '',
+      session: null,
+      workerBusy: false,
+      workerPhase: '',
+      workerError: '',
+      stepError: '',
+      airTestActive: false,
+      pieceTestStarted: false,
+      stepStatus: { ready: false },
+    },
     cycleConfig: {} as CycleConfig,
     cycleStep: 0,
     cycleActive: false,
@@ -210,7 +228,8 @@ export function useHmiState() {
       preFeederState: pfState,
       andonState: mapAndonState(snap),
       andonConn: mapAndonConnection(snap),
-      andonBuzzerMute: mapAppConfig(snap).andonBuzzerMute,
+      ...mapAppConfig(snap),
+      checklistState: mapChecklistState(snap),
       cycleConfig: mapCycleConfig(snap.cycle.config),
       cycleStep: snap.cycle.step,
       cycleActive: snap.cycle.active,
@@ -827,10 +846,20 @@ export function useHmiState() {
     await api.reconnectNetwork().catch(() => {});
   }, []);
 
+  const reconnectModule = useCallback(async (module: string) => {
+    await api.reconnectModule(module).catch(() => {});
+  }, []);
+
+  const updateChecklistState = useCallback((checklistState: ChecklistState) => {
+    setView((prev) => ({ ...prev, checklistState }));
+  }, []);
+
   return {
     view,
     onTabChange,
     reconnectNetwork,
+    reconnectModule,
+    updateChecklistState,
     selectModel,
     setTargetQty,
     start,

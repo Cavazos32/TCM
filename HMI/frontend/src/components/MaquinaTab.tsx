@@ -3,23 +3,38 @@ import {
   Play,
   Square,
   RotateCcw,
-  Sliders,
+  ClipboardList,
   Clock,
   Pause,
-  Layers,
   Droplets,
   Check,
   X,
   Home,
-  Zap,
+  ChevronsLeft,
+  ChevronsRight,
   Package,
   MessageSquare,
   Info,
+  Settings2,
+  Wrench,
+  ClipboardCheck,
 } from 'lucide-react';
 import { MachineState, LogEntry, MotionState, PfRefillChannel, PlcState, PreFeederState } from '../types';
 import { LogTerminal } from './LogTerminal';
 import { useApp } from '../context/AppContext';
 import { isGenericErrorText } from '../api/mappers';
+import {
+  hmiIndicationAlert,
+  hmiIndicationBanner,
+  hmiIndicationBtn,
+  hmiIndicationHint,
+  hmiIndicationIcon,
+  hmiIndicationIdleHint,
+  hmiIndicationIdleIcon,
+  hmiIndicationIdleTitle,
+  hmiIndicationShell,
+  hmiIndicationTitle,
+} from '../styles/hmiUi';
 
 type FaultModuleKind = 'motion' | 'plc' | 'prefeeder' | 'other';
 
@@ -72,6 +87,13 @@ interface MaquinaTabProps {
   onMaterialist?: () => void;
   purgeHandsWarning?: boolean;
   asdaMoveWarning?: boolean;
+  onOpenParametros?: () => void;
+  onOpenMantenimiento?: () => void;
+  onOpenChecklist?: () => void;
+  checklistState?: import('../types/checklist').ChecklistState;
+  checklistCompletedFlash?: boolean;
+  maintenanceCycleCount?: number;
+  parametrosActive?: boolean;
   showLogs?: boolean;
   logs: LogEntry[];
   onClearLogs: () => void;
@@ -104,6 +126,13 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
   onMaterialist,
   purgeHandsWarning = false,
   asdaMoveWarning = false,
+  onOpenParametros,
+  onOpenMantenimiento,
+  onOpenChecklist,
+  checklistState,
+  checklistCompletedFlash = false,
+  maintenanceCycleCount = 0,
+  parametrosActive = false,
   showLogs = true,
   logs,
   onClearLogs,
@@ -237,10 +266,13 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
         ? t('state_paused')
         : t('machine_standby');
 
+  const iconBtn = 'h-8 w-8 shrink-0';
+  const iconSection = 'h-7 w-7 shrink-0';
+  const iconAssist = 'h-12 w-12 shrink-0';
+
   const btnBase =
-    'flex items-center justify-center gap-1.5 rounded-lg border font-bold transition shadow-2xs active:scale-[0.98] w-full min-h-0 flex-1';
-  const btnPrimary = 'px-2 py-2 text-sm';
-  const btnSecondary = 'px-2 py-1.5 text-xs';
+    'flex items-center justify-center gap-3 rounded-lg border font-bold transition shadow-2xs active:scale-[0.98] w-full shrink-0 min-h-[5rem] sm:min-h-[5.5rem]';
+  const btnText = 'px-4 text-xl leading-tight sm:text-2xl';
   const btnIdle =
     'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700';
   const btnOn =
@@ -445,10 +477,12 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
 
   const showPfCoach =
     !machineState.isRunning && machineState.cycleMaterialist;
+  const checklistRequired = !!checklistState?.required || !!machineState.checklistRequired;
   const startDisabled =
     hasFault ||
     machineState.isRunning ||
-    machineState.refillActive;
+    machineState.refillActive ||
+    checklistRequired;
   const resumeDisabled =
     hasFault ||
     !resumeEnabled ||
@@ -466,6 +500,8 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
   const jogROn = !!preFeederState.refillR?.material;
 
   const hasIndicationsContent =
+    checklistCompletedFlash ||
+    checklistRequired ||
     purgeHandsWarning ||
     asdaMoveWarning ||
     showPfCoach ||
@@ -474,29 +510,37 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
     showManualRefill;
 
   const sectionTitle =
-    'text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 mb-1.5 shrink-0';
+    'text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 mb-2 shrink-0 sm:text-sm';
   const panelCls =
     'rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-2xs flex flex-col min-h-0';
-
+  const centerSectionTitle =
+    'text-base font-bold uppercase tracking-wider text-slate-800 dark:text-slate-200 shrink-0 sm:text-lg';
+  const centerFieldLabel =
+    'block truncate text-sm font-semibold text-slate-700 dark:text-slate-300 sm:text-base';
+  const centerFieldInput =
+    'w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-3 text-lg font-medium text-slate-900 dark:text-slate-100 shadow-2xs focus:outline-none focus:ring-1 sm:text-xl';
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="grid min-h-0 flex-1 grid-cols-12 gap-2 items-stretch">
-        {/* PROCESO — columna izquierda (altura completa) */}
-        <section className={`col-span-12 xl:col-span-2 p-2.5 ${panelCls}`}>
-          <h2 className={sectionTitle}>{t('section_proceso')}</h2>
-          <div className="flex min-h-0 flex-1 flex-col gap-1.5">
+      <div className="grid min-h-0 flex-1 grid-cols-12 gap-2.5 items-stretch">
+        {/* PROCESO + PARÁMETROS + MANTENIMIENTO — columna izquierda */}
+        <div className="col-span-12 flex min-h-0 flex-col justify-start gap-2.5 lg:col-span-2">
+          <section className={`flex shrink-0 flex-col p-3 ${panelCls}`}>
+            <h2 className={sectionTitle}>{t('section_proceso')}</h2>
+            <div className="flex flex-col gap-2">
             <button
               id="btn-start-maquina"
               onClick={onStart}
               disabled={startDisabled}
               title={
-                showErrorProcess
-                  ? processHint
-                  : machineState.cycleMaterialist
-                    ? t('err_materialist_start')
-                    : undefined
+                checklistRequired
+                  ? t('checklist_required_banner')
+                  : showErrorProcess
+                    ? processHint
+                    : machineState.cycleMaterialist
+                      ? t('err_materialist_start')
+                      : undefined
               }
-              className={`${btnBase} ${btnPrimary} ${
+              className={`${btnBase} ${btnText} ${
                 startDisabled
                   ? 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed'
                   : machineState.isRunning || processStep === 'start'
@@ -504,21 +548,8 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     : btnStartIdle
               }`}
             >
-              <Play className="h-5 w-5 fill-current" />
+              <Play className={`${iconBtn} fill-current`} />
               <span>{t('btn_start')}</span>
-            </button>
-            <button
-              id="btn-stop-maquina"
-              onClick={() => {
-                pulseBtn('stop');
-                onStop();
-              }}
-              className={`${btnBase} ${btnPrimary} ${
-                btnFlash.stop ? btnStopOn : btnStopIdle
-              }`}
-            >
-              <Square className={`h-5 w-5 fill-current ${btnFlash.stop ? '' : 'text-red-600'}`} />
-              <span>{t('btn_stop')}</span>
             </button>
             <button
               id="btn-pause-maquina"
@@ -531,7 +562,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     ? t('purge_busy_locked')
                     : undefined
               }
-              className={`${btnBase} ${btnSecondary} disabled:opacity-40 disabled:cursor-not-allowed ${
+              className={`${btnBase} ${btnText} disabled:opacity-40 disabled:cursor-not-allowed ${
                 machineState.isPaused
                   ? btnPauseOn
                   : machineState.pauseEnabled
@@ -539,7 +570,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     : btnPauseIdle
               }`}
             >
-              <Pause className="h-4 w-4" />
+              <Pause className={iconBtn} />
               <span>{t('btn_pause')}</span>
             </button>
             <button
@@ -557,16 +588,29 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                         ? t('lot_recover_hint_reset')
                         : undefined
               }
-              className={`group ${btnBase} ${btnSecondary} disabled:opacity-40 disabled:cursor-not-allowed ${
+              className={`group ${btnBase} ${btnText} disabled:opacity-40 disabled:cursor-not-allowed ${
                 showMachineResumeCoach ? btnNeedGo : btnStartIdle
               }`}
             >
-              <Play className="h-4 w-4 fill-current" />
+              <Play className={`${iconBtn} fill-current`} />
               <span>
                 {machineState.stepByStep && machineState.isPaused
                   ? t('btn_next_step')
                   : t('btn_resume')}
               </span>
+            </button>
+            <button
+              id="btn-stop-maquina"
+              onClick={() => {
+                pulseBtn('stop');
+                onStop();
+              }}
+              className={`${btnBase} ${btnText} ${
+                btnFlash.stop ? btnStopOn : btnStopIdle
+              }`}
+            >
+              <Square className={`${iconBtn} fill-current ${btnFlash.stop ? '' : 'text-red-600'}`} />
+              <span>{t('btn_stop')}</span>
             </button>
             <button
               id="btn-reset-maquina"
@@ -579,29 +623,76 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                   ? t('lot_recover_hint_reset')
                   : undefined
               }
-              className={`${btnBase} ${btnSecondary} ${
+              className={`${btnBase} ${btnText} ${
                 showMachineResetCoach || btnFlash.reset ? btnResetOn : btnResetIdle
               }`}
             >
-              <RotateCcw className="h-4 w-4" />
+              <RotateCcw className={iconBtn} />
               <span>{t('btn_reset_cycle')}</span>
             </button>
-          </div>
-        </section>
+            </div>
+          </section>
 
-        {/* Centro: LOTE arriba + INDICACIONES abajo */}
-        <div className="col-span-12 xl:col-span-7 flex min-h-0 flex-col gap-2">
-        <section className={`flex min-h-0 flex-1 flex-col p-2.5 sm:p-3 ${panelCls}`}>
-          <div className="mb-2 flex shrink-0 items-center gap-2">
-            <Sliders className="h-4 w-4 text-slate-600 dark:text-slate-400" />
-            <h2 className="text-xs font-bold uppercase tracking-wider text-slate-800 dark:text-slate-200">
+          <section className={`flex shrink-0 flex-col p-3 ${panelCls}`}>
+            <h2 className={sectionTitle}>{t('section_configuracion')}</h2>
+            <div className="flex flex-col gap-2">
+              <button
+                id="btn-parametros-maquina"
+                type="button"
+                onClick={onOpenParametros}
+                disabled={!onOpenParametros}
+                title={t('btn_parametros')}
+                className={`${btnBase} ${btnText} disabled:opacity-40 disabled:cursor-not-allowed ${
+                  parametrosActive ? btnAuxOn : btnAuxIdle
+                }`}
+              >
+                <Settings2 className={iconBtn} />
+                <span>{t('btn_parametros')}</span>
+              </button>
+              <button
+                id="btn-mantenimiento-maquina"
+                type="button"
+                onClick={onOpenMantenimiento}
+                disabled={!onOpenMantenimiento}
+                title={t('btn_mantenimiento')}
+                className={`${btnBase} ${btnText} disabled:opacity-40 disabled:cursor-not-allowed ${btnAuxIdle}`}
+              >
+                <Wrench className={iconBtn} />
+                <span>{t('btn_mantenimiento')}</span>
+              </button>
+              <button
+                id="btn-checklist-maquina"
+                type="button"
+                onClick={onOpenChecklist}
+                disabled={!onOpenChecklist}
+                title={t('checklist_title')}
+                className={`${btnBase} ${btnText} disabled:opacity-40 disabled:cursor-not-allowed ${
+                  checklistRequired
+                    ? 'border-amber-400 bg-amber-50 text-amber-900 ring-2 ring-amber-400/50 animate-pulse dark:border-amber-600 dark:bg-amber-950/40 dark:text-amber-100'
+                    : btnAuxIdle
+                }`}
+              >
+                <ClipboardCheck className={iconBtn} />
+                <span>{t('btn_checklist')}</span>
+              </button>
+            </div>
+          </section>
+        </div>
+
+        {/* Centro: LOTE (~70%) + INDICACIONES (~30%) */}
+        <div className="col-span-12 flex min-h-0 flex-col gap-2.5 lg:col-span-8">
+        <section className={`flex shrink-0 flex-col gap-2.5 p-3 sm:p-4 ${panelCls}`}>
+          <div className="flex shrink-0 items-center gap-2 border-b border-slate-100 pb-2 dark:border-slate-800">
+            <ClipboardList className={`${iconSection} text-sky-700 dark:text-sky-400`} />
+            <h2 className={`${centerSectionTitle} text-sky-900 dark:text-sky-100`}>
               {t('section_lote')}
             </h2>
           </div>
 
-          {/* Banner de estado */}
+          <div className="flex shrink-0 flex-col gap-3">
+          {/* Banner de estado — LISTO | Máquina en espera */}
           <div
-            className={`mb-2.5 shrink-0 rounded-lg border px-3 py-2 flex flex-col gap-0.5 transition-colors ${
+            className={`flex shrink-0 items-center rounded-md border px-4 py-3 transition-colors sm:py-4 ${
               hasFault || interlockError
                 ? 'border-red-300 dark:border-red-800 bg-red-50/80 dark:bg-red-950/40'
                 : machineState.isRunning
@@ -613,7 +704,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
           >
             <div className="flex min-w-0 items-center gap-2">
               <div
-                className={`h-2.5 w-2.5 shrink-0 rounded-full ${
+                className={`h-4 w-4 shrink-0 rounded-full ${
                   hasFault || interlockError
                     ? 'bg-red-500'
                     : machineState.isRunning
@@ -624,7 +715,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                 }`}
               />
               <span
-                className={`text-sm font-bold tracking-tight uppercase min-w-0 truncate ${
+                className={`shrink-0 text-lg font-bold uppercase tracking-tight sm:text-xl ${
                   hasFault || interlockError
                     ? 'text-red-700 dark:text-red-300'
                     : machineState.isRunning
@@ -633,7 +724,6 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                         ? 'text-amber-800 dark:text-amber-200'
                         : 'text-emerald-800 dark:text-emerald-200'
                 }`}
-                title={hasFault || interlockError ? generalStatus : undefined}
               >
                 {hasFault
                   ? currentFaultUi || t('state_error')
@@ -645,24 +735,27 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                         ? t('state_paused')
                         : t('state_ready')}
               </span>
+              {statusSubtitle && !hasFault && !interlockError && (
+                <>
+                  <span className="shrink-0 text-slate-400 dark:text-slate-500">|</span>
+                  <span className="min-w-0 truncate text-lg font-semibold normal-case text-slate-700 dark:text-slate-300 sm:text-xl">
+                    {statusSubtitle}
+                  </span>
+                </>
+              )}
               {hasFault && faultCount >= 1 ? (
-                <span className="shrink-0 rounded border border-red-300 dark:border-red-800 bg-red-100 dark:bg-red-950/60 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-red-700 dark:text-red-300">
+                <span className="ml-auto shrink-0 rounded border border-red-300 dark:border-red-800 bg-red-100 dark:bg-red-950/60 px-2 py-0.5 font-mono text-sm font-semibold text-red-700 dark:text-red-300">
                   {t(faultCount === 1 ? 'status_error_qty' : 'status_errors_qty', {
                     count: faultCount,
                   })}
                 </span>
               ) : null}
             </div>
-            {statusSubtitle && (
-              <span className="pl-4 text-xs text-slate-600 dark:text-slate-400 font-medium">
-                {statusSubtitle}
-              </span>
-            )}
           </div>
 
-          <div className="mb-2 grid shrink-0 grid-cols-3 gap-2">
-            <div className="min-w-0 space-y-0.5">
-              <label htmlFor="select-modelo" className="block truncate text-[11px] font-semibold text-slate-700 dark:text-slate-300">
+          <div className="grid shrink-0 grid-cols-12 items-start gap-3">
+            <div className="col-span-12 min-w-0 md:col-span-5">
+              <label htmlFor="select-modelo" className={centerFieldLabel}>
                 {t('model')}
               </label>
               <select
@@ -670,7 +763,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                 value={selectedModelIndex}
                 onChange={(e) => onModelSelect(Number(e.target.value))}
                 disabled={machineState.isRunning}
-                className="w-full appearance-none truncate rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-2 py-1.5 text-xs font-medium text-slate-900 dark:text-slate-100 shadow-2xs focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-400 disabled:opacity-50"
+                className={`${centerFieldInput} mt-1.5 h-12 appearance-none truncate focus:border-sky-500 focus:ring-sky-400 disabled:opacity-50 sm:h-14`}
               >
                 {models.map((m, i) => (
                   <option key={m.name} value={i}>
@@ -678,13 +771,16 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                   </option>
                 ))}
               </select>
+              <p className="mt-1.5 min-h-[1.25rem] truncate text-sm leading-tight text-transparent select-none" aria-hidden="true">
+                {'\u00A0'}
+              </p>
             </div>
 
-            <div className="min-w-0 space-y-0.5">
-              <label htmlFor="input-general-offset" className="block truncate text-[11px] font-semibold text-slate-700 dark:text-slate-300">
+            <div className="col-span-6 min-w-0 md:col-span-3">
+              <label htmlFor="input-general-offset" className={centerFieldLabel}>
                 {t('cfg_cut_offset')}
               </label>
-              <div className="relative flex items-center gap-1">
+              <div className="relative mt-1.5">
                 <input
                   id="input-general-offset"
                   type="number"
@@ -700,112 +796,125 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                       e.currentTarget.blur();
                     }
                   }}
-                  className="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 py-1.5 pl-2 pr-9 text-xs font-mono font-medium text-slate-900 dark:text-slate-100 shadow-2xs focus:border-sky-500 focus:outline-none"
+                  className={`${centerFieldInput} h-12 pr-12 font-mono focus:border-sky-500 focus:ring-sky-400 sm:h-14`}
                 />
-                <span className="pointer-events-none absolute right-2 text-[10px] font-mono text-slate-400">mm</span>
+                <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-base font-mono text-slate-400">
+                  mm
+                </span>
               </div>
+              <p className="mt-1.5 min-h-[1.25rem] truncate text-sm leading-tight text-transparent select-none" aria-hidden="true">
+                {'\u00A0'}
+              </p>
             </div>
 
-            <div className="min-w-0 space-y-0.5">
-              <label htmlFor="input-target-pieces" className="block truncate text-[11px] font-semibold text-slate-700 dark:text-slate-300">
+            <div className="col-span-6 min-w-0 md:col-span-4">
+              <label htmlFor="input-target-pieces" className={centerFieldLabel}>
                 {t('target_pieces')}
               </label>
-              <div className="relative flex items-center">
-                <input
-                  id="input-target-pieces"
-                  type="number"
-                  min={1}
-                  step={1}
-                  value={machineState.targetPieces || ''}
-                  onChange={(e) => onTargetPiecesChange(Math.max(1, parseInt(e.target.value, 10) || 1))}
-                  disabled={machineState.isRunning}
-                  className="w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 py-1.5 pl-2 pr-8 text-xs font-mono font-medium text-slate-900 dark:text-slate-100 shadow-2xs focus:border-sky-500 focus:outline-none disabled:opacity-50"
-                />
-                <span className="pointer-events-none absolute right-2 text-[10px] font-mono text-slate-400">pz</span>
-              </div>
-              {feedSides === 'LR' && (machineState.targetPieces || 0) >= 1 && (
-                <p className="truncate pl-0.5 text-[10px] leading-tight text-slate-400 dark:text-slate-500">
-                  {(machineState.targetPieces || 0) % 2 === 0
+              <input
+                id="input-target-pieces"
+                type="number"
+                min={1}
+                step={1}
+                value={machineState.targetPieces || ''}
+                onChange={(e) => onTargetPiecesChange(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                disabled={machineState.isRunning}
+                className={`${centerFieldInput} mt-1.5 h-12 font-mono focus:border-sky-500 focus:ring-sky-400 disabled:opacity-50 sm:h-14`}
+              />
+              <p className="mt-1.5 min-h-[1.25rem] truncate text-sm leading-tight text-slate-500 dark:text-slate-400">
+                {feedSides === 'LR' && (machineState.targetPieces || 0) >= 1
+                  ? (machineState.targetPieces || 0) % 2 === 0
                     ? t('target_pieces_mirror', {
                         n: Math.floor((machineState.targetPieces || 0) / 2),
                       })
-                    : t('target_pieces_mirror_even')}
-                </p>
-              )}
+                    : t('target_pieces_mirror_even')
+                  : '\u00A0'}
+              </p>
             </div>
           </div>
 
-          <div className="min-h-0 flex-1 rounded-lg border border-slate-200/80 bg-slate-50 p-2 dark:border-slate-800 dark:bg-slate-800/60">
-            <div className="mb-1 flex items-center justify-between gap-1">
-              <span className="flex min-w-0 items-center gap-1 truncate font-sans text-[11px] font-semibold text-slate-700 dark:text-slate-300">
-                <Clock className="h-3 w-3 shrink-0 text-slate-500" />
-                {machineState.cycleActive ? t('current_cycle_progress') : t('total_production_progress')}
-              </span>
-              <span className="shrink-0 text-xs font-bold text-emerald-600 dark:text-emerald-400">
-                {stepProgress}%
-              </span>
-            </div>
-            <div className="mb-1.5 h-2.5 w-full overflow-hidden rounded-full bg-slate-200 p-0.5 dark:bg-slate-700">
-              <div
-                className={`h-full rounded-full transition-all duration-300 ${
-                  machineState.isRunning
-                    ? 'bg-emerald-500'
-                    : machineState.isPaused
-                    ? 'bg-amber-500'
-                    : 'bg-sky-500 dark:bg-sky-600'
-                }`}
-                style={{ width: `${stepProgress}%` }}
-              />
-            </div>
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] font-mono text-slate-600 dark:text-slate-400">
-              <span>
-                {t('pieces')}:{' '}
-                <strong className="text-slate-800 dark:text-slate-200">
-                  {machineState.piecesCount}/{machineState.targetPieces}
-                </strong>
-              </span>
-              <span>
-                {t('cycle_time_remaining')}:{' '}
-                <strong className="text-sky-700 dark:text-sky-300">
-                  {machineState.cycleActive && etaSec > 0 ? `~${fmtSec(etaSec)}` : '—'}
-                </strong>
-              </span>
-              {(machineState.cycleActive || elapsedSec > 0) && (
-                <span title={t('cycle_time_hint')}>
-                  {t('cycle_time_label')}:{' '}
-                  <strong className="text-slate-800 dark:text-slate-200">
-                    {fmtSec(elapsedSec)}
-                  </strong>
+          {/* Progreso + métricas */}
+          <div className="shrink-0 rounded-md border border-slate-200/80 bg-slate-50/40 dark:border-slate-700 dark:bg-slate-800/20">
+            <div className="flex flex-col gap-3 px-3 py-3 sm:px-4">
+              <div className="flex items-center justify-between gap-2">
+                <span className="flex min-w-0 items-center gap-2 truncate text-base font-bold text-slate-800 dark:text-slate-100 sm:text-lg">
+                  <Clock className="h-6 w-6 shrink-0 text-sky-600 sm:h-7 sm:w-7" />
+                  {machineState.cycleActive ? t('current_cycle_progress') : t('total_production_progress')}
                 </span>
-              )}
-              {lastPieceSec > 0 && (
-                <span>
-                  {t('cycle_time_piece')}:{' '}
-                  <strong className="text-slate-800 dark:text-slate-200">
-                    {lastPieceSec.toFixed(1)}s
-                  </strong>
+                <span className="shrink-0 text-xl font-bold tabular-nums text-sky-700 dark:text-sky-300 sm:text-2xl">
+                  {stepProgress}%
                 </span>
-              )}
+              </div>
+              <div className="h-8 w-full shrink-0 overflow-hidden rounded-md bg-slate-200 dark:bg-slate-700 sm:h-10">
+                <div
+                  className={`h-full rounded-md transition-all duration-300 ${
+                    machineState.isRunning
+                      ? 'bg-emerald-500'
+                      : machineState.isPaused
+                      ? 'bg-amber-500'
+                      : 'bg-sky-600'
+                  }`}
+                  style={{ width: `${stepProgress}%` }}
+                />
+              </div>
             </div>
+            <div className="grid shrink-0 grid-cols-4 divide-x divide-slate-200 border-t border-slate-200 bg-white/70 dark:divide-slate-700 dark:border-slate-700 dark:bg-slate-900/40">
+              <div className="flex flex-col items-center justify-center px-2 py-2.5 sm:px-3">
+                <p className="text-sm font-semibold text-slate-600 dark:text-slate-400 sm:text-base">
+                  {t('pieces')}
+                </p>
+                <p className="mt-0.5 font-mono text-lg font-bold text-slate-900 dark:text-slate-100 sm:text-xl">
+                  {machineState.piecesCount} / {machineState.targetPieces}
+                </p>
+              </div>
+              <div className="flex flex-col items-center justify-center px-2 py-2.5 sm:px-3">
+                <p className="text-sm font-semibold text-slate-600 dark:text-slate-400 sm:text-base">
+                  {t('cycle_time_remaining')}
+                </p>
+                <p className="mt-0.5 font-mono text-lg font-bold text-sky-700 dark:text-sky-300 sm:text-xl">
+                  {machineState.cycleActive && etaSec > 0 ? fmtSec(etaSec) : '—'}
+                </p>
+              </div>
+              <div className="flex flex-col items-center justify-center px-2 py-2.5 sm:px-3">
+                <p className="text-sm font-semibold text-slate-600 dark:text-slate-400 sm:text-base">
+                  {t('cycle_time_label')}
+                </p>
+                <p
+                  className="mt-0.5 font-mono text-lg font-bold text-slate-900 dark:text-slate-100 sm:text-xl"
+                  title={t('cycle_time_hint')}
+                >
+                  {elapsedSec > 0 ? fmtSec(elapsedSec) : '—'}
+                </p>
+              </div>
+              <div className="flex flex-col items-center justify-center px-2 py-2.5 sm:px-3">
+                <p className="text-sm font-semibold text-slate-600 dark:text-slate-400 sm:text-base">
+                  {t('cycle_time_piece')}
+                </p>
+                <p className="mt-0.5 font-mono text-lg font-bold text-slate-900 dark:text-slate-100 sm:text-xl">
+                  {lastPieceSec > 0 ? `${lastPieceSec.toFixed(1)}s` : '—'}
+                </p>
+              </div>
+            </div>
+          </div>
           </div>
         </section>
 
-        {/* INDICACIONES — franja inferior del centro */}
-        <section className={`shrink-0 p-2.5 ${panelCls}`}>
-          <div className="mb-1 flex shrink-0 items-center gap-1.5">
-            <MessageSquare className="h-3.5 w-3.5 text-slate-500 dark:text-slate-400" />
-            <h2 className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">
+        {/* INDICACIONES — ocupa el espacio restante del centro */}
+        <section className={`flex min-h-[8rem] flex-1 flex-col gap-2 p-3 sm:p-4 ${panelCls}`}>
+          <div className="flex shrink-0 items-center gap-2 border-b border-slate-100 pb-2 dark:border-slate-800">
+            <MessageSquare className={`${iconSection} text-sky-600 dark:text-sky-400`} />
+            <h2 className={`${centerSectionTitle} text-sky-900 dark:text-sky-100`}>
               {t('process_assist_title')}
             </h2>
           </div>
 
           <div
-            className={`max-h-[7.5rem] overflow-y-auto rounded-lg border p-2 ${
+            className={`${hmiIndicationShell} rounded-md border ${
               purgeHandsWarning || asdaMoveWarning
                 ? 'border-red-400 dark:border-red-700 bg-red-50 dark:bg-red-950/40'
                 : hasIndicationsContent
-                  ? 'border-sky-200 dark:border-sky-800 bg-sky-50/50 dark:bg-sky-950/20'
-                  : 'border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-800/40'
+                  ? 'border-sky-200 dark:border-sky-800 bg-sky-50/80 dark:bg-sky-950/30'
+                  : 'border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-950/30'
             }`}
           >
             {purgeHandsWarning && (
@@ -813,7 +922,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                 id="purge-hands-warning"
                 role="alert"
                 aria-live="assertive"
-                className="mb-1 text-center text-xs font-black uppercase tracking-wide text-red-700 dark:text-red-200 animate-pulse"
+                className={`${hmiIndicationAlert} text-red-700 dark:text-red-200 animate-pulse`}
               >
                 {t('purge_hands_warning')}
               </div>
@@ -823,42 +932,90 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                 id="asda-move-warning"
                 role="alert"
                 aria-live="assertive"
-                className="mb-1 text-center text-xs font-black uppercase tracking-wide text-red-700 dark:text-red-200 animate-pulse"
+                className={`${hmiIndicationAlert} text-red-700 dark:text-red-200 animate-pulse`}
               >
                 {t('asda_move_warning')}
               </div>
             )}
 
-            {!hasIndicationsContent && (
-              <div className="flex items-center justify-center gap-2 py-0.5 text-center">
-                <Info className="h-4 w-4 shrink-0 text-sky-400 dark:text-sky-500" />
-                <p className="text-xs font-medium text-slate-600 dark:text-slate-300">
-                  {t('process_assist_idle')}
+            {checklistCompletedFlash && (
+              <div
+                role="status"
+                className={`${hmiIndicationBanner} border-emerald-400 bg-emerald-50 dark:border-emerald-600 dark:bg-emerald-950/40`}
+              >
+                <ClipboardCheck className={`${hmiIndicationIcon} text-emerald-600`} />
+                <p className={`${hmiIndicationTitle} flex-1 text-center text-emerald-900 dark:text-emerald-100 sm:text-left`}>
+                  {t('checklist_completed_banner')}
                 </p>
               </div>
             )}
 
+            {checklistRequired && (
+              <div
+                className={`${hmiIndicationBanner} border-amber-400 bg-amber-50 dark:border-amber-600 dark:bg-amber-950/40`}
+              >
+                <ClipboardCheck className={`${hmiIndicationIcon} text-amber-600`} />
+                <div className="min-w-0 flex-1 text-center sm:text-left">
+                  <p className={`${hmiIndicationTitle} text-amber-900 dark:text-amber-100`}>
+                    {t('checklist_required_banner')}
+                  </p>
+                  {maintenanceCycleCount > 10000 && (
+                    <p className={`${hmiIndicationHint} text-amber-800 dark:text-amber-200`}>
+                      {t('checklist_counter_over')}
+                    </p>
+                  )}
+                </div>
+                {onOpenChecklist && (
+                  <button
+                    type="button"
+                    onClick={onOpenChecklist}
+                    className={`${hmiIndicationBtn} border-amber-500 bg-amber-600 text-white hover:bg-amber-700`}
+                  >
+                    {t('checklist_open')}
+                  </button>
+                )}
+              </div>
+            )}
+
+            {!hasIndicationsContent && (
+              <div className="flex h-full min-h-[7rem] flex-1 flex-col items-center justify-center gap-3 px-4 py-6 text-center">
+                <Info className={hmiIndicationIdleIcon} />
+                <p className={hmiIndicationIdleTitle}>{t('process_assist_idle')}</p>
+                <p className={hmiIndicationIdleHint}>{t('indications_idle_sub')}</p>
+              </div>
+            )}
+
             {hasFault && modKind === 'other' && machineState.fault && (
-              <p className="mb-1 text-[11px] text-red-700 dark:text-red-300">
-                {machineState.fault} — {t('module_recovery_use_machine')}
-              </p>
+              <div
+                className={`${hmiIndicationBanner} border-red-300 bg-red-50 dark:border-red-800 dark:bg-red-950/40`}
+              >
+                <p className={`${hmiIndicationTitle} text-center text-red-700 dark:text-red-300`}>
+                  {machineState.fault} — {t('module_recovery_use_machine')}
+                </p>
+              </div>
             )}
 
             {showPfCoach && (
-              <p className="mb-1 text-[11px] text-amber-800 dark:text-amber-200">
-                {resumeEnabled
-                  ? t('pf_recover_hint_jog_resume')
-                  : t('pf_recover_hint_jog')}
-              </p>
+              <div
+                className={`${hmiIndicationBanner} border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-950/50`}
+              >
+                <p className={`${hmiIndicationTitle} text-center text-amber-800 dark:text-amber-200`}>
+                  {resumeEnabled
+                    ? t('pf_recover_hint_jog_resume')
+                    : t('pf_recover_hint_jog')}
+                </p>
+              </div>
             )}
 
             {showRecoveryActions && (
-              <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-300 bg-amber-50 px-2 py-1.5 dark:border-amber-700 dark:bg-amber-950/50">
-                <div className="min-w-0 flex-1">
-                  <p className="text-[11px] font-bold text-amber-900 dark:text-amber-100">
+              <div
+                className={`${hmiIndicationBanner} border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-950/50`}
+              >
+                <div className="min-w-0 flex-1 text-center sm:text-left">
+                  <p className={`${hmiIndicationTitle} text-amber-900 dark:text-amber-100`}>
                     {recoveryTitle}
                   </p>
-                  <p className="mt-0.5 text-[10px] text-amber-800/80 dark:text-amber-200/80">
+                  <p className={`${hmiIndicationHint} text-amber-800/80 dark:text-amber-200/80`}>
                     {recoveryHint}
                   </p>
                 </div>
@@ -868,9 +1025,9 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     type="button"
                     onClick={onRefillRetry}
                     disabled={!machineState.refillAwaitingConfirm}
-                    className="flex items-center gap-1 rounded-md bg-amber-500 px-2 py-1 text-[10px] font-bold text-white hover:bg-amber-600 disabled:opacity-40"
+                    className={`${hmiIndicationBtn} bg-amber-500 text-white hover:bg-amber-600`}
                   >
-                    <RotateCcw className="h-3 w-3" />
+                    <RotateCcw className={iconBtn} />
                     {t('btn_refill_confirm_retry')}
                   </button>
                 )}
@@ -881,9 +1038,9 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     type="button"
                     onClick={() => onRefillConfirm(true)}
                     disabled={!machineState.refillAwaitingConfirm}
-                    className="flex items-center gap-1 rounded-md bg-emerald-600 px-2 py-1 text-[10px] font-bold text-white hover:bg-emerald-700 disabled:opacity-40"
+                    className={`${hmiIndicationBtn} bg-emerald-600 text-white hover:bg-emerald-700`}
                   >
-                    <Check className="h-3 w-3" />
+                    <Check className={iconBtn} />
                     {t('btn_refill_confirm_next_cut')}
                   </button>
                 )}
@@ -896,9 +1053,9 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                       type="button"
                       onClick={() => onRecoveryReview(false)}
                       disabled={!machineState.recoveryAwaitingConfirm}
-                      className="flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-[10px] font-bold text-slate-700 disabled:opacity-40 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200"
+                      className={`${hmiIndicationBtn} border border-slate-300 bg-white text-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200`}
                     >
-                      <X className="h-3 w-3" />
+                      <X className={iconBtn} />
                       {t('btn_e050_no_materialist')}
                     </button>
                     <button
@@ -906,9 +1063,9 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                       type="button"
                       onClick={() => onRecoveryReview(true)}
                       disabled={!machineState.recoveryAwaitingConfirm}
-                      className="flex items-center gap-1 rounded-md bg-emerald-600 px-2 py-1 text-[10px] font-bold text-white hover:bg-emerald-700 disabled:opacity-40"
+                      className={`${hmiIndicationBtn} bg-emerald-600 text-white hover:bg-emerald-700`}
                     >
-                      <Check className="h-3 w-3" />
+                      <Check className={iconBtn} />
                       {t('btn_e050_yes_materialist')}
                     </button>
                   </>
@@ -920,9 +1077,9 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                       type="button"
                       onClick={() => onRecoveryReview(false)}
                       disabled={!machineState.recoveryAwaitingConfirm}
-                      className="flex items-center gap-1 rounded-md bg-red-600 px-2 py-1 text-[10px] font-bold text-white hover:bg-red-700 disabled:opacity-40"
+                      className={`${hmiIndicationBtn} bg-red-600 text-white hover:bg-red-700`}
                     >
-                      <X className="h-3 w-3" />
+                      <X className={iconBtn} />
                       {t('btn_recovery_abort')}
                     </button>
                     <button
@@ -930,9 +1087,9 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                       type="button"
                       onClick={() => onRecoveryReview(true)}
                       disabled={!machineState.recoveryAwaitingConfirm}
-                      className="flex items-center gap-1 rounded-md bg-emerald-600 px-2 py-1 text-[10px] font-bold text-white hover:bg-emerald-700 disabled:opacity-40"
+                      className={`${hmiIndicationBtn} bg-emerald-600 text-white hover:bg-emerald-700`}
                     >
-                      <Check className="h-3 w-3" />
+                      <Check className={iconBtn} />
                       {t('btn_recovery_abort_continue')}
                     </button>
                   </>
@@ -946,9 +1103,9 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                       type="button"
                       onClick={() => onRecoveryReview(true)}
                       disabled={!machineState.recoveryAwaitingConfirm}
-                      className="flex items-center gap-1 rounded-md bg-emerald-600 px-2 py-1 text-[10px] font-bold text-white hover:bg-emerald-700 disabled:opacity-40"
+                      className={`${hmiIndicationBtn} bg-emerald-600 text-white hover:bg-emerald-700`}
                     >
-                      <Check className="h-3 w-3" />
+                      <Check className={iconBtn} />
                       {t('btn_recovery_purge_yes')}
                     </button>
                     <button
@@ -956,9 +1113,9 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                       type="button"
                       onClick={() => onRecoveryReview(false)}
                       disabled={!machineState.recoveryAwaitingConfirm}
-                      className="flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-[10px] font-bold text-slate-700 disabled:opacity-40 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200"
+                      className={`${hmiIndicationBtn} border border-slate-300 bg-white text-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200`}
                     >
-                      <X className="h-3 w-3" />
+                      <X className={iconBtn} />
                       {t('btn_recovery_purge_no')}
                     </button>
                   </>
@@ -972,9 +1129,9 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     type="button"
                     onClick={() => onRecoveryReview(true)}
                     disabled={!machineState.recoveryAwaitingConfirm}
-                    className="flex items-center gap-1 rounded-md bg-emerald-600 px-2 py-1 text-[10px] font-bold text-white hover:bg-emerald-700 disabled:opacity-40"
+                    className={`${hmiIndicationBtn} bg-emerald-600 text-white hover:bg-emerald-700`}
                   >
-                    <Check className="h-3 w-3" />
+                    <Check className={iconBtn} />
                     {recoveryStage === 'continue_cycle'
                       ? t('btn_recovery_continue')
                       : recoveryStage === 'verify_piece'
@@ -988,9 +1145,9 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     type="button"
                     onClick={() => onRecoveryReview(true)}
                     disabled={!machineState.recoveryAwaitingConfirm}
-                    className="flex items-center gap-1 rounded-md bg-emerald-600 px-2 py-1 text-[10px] font-bold text-white hover:bg-emerald-700 disabled:opacity-40"
+                    className={`${hmiIndicationBtn} bg-emerald-600 text-white hover:bg-emerald-700`}
                   >
-                    <Check className="h-3 w-3" />
+                    <Check className={iconBtn} />
                     {t('btn_tray_emptied')}
                   </button>
                 )}
@@ -998,16 +1155,18 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
             )}
 
             {showManualRefill && (
-              <div className="flex flex-wrap items-center gap-2 rounded-md border border-sky-300 bg-sky-50 px-2 py-1.5 dark:border-sky-700 dark:bg-sky-950/50">
-                <div className="min-w-0 flex-1">
-                  <p className="text-[11px] font-bold text-sky-900 dark:text-sky-100">
+              <div
+                className={`${hmiIndicationBanner} border-sky-300 bg-sky-50 dark:border-sky-700 dark:bg-sky-950/50`}
+              >
+                <div className="min-w-0 flex-1 text-center sm:text-left">
+                  <p className={`${hmiIndicationTitle} text-sky-900 dark:text-sky-100`}>
                     {machineState.refillPrompt === 'working'
                       ? t('refill_confirm_title_working')
                       : machineState.refillPrompt === 'await_feed'
                         ? t('refill_confirm_title_await')
                         : t('refill_confirm_title_feed')}
                   </p>
-                  <p className="mt-0.5 text-[10px] text-sky-800/80 dark:text-sky-200/80">
+                  <p className={`${hmiIndicationHint} text-sky-800/80 dark:text-sky-200/80`}>
                     {machineState.refillPrompt === 'working'
                       ? t('refill_confirm_hint_working')
                       : machineState.refillPrompt === 'await_feed'
@@ -1021,9 +1180,9 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     type="button"
                     onClick={onRefillRetry}
                     disabled={!machineState.refillAwaitingConfirm}
-                    className="flex items-center gap-1 rounded-md bg-amber-500 px-2 py-1 text-[10px] font-bold text-white hover:bg-amber-600 disabled:opacity-40"
+                    className={`${hmiIndicationBtn} bg-amber-500 text-white hover:bg-amber-600`}
                   >
-                    <RotateCcw className="h-3 w-3" />
+                    <RotateCcw className={iconBtn} />
                     {t('btn_refill_confirm_retry')}
                   </button>
                 )}
@@ -1033,9 +1192,9 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     type="button"
                     onClick={() => onRefillConfirm!(true)}
                     disabled={!machineState.refillAwaitingConfirm}
-                    className="flex items-center gap-1 rounded-md bg-emerald-600 px-2 py-1 text-[10px] font-bold text-white hover:bg-emerald-700 disabled:opacity-40"
+                    className={`${hmiIndicationBtn} bg-emerald-600 text-white hover:bg-emerald-700`}
                   >
-                    <Check className="h-3 w-3" />
+                    <Check className={iconBtn} />
                     {t('btn_refill_confirm_next_cut')}
                   </button>
                 )}
@@ -1045,18 +1204,18 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
         </section>
         </div>
 
-        {/* OPERACIÓN / MANUAL + ALIMENTADOR — columna derecha (altura completa) */}
-        <div className="col-span-12 xl:col-span-3 flex min-h-0 flex-col gap-2">
-          <section className={`flex min-h-0 flex-1 flex-col p-2.5 ${panelCls}`}>
+        {/* OPERACIÓN / MANUAL + ALIMENTADOR — columna derecha */}
+        <div className="col-span-12 flex min-h-0 flex-col justify-start gap-2.5 lg:col-span-2">
+          <section className={`flex shrink-0 flex-col p-3 ${panelCls}`}>
             <h2 className={sectionTitle}>{t('section_operacion_manual')}</h2>
-            <div className="flex min-h-0 flex-1 flex-col gap-1.5">
+            <div className="flex flex-col gap-2">
               <button
                 id="btn-refill-maquina"
                 type="button"
                 onClick={onRefill}
                 disabled={!onRefill}
                 title={t('refill_helpers_subtitle')}
-                className={`${btnBase} ${btnSecondary} ${
+                className={`${btnBase} ${btnText} ${
                   !onRefill
                     ? 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed'
                     : machineState.refillActive
@@ -1064,7 +1223,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                       : btnAuxIdle
                 }`}
               >
-                <Droplets className="h-4 w-4" />
+                <Droplets className={iconBtn} />
                 <span>{t('btn_refill')}</span>
               </button>
               <button
@@ -1089,7 +1248,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                       ? t('purge_busy_locked')
                       : t('btn_machine_home_hint')
                 }
-                className={`${btnBase} ${btnSecondary} ${
+                className={`${btnBase} ${btnText} ${
                   !onMachineHome || machineState.purgeBusy
                     ? 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed'
                     : btnFlash.home
@@ -1097,7 +1256,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                       : btnAuxIdle
                 }`}
               >
-                <Home className="h-4 w-4" />
+                <Home className={iconBtn} />
                 <span>{t('btn_machine_home')}</span>
               </button>
               <button
@@ -1114,7 +1273,7 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                         ? t('pf_recover_hint_jog')
                         : t('pf_jog_need_materialist')
                 }
-                className={`${btnBase} ${btnSecondary} ${
+                className={`${btnBase} ${btnText} ${
                   !onMaterialist || machineState.purgeBusy
                     ? 'border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed'
                     : machineState.cycleMaterialist
@@ -1122,30 +1281,25 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                       : btnAuxIdle
                 }`}
               >
-                <Package className="h-4 w-4" />
+                <Package className={iconBtn} />
                 <span>{t('btn_materialist_cycle')}</span>
               </button>
             </div>
           </section>
 
-          <section className={`flex min-h-0 flex-1 flex-col p-2.5 ${panelCls}`}>
-            <div className="mb-1.5 flex shrink-0 items-center gap-1.5">
-              <Layers className="h-3.5 w-3.5 text-slate-500 dark:text-slate-400" />
-              <h2 className="text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400">
-                {t('section_alimentador')}
-              </h2>
-            </div>
-            <div className="flex min-h-0 flex-1 flex-col gap-1.5">
+          <section className={`flex shrink-0 flex-col p-3 ${panelCls}`}>
+            <h2 className={sectionTitle}>{t('section_alimentador')}</h2>
+            <div className="flex flex-col gap-2">
               <button
                 id="btn-main-pf-start"
                 type="button"
                 onClick={onPfStart}
                 disabled={!onPfStart || !pfConnected}
-                className={`${btnBase} ${btnSecondary} disabled:opacity-40 ${
+                className={`${btnBase} ${btnText} disabled:opacity-40 ${
                   preFeederState.isRunning ? btnOn : btnAuxIdle
                 }`}
               >
-                <Play className="h-4 w-4 fill-current" />
+                <Play className={`${iconBtn} fill-current`} />
                 <span>{t('btn_start')}</span>
               </button>
               <button
@@ -1158,12 +1312,12 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     ? t('pf_refill_material')
                     : t('pf_jog_need_materialist')
                 }
-                className={`${btnBase} ${btnSecondary} disabled:opacity-40 ${
+                className={`${btnBase} ${btnText} disabled:opacity-40 ${
                   jogLOn ? btnAuxOn : btnAuxIdle
                 }`}
               >
-                <Zap className="h-4 w-4" />
-                <span>{t('btn_jog')} L</span>
+                <ChevronsLeft className={iconBtn} />
+                <span>{t('pf_jog_l')}</span>
               </button>
               <button
                 id="btn-main-pf-jog-r"
@@ -1175,12 +1329,12 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                     ? t('pf_refill_material')
                     : t('pf_jog_need_materialist')
                 }
-                className={`${btnBase} ${btnSecondary} disabled:opacity-40 ${
+                className={`${btnBase} ${btnText} disabled:opacity-40 ${
                   jogROn ? btnAuxOn : btnAuxIdle
                 }`}
               >
-                <Zap className="h-4 w-4" />
-                <span>{t('btn_jog')} R</span>
+                <ChevronsRight className={iconBtn} />
+                <span>{t('pf_jog_r')}</span>
               </button>
             </div>
           </section>

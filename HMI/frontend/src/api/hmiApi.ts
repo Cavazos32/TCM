@@ -29,6 +29,10 @@ export function reconnectNetwork() {
   );
 }
 
+export function reconnectModule(module: string) {
+  return post<{ ok: boolean }>(`/api/network/reconnect/${module}`);
+}
+
 export function selectModel(index: number) {
   return post('/api/model', { index });
 }
@@ -134,10 +138,55 @@ export function getAppConfig() {
 }
 
 export function setAppConfig(config: { andonBuzzerMute?: boolean }) {
-  return post<{ ok: boolean; config: { andonBuzzerMute: boolean } }>(
+  return post<{
+    ok: boolean;
+    config: { andonBuzzerMute: boolean };
+  }>(
     '/api/app/config',
     config as Record<string, unknown>
   );
+}
+
+export function checklistCmd(
+  action: 'start' | 'close' | 'complete' | 'action',
+  extra: Record<string, unknown> = {}
+) {
+  return post<{ ok: boolean; error?: string; checklist?: BackendSnapshot['checklist'] }>(
+    '/api/checklist',
+    { action, ...extra }
+  );
+}
+
+export function resetMaintenanceCycleCounter(employeeId: string, password: string) {
+  return fetch('/api/maintenance/cycle-counter/reset', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ employeeId, password }),
+  }).then(async (res) => {
+    if (!res.ok) {
+      return {
+        ok: false as const,
+        error: 'server_unavailable' as const,
+      };
+    }
+    try {
+      const data = (await res.json()) as {
+        ok?: boolean;
+        error?: string;
+        maintenanceCycleCount?: number;
+      };
+      return {
+        ok: !!data.ok,
+        error: data.ok ? null : ((data.error as string) || 'invalid_password'),
+        maintenanceCycleCount: data.maintenanceCycleCount,
+      };
+    } catch {
+      return {
+        ok: false as const,
+        error: 'server_unavailable' as const,
+      };
+    }
+  });
 }
 
 export function unlockDebugMode(password: string) {

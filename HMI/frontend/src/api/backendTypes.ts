@@ -49,6 +49,8 @@ export interface BackendFlowStep {
   parallelRole?: 'start' | 'join';
   /** Si true, Step by Step pausa tras este paso (checkpoint físico). */
   sbsPause?: boolean;
+  note?: string;
+  delayEditable?: boolean;
 }
 
 export interface BackendCycleSnapshot {
@@ -190,6 +192,20 @@ export interface BackendSnapshot {
   andonLink?: BackendLink;
   appConfig?: {
     andonBuzzerMute: boolean;
+    maintenanceCycleCount?: number;
+  };
+  checklist?: {
+    required?: boolean;
+    lastCompletedAt?: string | null;
+    currentStepId?: string;
+    session?: Record<string, unknown> | null;
+    workerBusy?: boolean;
+    workerPhase?: string;
+    workerError?: string;
+    stepError?: string;
+    airTestActive?: boolean;
+    pieceTestStarted?: boolean;
+    stepStatus?: Record<string, unknown>;
   };
   andon?: {
     connected: boolean;

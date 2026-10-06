@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { REFILL_LONG_FEED_MM, TabType } from './types';
 import { Header } from './components/Header';
 import { Navigation } from './components/Navigation';
@@ -8,8 +8,10 @@ import { MotionTab } from './components/MotionTab';
 import { PlcTab } from './components/PlcTab';
 import { PreFeederTab } from './components/PreFeederTab';
 import { AndonTab } from './components/AndonTab';
+import { ModulesConnectionTab } from './components/ModulesConnectionTab';
 import { SettingsDrawer } from './components/SettingsDrawer';
 import { ParametrosPasswordModal } from './components/ParametrosPasswordModal';
+import { ChecklistModal } from './components/ChecklistModal';
 import { AppProvider, useApp } from './context/AppContext';
 import { useHmiState } from './hooks/useHmiState';
 
@@ -22,11 +24,15 @@ function AppMain() {
   const [currentTab, setCurrentTab] = useState<TabType>('maquina');
   const [showParamPassword, setShowParamPassword] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
+  const [checklistOpen, setChecklistOpen] = useState(false);
+  const [checklistDoneFlash, setChecklistDoneFlash] = useState(false);
+  const hadChecklistSessionRef = useRef(false);
   const hmi = useHmiState();
   const { view } = hmi;
   const {
     onTabChange,
     reconnectNetwork,
+    reconnectModule,
     setCycleStepByStep,
     stop,
     start,
@@ -34,6 +40,27 @@ function AppMain() {
     motionStop,
     pfStop,
   } = hmi;
+
+  useEffect(() => {
+    if (view.checklistState.required) {
+      setChecklistOpen(true);
+    }
+  }, [view.checklistState.required]);
+
+  useEffect(() => {
+    const hasSession = !!view.checklistState.session;
+    if (hadChecklistSessionRef.current && !hasSession && !view.checklistState.required) {
+      setChecklistOpen(false);
+      setChecklistDoneFlash(true);
+    }
+    hadChecklistSessionRef.current = hasSession;
+  }, [view.checklistState.session, view.checklistState.required]);
+
+  useEffect(() => {
+    if (!checklistDoneFlash) return undefined;
+    const timer = setTimeout(() => setChecklistDoneFlash(false), 12000);
+    return () => clearTimeout(timer);
+  }, [checklistDoneFlash]);
 
   const handleReconnectNetwork = useCallback(async () => {
     setReconnecting(true);
@@ -122,7 +149,8 @@ function AppMain() {
       else if (debugMode && e.key === '3') handleTabChange('motion');
       else if (debugMode && e.key === '4') handleTabChange('plc');
       else if (debugMode && e.key === '5') handleTabChange('prefeeder');
-      else if (debugMode && e.key === '6') handleTabChange('andon');
+      else if (debugMode && e.key === '6') handleTabChange('conexion');
+      else if (debugMode && e.key === '7') handleTabChange('andon');
       else if (e.code === 'Space') {
         e.preventDefault();
         if (viewMode === 'maquina') {
@@ -181,11 +209,7 @@ function AppMain() {
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans antialiased selection:bg-slate-800 dark:selection:bg-slate-200 selection:text-white dark:selection:text-slate-900 transition-colors">
-      <Header
-        onOpenSettings={() => setIsSettingsOpen(true)}
-        onOpenParametros={handleOpenParametros}
-        parametrosActive={showParametros}
-      />
+      <Header />
 
       {showParametros && (
         <Navigation
@@ -264,11 +288,20 @@ function AppMain() {
             showLogs={logsVisible}
             logs={logsVisible ? hmi.filterLogs('ALL') : []}
             onClearLogs={() => hmi.clearLogs('all')}
+            onOpenParametros={handleOpenParametros}
+            onOpenMantenimiento={() => setIsSettingsOpen(true)}
+            onOpenChecklist={() => setChecklistOpen(true)}
+            checklistState={view.checklistState}
+            checklistCompletedFlash={checklistDoneFlash}
+            maintenanceCycleCount={view.maintenanceCycleCount}
+            parametrosActive={showParametros}
           />
           </div>
         )}
 
-        {showParametros && currentTab === 'cycle' && (
+        {showParametros && (
+          <div className="min-h-0 flex-1 overflow-y-auto">
+        {currentTab === 'cycle' && (
           <CycleTab
             machineState={view.machineState}
             cycleConfig={view.cycleConfig}
@@ -302,7 +335,7 @@ function AppMain() {
           />
         )}
 
-        {showParametros && currentTab === 'motion' && (
+        {currentTab === 'motion' && (
           <MotionTab
             motionState={view.motionState}
             onUpdateTargetPos={(pos) => hmi.setMmRpm(pos, view.motionState.rpm)}
@@ -324,16 +357,13 @@ function AppMain() {
             onReloadFeedOffset={() => {
               void hmi.reloadFeedOffset();
             }}
-            safetyExhaust={view.machineState.safetyExhaust}
-            onReconnectNetwork={handleReconnectNetwork}
-            reconnecting={reconnecting}
             showLogs={logsVisible}
             logs={logsVisible ? hmi.filterLogs('MOTION') : []}
             onClearLogs={() => hmi.clearLogs('motion')}
           />
         )}
 
-        {showParametros && currentTab === 'plc' && (
+        {currentTab === 'plc' && (
           <PlcTab
             plcState={view.plcState}
             onToggleValve={hmi.toggleValve}
@@ -341,15 +371,13 @@ function AppMain() {
             onBlowerSecChange={hmi.setBlowerSec}
             onResetPlc={hmi.plcReset}
             onAllOff={hmi.plcAllOff}
-            onReconnectNetwork={handleReconnectNetwork}
-            reconnecting={reconnecting}
             showLogs={logsVisible}
             logs={logsVisible ? hmi.filterLogs('PLC') : []}
             onClearLogs={() => hmi.clearLogs('plc')}
           />
         )}
 
-        {showParametros && currentTab === 'prefeeder' && (
+        {currentTab === 'prefeeder' && (
           <PreFeederTab
             preFeederState={view.preFeederState}
             cycleMaterialist={view.machineState.cycleMaterialist}
@@ -361,31 +389,40 @@ function AppMain() {
             onBusy={hmi.toggleCycleBusy}
             onTriggerR={hmi.pfTriggerR}
             onTriggerL={hmi.pfTriggerL}
-            onReconnectNetwork={handleReconnectNetwork}
-            reconnecting={reconnecting}
             showLogs={logsVisible}
             logs={logsVisible ? hmi.filterLogs('PREFEEDER') : []}
             onClearLogs={() => hmi.clearLogs('prefeeder')}
           />
         )}
 
-        {showParametros && currentTab === 'andon' && (
+        {currentTab === 'andon' && (
           <AndonTab
             andonState={view.andonState}
             machineByte={view.andonState.machineByte ?? view.machineState.machineByte}
             machineName={view.machineState.machineName}
             buzzerMute={view.andonBuzzerMute}
-            onBuzzerMute={hmi.setAndonBuzzerMute}
             onSetOut={hmi.andonSetOut}
             onAllOff={hmi.andonAllOff}
             onResumeAuto={hmi.andonResumeAuto}
             onMachineState={hmi.andonMachineState}
-            onReconnectNetwork={handleReconnectNetwork}
-            reconnecting={reconnecting}
             showLogs={logsVisible}
             logs={logsVisible ? hmi.filterLogs('ANDON') : []}
             onClearLogs={() => hmi.clearLogs('andon')}
           />
+        )}
+
+        {currentTab === 'conexion' && (
+          <ModulesConnectionTab
+            motionConn={view.motionState.connection}
+            plcConn={view.plcState.connection}
+            preFeederConn={view.preFeederState.connection}
+            andonConn={view.andonConn}
+            onReconnectAll={handleReconnectNetwork}
+            onReconnectModule={reconnectModule}
+            reconnectingAll={reconnecting}
+          />
+        )}
+          </div>
         )}
       </main>
 
@@ -393,6 +430,10 @@ function AppMain() {
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
         connected={view.connected}
+        maintenanceCycleCount={view.maintenanceCycleCount}
+        safetyExhaust={view.machineState.safetyExhaust}
+        buzzerMute={view.andonBuzzerMute}
+        onBuzzerMute={hmi.setAndonBuzzerMute}
       />
 
       <ParametrosPasswordModal
@@ -401,6 +442,26 @@ function AppMain() {
         onUnlocked={() => {
           setShowParamPassword(false);
           enterParametrosView('cycle');
+        }}
+      />
+
+      <ChecklistModal
+        isOpen={checklistOpen}
+        onClose={() => setChecklistOpen(false)}
+        checklist={view.checklistState}
+        maintenanceCycleCount={view.maintenanceCycleCount}
+        nominalPieceMm={Math.abs(view.models[view.selectedModelIndex]?.mm ?? view.machineState.mm ?? 0)}
+        safetyExhaust={view.machineState.safetyExhaust}
+        andonPressure={!!view.andonState.pressure}
+        plcState={view.plcState}
+        onOpenMantenimiento={() => {
+          setChecklistOpen(false);
+          setIsSettingsOpen(true);
+        }}
+        onChecklistUpdate={hmi.updateChecklistState}
+        onCompleted={() => {
+          setChecklistOpen(false);
+          setChecklistDoneFlash(true);
         }}
       />
     </div>

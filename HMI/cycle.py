@@ -122,46 +122,56 @@ MOTION_IDLE_NO_TARGET_S = 1.0
 # físico). False = auto (delay / validación interna): visible en la
 # lista, pero no exige Next. Un Next avanza el grupo físico + sus internos.
 FLOW_STEPS: list[dict[str, Any]] = [
-    {"id": 1, "key": "holder_on", "label": "Holder+Encoder ON (solo 1ª pieza)", "kind": "action", "sbsPause": False},
-    {"id": 2, "key": "wait_holder_on", "label": "Delay Holder ON", "kind": "wait", "delayKey": "holderOnMs", "sbsPause": True},
+    {"id": 1, "key": "holder_on", "label": "Sujetar tubo (primera pieza)", "kind": "action", "sbsPause": False},
+    {"id": 2, "key": "wait_holder_on", "label": "Espera: sujetador", "kind": "wait", "delayKey": "holderOnMs", "sbsPause": True},
     # Tfeed ANTES del feed CAN (Motion): rellena buffer al arrancar la alimentación.
-    {"id": 3, "key": "pf_trigger", "label": "Trigger PreFeeder (Tfeed)", "kind": "action", "sbsPause": False},
-    {"id": 4, "key": "feed", "label": "Alimentación (feed / ya listo post-HOME)", "kind": "action", "sbsPause": True},
-    {"id": 5, "key": "offset", "label": "Offset alimentación (Motion, paso lógico)", "kind": "action", "sbsPause": False},
-    {"id": 6, "key": "grippers_on", "label": "Pinzas cierran", "kind": "action", "sbsPause": False},
-    {"id": 7, "key": "wait_grippers_on", "label": "Delay tras cerrar pinzas", "kind": "wait", "delayKey": "grippersOnMs", "sbsPause": False},
-    {"id": 8, "key": "enc_set0", "label": "OM ref (no usado por lineal TCP)", "kind": "action", "sbsPause": True},
-    {"id": 9, "key": "holder_off", "label": "Holder+Encoder OFF (abre para lineal)", "kind": "action", "sbsPause": False},
-    {"id": 10, "key": "wait_holder_open", "label": "Delay Holder/Encoder OFF", "kind": "wait", "delayKey": "holderOpenMs", "sbsPause": True},
-    {"id": 11, "key": "lineal_fwd", "label": "Lineal ASDA MOVE TCP (0→ABS)", "kind": "action", "sbsPause": False},
-    {"id": 12, "key": "wait_linear_done", "label": "Delay antes del corte", "kind": "wait", "delayKey": "linearDoneMs", "sbsPause": True},
-    {"id": 13, "key": "holder_precut", "label": "Holder ON / Encoder ON (pre-corte)", "kind": "action", "sbsPause": False},
-    {"id": 14, "key": "wait_holder_precut", "label": "Delay tras cerrar holder", "kind": "wait", "delayKey": "holderOnMs", "sbsPause": True},
-    {"id": 15, "key": "cutter_on", "label": "Cortador ON (+ All OK PreFeeder)", "kind": "action", "sbsPause": False},
-    {"id": 16, "key": "wait_cutter_pulse", "label": "Delay entre Set y Res cortador", "kind": "wait", "delayKey": "cutterPulseMs", "sbsPause": False, "delayEditable": False},
-    {"id": 17, "key": "cutter_off", "label": "Cortador OFF", "kind": "action", "sbsPause": False},
-    {"id": 18, "key": "wait_cutter_post", "label": "Delay post-corte", "kind": "wait", "delayKey": "cutterPostMs", "sbsPause": True},
-    {"id": 19, "key": "deposit", "label": "Extra / depósito lineal", "kind": "action", "sbsPause": False},
-    {"id": 20, "key": "wait_deposit_dwell", "label": "Delay tras depósito", "kind": "wait", "delayKey": "dwellAtDestMs", "sbsPause": True},
-    {"id": 21, "key": "grippers_off", "label": "Pinzas abren", "kind": "action", "sbsPause": False},
-    {"id": 22, "key": "wait_gripper_release", "label": "Delay tras abrir pinzas", "kind": "wait", "delayKey": "gripperReleaseMs", "sbsPause": True},
+    {"id": 3, "key": "pf_trigger", "label": "Pedir material al alimentador", "kind": "action", "sbsPause": False},
+    {"id": 4, "key": "feed", "label": "Cargar material al área de corte", "kind": "action", "sbsPause": True},
+    {"id": 5, "key": "offset", "label": "Ajustar longitud del tubo", "kind": "action", "sbsPause": False},
+    {"id": 6, "key": "grippers_on", "label": "Cerrar pinzas", "kind": "action", "sbsPause": False},
+    {"id": 7, "key": "wait_grippers_on", "label": "Espera: pinzas cerradas", "kind": "wait", "delayKey": "grippersOnMs", "sbsPause": False},
+    {"id": 8, "key": "enc_set0", "label": "Referencia de medida", "kind": "action", "sbsPause": True},
+    {"id": 9, "key": "holder_off", "label": "Liberar tubo para avance", "kind": "action", "sbsPause": False},
+    {"id": 10, "key": "wait_holder_open", "label": "Espera: tubo liberado", "kind": "wait", "delayKey": "holderOpenMs", "sbsPause": True},
+    {"id": 11, "key": "lineal_fwd", "label": "Avance lineal al corte", "kind": "action", "sbsPause": False},
+    {"id": 12, "key": "wait_linear_done", "label": "Espera antes del corte", "kind": "wait", "delayKey": "linearDoneMs", "sbsPause": True},
+    {"id": 13, "key": "holder_precut", "label": "Sujetar antes del corte", "kind": "action", "sbsPause": False},
+    {"id": 14, "key": "wait_holder_precut", "label": "Espera: listo para cortar", "kind": "wait", "delayKey": "holderOnMs", "sbsPause": True},
+    {"id": 15, "key": "cutter_on", "label": "Cortar tubo", "kind": "action", "sbsPause": False},
+    {
+        "id": 16,
+        "key": "wait_cutter_pulse",
+        "label": "Tiempo de corte (fijo)",
+        "kind": "wait",
+        "delayKey": "cutterPulseMs",
+        "sbsPause": False,
+        "delayEditable": False,
+        "note": "Duración fija del corte — no se puede cambiar",
+    },
+    {"id": 17, "key": "cutter_off", "label": "Apagar cortador", "kind": "action", "sbsPause": False},
+    {"id": 18, "key": "wait_cutter_post", "label": "Espera tras el corte", "kind": "wait", "delayKey": "cutterPostMs", "sbsPause": True},
+    {"id": 19, "key": "deposit", "label": "Depositar pieza", "kind": "action", "sbsPause": False},
+    {"id": 20, "key": "wait_deposit_dwell", "label": "Espera en depósito", "kind": "wait", "delayKey": "dwellAtDestMs", "sbsPause": True},
+    {"id": 21, "key": "grippers_off", "label": "Abrir pinzas", "kind": "action", "sbsPause": False},
+    {"id": 22, "key": "wait_gripper_release", "label": "Espera: pinzas abiertas", "kind": "wait", "delayKey": "gripperReleaseMs", "sbsPause": True},
     {
         "id": 23,
         "key": "gripper_clearance",
-        "label": "Despeje ASDA post-pinzas (+clearance)",
+        "label": "Retroceso de seguridad",
         "kind": "action",
         "sbsPause": True,
     },
-    {"id": 24, "key": "home", "label": "HOME: MOVE→0 + delay + blower ≡ |L|", "kind": "action", "sbsPause": True},
+    {"id": 24, "key": "home", "label": "Volver a posición inicial", "kind": "action", "sbsPause": True},
     {
         "id": 25,
         "key": "feed_after_home",
-        "label": "Feed post-HOME (ASDA=0) + Tfeed si alimenta",
+        "label": "Preparar siguiente pieza",
         "kind": "action",
         "sbsPause": True,
+        "note": "Solo con la máquina en posición inicial. En la última pieza del lote se omite.",
     },
-    {"id": 26, "key": "wait_asentar", "label": "Delay asentar", "kind": "wait", "delayKey": "asentarMs", "sbsPause": False},
-    {"id": 27, "key": "post_piece", "label": "Post-pieza (safety / peer / settled)", "kind": "action", "sbsPause": False},
+    {"id": 26, "key": "wait_asentar", "label": "Espera: material asentado", "kind": "wait", "delayKey": "asentarMs", "sbsPause": False},
+    {"id": 27, "key": "post_piece", "label": "Comprobar pieza terminada", "kind": "action", "sbsPause": False},
 ]
 PROGRESS_STEPS = len(FLOW_STEPS)
 STEP_NAMES = {0: "idle", **{s["id"]: s["key"] for s in FLOW_STEPS}}
@@ -426,6 +436,7 @@ class CycleHost(Protocol):
     """Puente hacia clientes TCP + señales de estado (implementado por HmiState)."""
     def cycle_log(self, text: str) -> None: ...
     def cycle_notify(self) -> None: ...
+    def increment_maintenance_cycle_count(self) -> int: ...
     def motion_connected(self) -> bool: ...
     def plc_connected(self) -> bool: ...
     def pf_connected(self) -> bool: ...
@@ -671,7 +682,10 @@ class CycleRunner:
                 "recoveryAfterError": self._recovery_after_error,
                 "recoveryPrompt": (
                     self._recovery_prompt
-                    if (self._active and self._recovery_prompt)
+                    if (
+                        self._recovery_prompt
+                        and (self._recovery_awaiting or self._active)
+                    )
                     else ""
                 ),
                 "recoveryAwaitingConfirm": self._recovery_awaiting,
@@ -717,6 +731,16 @@ class CycleRunner:
     def is_active(self) -> bool:
         with self._lock:
             return self._active
+
+    def is_lot_alive(self) -> bool:
+        """Lote con progreso vivo (corriendo, en pausa o interrumpido por error)."""
+        with self._lock:
+            if self._active:
+                return True
+            if self._total_reps > 0 and not self._last_ok:
+                if self._pieces_done < self._total_reps:
+                    return True
+            return False
 
     def is_refill_active(self) -> bool:
         with self._lock:
@@ -4947,6 +4971,7 @@ class CycleRunner:
                                     int(min(100, round(100.0 * rep / qty))),
                                 )
                         self._log_piece_ok(rep, qty, piece_sec)
+                        self._host.increment_maintenance_cycle_count()
                         self._host.cycle_notify()
                         if self._e050_finish_piece and self._e050_materialist_requested:
                             if not self._run_e050_materialist_recovery():

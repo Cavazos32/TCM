@@ -20,6 +20,41 @@ import {
 import { CycleConfig, CycleStep, MachineState } from '../types';
 import { useApp } from '../context/AppContext';
 import type { BackendFlowStep } from '../api/backendTypes';
+import {
+  hmiAssistHint,
+  hmiAssistTitle,
+  hmiModuleBtnChip,
+  hmiModuleBtnChipOff,
+  hmiModuleBtnChipOn,
+  hmiModuleBtnDanger,
+  hmiModuleBtnGroup,
+  hmiModuleBtnPrimary,
+  hmiModuleBtnSecondary,
+  hmiModuleBtnSeg,
+  hmiModuleBtnSegActive,
+  hmiModuleBtnSegIdle,
+  hmiModuleBtnSegWrap,
+  hmiModuleBtnSuccess,
+  hmiModuleBtnTealSoft,
+  hmiModuleBtnWarning,
+  hmiModuleCenterSectionTitle,
+  hmiModuleCompactFieldInput,
+  hmiModuleFieldLabel,
+  hmiModuleIconBtn,
+  hmiModuleIconSection,
+  hmiBtnToolbarWrap,
+  hmiCfgGrid,
+  hmiCycleStepBadge,
+  hmiCycleStepIcon,
+  hmiCycleStepNote,
+  hmiCycleStepRow,
+  hmiCycleStepTitle,
+  hmiCycleTimeChip,
+  hmiPanelCls,
+  hmiPanelHeader,
+  hmiPanelPadding,
+  hmiSectionTitleMb,
+} from '../styles/hmiUi';
 
 export const DEFAULT_CYCLE_CONFIG: CycleConfig = {
   holderOnMs: 120,
@@ -50,48 +85,48 @@ export const DEFAULT_CYCLE_CONFIG: CycleConfig = {
 
 /** Fallback local si el backend aún no envió flow (arranque). */
 export const CYCLE_STEPS_DEFINITION: CycleStep[] = [
-  { id: 1, title: 'Holder+Encoder ON (solo 1ª pieza)', type: 'action', sbsPause: false },
-  { id: 2, title: 'Delay Holder ON', type: 'delay', delayKey: 'holderOnMs', defaultDurationMs: 200, sbsPause: true },
-  { id: 3, title: 'Trigger PreFeeder (Tfeed)', type: 'action', sbsPause: false },
-  { id: 4, title: 'Alimentación (feed / ya listo post-HOME)', type: 'action', sbsPause: true },
-  { id: 5, title: 'Offset alimentación (Motion, paso lógico)', type: 'action', sbsPause: false },
-  { id: 6, title: 'Pinzas cierran', type: 'action', sbsPause: false },
-  { id: 7, title: 'Delay tras cerrar pinzas', type: 'delay', delayKey: 'grippersOnMs', defaultDurationMs: 100, sbsPause: false },
-  { id: 8, title: 'OM ref (no usado por lineal TCP)', type: 'action', sbsPause: true },
-  { id: 9, title: 'Holder+Encoder OFF (abre para lineal)', type: 'action', sbsPause: false },
-  { id: 10, title: 'Delay Holder/Encoder OFF', type: 'delay', delayKey: 'holderOpenMs', defaultDurationMs: 100, sbsPause: true },
-  { id: 11, title: 'Lineal ASDA MOVE TCP (0→ABS)', type: 'action', sbsPause: false },
-  { id: 12, title: 'Delay antes del corte', type: 'delay', delayKey: 'linearDoneMs', defaultDurationMs: 100, sbsPause: true },
-  { id: 13, title: 'Holder ON / Encoder ON (pre-corte)', type: 'action', sbsPause: false },
-  { id: 14, title: 'Delay tras cerrar holder', type: 'delay', delayKey: 'holderOnMs', defaultDurationMs: 200, sbsPause: true },
-  { id: 15, title: 'Cortador ON (+ All OK PreFeeder)', type: 'action', sbsPause: false },
+  { id: 1, title: 'Sujetar tubo (primera pieza)', type: 'action', sbsPause: false },
+  { id: 2, title: 'Espera: sujetador', type: 'delay', delayKey: 'holderOnMs', defaultDurationMs: 200, sbsPause: true },
+  { id: 3, title: 'Pedir material al alimentador', type: 'action', sbsPause: false },
+  { id: 4, title: 'Cargar material al área de corte', type: 'action', sbsPause: true },
+  { id: 5, title: 'Ajustar longitud del tubo', type: 'action', sbsPause: false },
+  { id: 6, title: 'Cerrar pinzas', type: 'action', sbsPause: false },
+  { id: 7, title: 'Espera: pinzas cerradas', type: 'delay', delayKey: 'grippersOnMs', defaultDurationMs: 100, sbsPause: false },
+  { id: 8, title: 'Referencia de medida', type: 'action', sbsPause: true },
+  { id: 9, title: 'Liberar tubo para avance', type: 'action', sbsPause: false },
+  { id: 10, title: 'Espera: tubo liberado', type: 'delay', delayKey: 'holderOpenMs', defaultDurationMs: 100, sbsPause: true },
+  { id: 11, title: 'Avance lineal al corte', type: 'action', sbsPause: false },
+  { id: 12, title: 'Espera antes del corte', type: 'delay', delayKey: 'linearDoneMs', defaultDurationMs: 100, sbsPause: true },
+  { id: 13, title: 'Sujetar antes del corte', type: 'action', sbsPause: false },
+  { id: 14, title: 'Espera: listo para cortar', type: 'delay', delayKey: 'holderOnMs', defaultDurationMs: 200, sbsPause: true },
+  { id: 15, title: 'Cortar tubo', type: 'action', sbsPause: false },
   {
     id: 16,
-    title: 'Delay entre Set y Res cortador',
+    title: 'Tiempo de corte (fijo)',
     type: 'delay',
     delayKey: 'cutterPulseMs',
     defaultDurationMs: 200,
     sbsPause: false,
     delayEditable: false,
-    note: 'Fijo ≥150 ms (pulso PLC KEEP) — no editable',
+    note: 'Duración fija del corte — no se puede cambiar',
   },
-  { id: 17, title: 'Cortador OFF', type: 'action', sbsPause: false },
-  { id: 18, title: 'Delay post-corte', type: 'delay', delayKey: 'cutterPostMs', defaultDurationMs: 100, sbsPause: true },
-  { id: 19, title: 'Extra / depósito lineal', type: 'action', sbsPause: false },
-  { id: 20, title: 'Delay tras depósito', type: 'delay', delayKey: 'dwellAtDestMs', defaultDurationMs: 150, sbsPause: true },
-  { id: 21, title: 'Pinzas abren', type: 'action', sbsPause: false },
-  { id: 22, title: 'Delay tras abrir pinzas', type: 'delay', delayKey: 'gripperReleaseMs', defaultDurationMs: 350, sbsPause: true },
-  { id: 23, title: 'Despeje ASDA post-pinzas (+clearance)', type: 'action', sbsPause: true },
-  { id: 24, title: 'HOME: WIP blower continuo (match lineal) → 0', type: 'action', sbsPause: true },
+  { id: 17, title: 'Apagar cortador', type: 'action', sbsPause: false },
+  { id: 18, title: 'Espera tras el corte', type: 'delay', delayKey: 'cutterPostMs', defaultDurationMs: 100, sbsPause: true },
+  { id: 19, title: 'Depositar pieza', type: 'action', sbsPause: false },
+  { id: 20, title: 'Espera en depósito', type: 'delay', delayKey: 'dwellAtDestMs', defaultDurationMs: 150, sbsPause: true },
+  { id: 21, title: 'Abrir pinzas', type: 'action', sbsPause: false },
+  { id: 22, title: 'Espera: pinzas abiertas', type: 'delay', delayKey: 'gripperReleaseMs', defaultDurationMs: 350, sbsPause: true },
+  { id: 23, title: 'Retroceso de seguridad', type: 'action', sbsPause: true },
+  { id: 24, title: 'Volver a posición inicial', type: 'action', sbsPause: true },
   {
     id: 25,
-    title: 'Feed post-HOME (ASDA=0) + Tfeed si alimenta',
+    title: 'Preparar siguiente pieza',
     type: 'action',
     sbsPause: true,
-    note: 'Solo si ASDA está en 0. Pieza siguiente: Tfeed + feed CAN. Última: omitido.',
+    note: 'Solo con la máquina en posición inicial. En la última pieza del lote se omite.',
   },
-  { id: 26, title: 'Delay asentar', type: 'delay', delayKey: 'asentarMs', defaultDurationMs: 50, sbsPause: false },
-  { id: 27, title: 'Post-pieza (safety / peer / settled)', type: 'action', sbsPause: false },
+  { id: 26, title: 'Espera: material asentado', type: 'delay', delayKey: 'asentarMs', defaultDurationMs: 50, sbsPause: false },
+  { id: 27, title: 'Comprobar pieza terminada', type: 'action', sbsPause: false },
 ]
 
 function stepsFromFlow(flow: BackendFlowStep[]): CycleStep[] {
@@ -102,6 +137,9 @@ function stepsFromFlow(flow: BackendFlowStep[]): CycleStep[] {
         ? (DEFAULT_CYCLE_CONFIG[delayKey] as number)
         : undefined;
     const sbsPause = s.sbsPause === true;
+    const note = s.note;
+    const delayEditable = s.delayEditable;
+
     if (s.kind === 'wait') {
       return {
         id: s.id,
@@ -110,6 +148,8 @@ function stepsFromFlow(flow: BackendFlowStep[]): CycleStep[] {
         delayKey,
         defaultDurationMs,
         sbsPause,
+        note,
+        delayEditable,
       };
     }
     if (s.kind === 'parallel') {
@@ -119,9 +159,11 @@ function stepsFromFlow(flow: BackendFlowStep[]): CycleStep[] {
         title: s.label,
         type: (isJoin ? 'join' : 'background') as CycleStep['type'],
         badge: isJoin ? 'join' : 'background',
-        note: isJoin
-          ? undefined
-          : 'Paso paralelo (no usado: el feed va tras HOME con ASDA=0).',
+        note:
+          note ??
+          (isJoin
+            ? undefined
+            : 'Paso en paralelo — el material se prepara al volver a inicio.'),
         sbsPause,
       };
     }
@@ -130,6 +172,7 @@ function stepsFromFlow(flow: BackendFlowStep[]): CycleStep[] {
       title: s.label,
       type: 'action' as const,
       sbsPause,
+      note,
     };
   });
 }
@@ -500,13 +543,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
     if (filterType === 'delay') return step.type === 'delay';
     return true;
   });
-  const compactInputCls =
-    'h-7 w-full rounded border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80 px-1.5 text-xs font-mono text-slate-900 dark:text-slate-100 focus:border-teal-500 focus:outline-hidden focus:ring-1 focus:ring-teal-500';
-  const cfgGrid = 'grid grid-cols-2 sm:grid-cols-4 gap-x-3 gap-y-2';
-  const cfgLabel =
-    'mb-0.5 block truncate text-[11px] font-medium text-slate-600 dark:text-slate-400';
-  const cfgChip =
-    'h-7 rounded-md px-2 text-[11px] font-mono font-semibold border';
+  const cfgLabel = `${hmiModuleFieldLabel} mb-1`;
 
   return (
     <div className="space-y-3">
@@ -518,12 +555,12 @@ export const CycleTab: React.FC<CycleTabProps> = ({
       )}
 
       {showRecoveryActions && (
-        <div className="flex flex-wrap items-center gap-3 rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/50 px-4 py-3 shadow-2xs">
+        <div className="flex flex-wrap items-center gap-3 rounded-md border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/50 px-3 py-3 shadow-2xs">
           <div className="min-w-0 flex-1">
-            <p className="text-xs font-bold text-amber-900 dark:text-amber-100">
+            <p className={`${hmiAssistTitle} text-amber-900 dark:text-amber-100`}>
               {recoveryTitle}
             </p>
-            <p className="text-[11px] text-amber-800/80 dark:text-amber-200/80 mt-0.5">
+            <p className={`mt-1 ${hmiAssistHint} text-amber-800/80 dark:text-amber-200/80`}>
               {recoveryHint}
             </p>
           </div>
@@ -533,7 +570,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
               type="button"
               onClick={onRefillRetry}
               disabled={!machineState.refillAwaitingConfirm}
-              className="flex items-center gap-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40"
+              className={hmiModuleBtnWarning}
             >
               <RotateCcw className="h-3.5 w-3.5" />
               {t('btn_refill_confirm_retry')}
@@ -546,7 +583,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
               type="button"
               onClick={() => onRefillConfirm(true)}
               disabled={!machineState.refillAwaitingConfirm}
-              className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40"
+              className={hmiModuleBtnSuccess}
             >
               <Check className="h-3.5 w-3.5" />
               {t('btn_refill_confirm_next_cut')}
@@ -559,7 +596,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                 type="button"
                 onClick={() => onRecoveryReview(false)}
                 disabled={!machineState.recoveryAwaitingConfirm}
-                className="flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-200 disabled:opacity-40"
+                className={hmiModuleBtnSecondary}
               >
                 <X className="h-3.5 w-3.5" />
                 {t('btn_e050_no_materialist')}
@@ -569,7 +606,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                 type="button"
                 onClick={() => onRecoveryReview(true)}
                 disabled={!machineState.recoveryAwaitingConfirm}
-                className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40"
+                className={hmiModuleBtnSuccess}
               >
                 <Check className="h-3.5 w-3.5" />
                 {t('btn_e050_yes_materialist')}
@@ -583,7 +620,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                 type="button"
                 onClick={() => onRecoveryReview(false)}
                 disabled={!machineState.recoveryAwaitingConfirm}
-                className="flex items-center gap-1.5 rounded-lg bg-red-600 hover:bg-red-700 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40"
+                className={hmiModuleBtnDanger}
               >
                 <X className="h-3.5 w-3.5" />
                 {t('btn_recovery_abort')}
@@ -593,7 +630,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                 type="button"
                 onClick={() => onRecoveryReview(true)}
                 disabled={!machineState.recoveryAwaitingConfirm}
-                className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40"
+                className={hmiModuleBtnSuccess}
               >
                 <Check className="h-3.5 w-3.5" />
                 {t('btn_recovery_abort_continue')}
@@ -609,7 +646,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                 type="button"
                 onClick={() => onRecoveryReview(true)}
                 disabled={!machineState.recoveryAwaitingConfirm}
-                className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40"
+                className={hmiModuleBtnSuccess}
               >
                 <Check className="h-3.5 w-3.5" />
                 {t('btn_recovery_purge_yes')}
@@ -619,7 +656,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                 type="button"
                 onClick={() => onRecoveryReview(false)}
                 disabled={!machineState.recoveryAwaitingConfirm}
-                className="flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-200 disabled:opacity-40"
+                className={hmiModuleBtnSecondary}
               >
                 <X className="h-3.5 w-3.5" />
                 {t('btn_recovery_purge_no')}
@@ -635,7 +672,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
               type="button"
               onClick={() => onRecoveryReview(true)}
               disabled={!machineState.recoveryAwaitingConfirm}
-              className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40"
+              className={hmiModuleBtnSuccess}
             >
               <Check className="h-3.5 w-3.5" />
               {recoveryStage === 'continue_cycle'
@@ -651,7 +688,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
               type="button"
               onClick={() => onRecoveryReview(true)}
               disabled={!machineState.recoveryAwaitingConfirm}
-              className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40"
+              className={hmiModuleBtnSuccess}
             >
               <Check className="h-3.5 w-3.5" />
               {t('btn_tray_emptied')}
@@ -660,16 +697,16 @@ export const CycleTab: React.FC<CycleTabProps> = ({
         </div>
       )}
       {showManualRefill && (
-        <div className="flex flex-wrap items-center gap-3 rounded-xl border border-sky-300 dark:border-sky-700 bg-sky-50 dark:bg-sky-950/50 px-4 py-3 shadow-2xs">
+        <div className="flex flex-wrap items-center gap-3 rounded-md border border-sky-300 dark:border-sky-700 bg-sky-50 dark:bg-sky-950/50 px-3 py-3 shadow-2xs">
           <div className="min-w-0 flex-1">
-            <p className="text-xs font-bold text-sky-900 dark:text-sky-100">
+            <p className={`${hmiAssistTitle} text-sky-900 dark:text-sky-100`}>
               {machineState.refillPrompt === 'working'
                 ? t('refill_confirm_title_working')
                 : machineState.refillPrompt === 'await_feed'
                   ? t('refill_confirm_title_await')
                   : t('refill_confirm_title_feed')}
             </p>
-            <p className="text-[11px] text-sky-800/80 dark:text-sky-200/80 mt-0.5">
+            <p className={`mt-1 ${hmiAssistHint} text-sky-800/80 dark:text-sky-200/80`}>
               {machineState.refillPrompt === 'working'
                 ? t('refill_confirm_hint_working')
                 : machineState.refillPrompt === 'await_feed'
@@ -683,7 +720,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
               type="button"
               onClick={onRefillRetry}
               disabled={!machineState.refillAwaitingConfirm}
-              className="flex items-center gap-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40 disabled:cursor-not-allowed"
+              className={hmiModuleBtnWarning}
             >
               <RotateCcw className="h-3.5 w-3.5" />
               {t('btn_refill_confirm_retry')}
@@ -695,7 +732,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
               type="button"
               onClick={() => onRefillConfirm(true)}
               disabled={!machineState.refillAwaitingConfirm}
-              className="flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-40 disabled:cursor-not-allowed"
+              className={hmiModuleBtnSuccess}
             >
               <Check className="h-3.5 w-3.5" />
               {t('btn_refill_confirm_next_cut')}
@@ -705,26 +742,26 @@ export const CycleTab: React.FC<CycleTabProps> = ({
       )}
 
       {/* SECTION 1: CYCLE SEQUENCE */}
-      <div className="rounded-xl border border-slate-200 dark:border-slate-800/80 bg-white dark:bg-slate-900 shadow-2xs">
-        <div className="border-b border-slate-200 dark:border-slate-800 p-4 sm:px-6 flex flex-wrap items-center justify-between gap-3">
+      <div className={hmiPanelCls}>
+        <div className={`${hmiPanelHeader} ${hmiPanelPadding} !mb-0 border-slate-200 dark:border-slate-800`}>
           <div>
-            <div className="flex items-center gap-2.5 flex-wrap">
+            <div className="flex flex-wrap items-center gap-2.5">
               <div className="flex items-center gap-2">
-                <Sliders className="h-4 w-4 text-teal-600 dark:text-teal-400" />
-                <h2 className="text-sm font-bold tracking-wider uppercase text-slate-900 dark:text-slate-100">
+                <Sliders className={`${hmiModuleIconSection} text-teal-600 dark:text-teal-400`} />
+                <h2 className={`${hmiModuleCenterSectionTitle} text-slate-900 dark:text-slate-100`}>
                   {t('cycle_sequence_title')}
                 </h2>
               </div>
-              <span className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 px-2.5 py-0.5 rounded-md border border-slate-200 dark:border-slate-700 text-xs font-mono shadow-2xs">
-                <Clock className="h-3.5 w-3.5 text-sky-500" />
+              <span className={`${hmiCycleTimeChip} border-slate-200 bg-slate-100 text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200`}>
+                <Clock className="h-4 w-4 text-sky-500 sm:h-5 sm:w-5" />
                 <span>Est. delays: <strong className="text-teal-600 dark:text-teal-400">~{estimatedTotalTimeSec}s</strong></span>
               </span>
               {showLiveCt && (
                 <span
-                  className="flex items-center gap-1 bg-teal-50 dark:bg-teal-950/40 text-teal-800 dark:text-teal-200 px-2.5 py-0.5 rounded-md border border-teal-200 dark:border-teal-800 text-xs font-mono shadow-2xs"
+                  className={`${hmiCycleTimeChip} border-teal-200 bg-teal-50 text-teal-800 dark:border-teal-800 dark:bg-teal-950/40 dark:text-teal-200`}
                   title={t('cycle_time_hint')}
                 >
-                  <Timer className="h-3.5 w-3.5" />
+                  <Timer className="h-4 w-4 sm:h-5 sm:w-5" />
                   <span>
                     {t('cycle_time_label')}:{' '}
                     <strong>{liveCtSec}s</strong>
@@ -738,24 +775,22 @@ export const CycleTab: React.FC<CycleTabProps> = ({
             </div>
           </div>
 
-          <div className="flex items-center gap-2 flex-wrap">
-            <div className="flex items-center bg-slate-100 dark:bg-slate-800 p-0.5 rounded-lg border border-slate-200 dark:border-slate-700 text-xs">
+          <div className={hmiModuleBtnGroup}>
+            <div className={hmiModuleBtnSegWrap}>
               <button
+                type="button"
                 onClick={() => setFilterType('all')}
-                className={`px-2.5 py-1 rounded-md transition cursor-pointer ${
-                  filterType === 'all'
-                    ? 'bg-white dark:bg-slate-700 font-bold text-slate-900 dark:text-white shadow-2xs'
-                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
-                }`}
+                className={`${hmiModuleBtnSeg} ${filterType === 'all' ? hmiModuleBtnSegActive : hmiModuleBtnSegIdle}`}
               >
                 {t('cycle_sequence_title')} ({sequenceSteps.length})
               </button>
               <button
+                type="button"
                 onClick={() => setFilterType('delay')}
-                className={`px-2.5 py-1 rounded-md transition cursor-pointer ${
+                className={`${hmiModuleBtnSeg} ${
                   filterType === 'delay'
-                    ? 'bg-white dark:bg-slate-700 font-bold text-teal-600 dark:text-teal-400 shadow-2xs'
-                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
+                    ? `${hmiModuleBtnSegActive} text-teal-600 dark:text-teal-400`
+                    : hmiModuleBtnSegIdle
                 }`}
               >
                 {t('cycle_step_filter_delays')}
@@ -765,31 +800,34 @@ export const CycleTab: React.FC<CycleTabProps> = ({
             {!stepModeActive ? (
               <button
                 id="btn-step-by-step"
+                type="button"
                 onClick={handleStartStepMode}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition shadow-2xs cursor-pointer bg-teal-50 dark:bg-teal-950/40 text-teal-700 dark:text-teal-300 border-teal-300 dark:border-teal-800 hover:bg-teal-100 dark:hover:bg-teal-900/60"
+                className={hmiModuleBtnTealSoft}
               >
-                <Footprints className="h-3.5 w-3.5" />
+                <Footprints className={hmiModuleIconBtn} />
                 <span>{t('btn_step_by_step')}</span>
               </button>
             ) : (
-              <div className="flex items-center gap-1 bg-teal-500/10 dark:bg-teal-950/60 border border-teal-500/40 rounded-lg p-0.5 sm:p-1 shadow-2xs animate-in fade-in">
+              <div className={hmiBtnToolbarWrap}>
                 <button
                   id="btn-step-prev"
+                  type="button"
                   onClick={handlePrevStep}
                   disabled={cycleActive || activeStepNum === 1}
                   title={t('btn_prev_step')}
-                  className="flex items-center gap-0.5 px-2 py-1 rounded text-xs font-bold text-teal-700 dark:text-teal-300 hover:bg-teal-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition cursor-pointer"
+                  className={`${hmiModuleBtnSeg} text-teal-700 hover:bg-teal-500/20 dark:text-teal-300`}
                 >
-                  <ChevronLeft className="h-3.5 w-3.5" />
+                  <ChevronLeft className={hmiModuleIconBtn} />
                   <span className="hidden sm:inline">{t('btn_prev_step')}</span>
                 </button>
 
-                <span className="font-mono text-xs font-bold text-teal-900 dark:text-teal-100 px-2 py-0.5 bg-white dark:bg-slate-800 rounded border border-teal-500/30">
+                <span className={`${hmiModuleBtnSeg} ${hmiModuleBtnSegActive} font-mono`}>
                   {(cycleActive ? cycleStep : activeStepNum) ?? 1}/{maxStepId}
                 </span>
 
                 <button
                   id="btn-step-next"
+                  type="button"
                   onClick={handleNextStep}
                   disabled={!canExecuteNext}
                   title={
@@ -801,48 +839,50 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                       ? t('btn_next_step_start')
                       : t('btn_next_step')
                   }
-                  className="flex items-center gap-0.5 px-2.5 py-1 rounded text-xs font-bold bg-teal-600 hover:bg-teal-500 text-white disabled:opacity-40 disabled:cursor-not-allowed transition cursor-pointer"
+                  className={hmiModuleBtnPrimary}
                 >
                   <span>{t('btn_next_step')}</span>
-                  <ChevronRight className="h-3.5 w-3.5" />
+                  <ChevronRight className={hmiModuleIconBtn} />
                 </button>
 
                 <button
                   id="btn-step-exit"
+                  type="button"
                   onClick={handleExitStepMode}
                   title={t('btn_exit_step_mode')}
-                  className="flex h-6 w-6 items-center justify-center rounded hover:bg-rose-500/20 text-slate-400 hover:text-rose-500 transition cursor-pointer"
+                  className={`${hmiModuleBtnSeg} text-slate-400 hover:bg-rose-500/20 hover:text-rose-500`}
                 >
-                  <X className="h-3.5 w-3.5" />
+                  <X className={hmiModuleIconBtn} />
                 </button>
               </div>
             )}
 
             <button
+              type="button"
               onClick={handleSave}
               title={t('btn_save')}
-              className="flex items-center gap-1.5 rounded-lg bg-teal-600 hover:bg-teal-500 text-white px-3 py-1.5 text-xs font-bold shadow-2xs transition active:scale-95 cursor-pointer"
+              className={hmiModuleBtnPrimary}
             >
-              <Save className="h-3.5 w-3.5" />
+              <Save className={hmiModuleIconBtn} />
               <span>{t('btn_save')}</span>
             </button>
           </div>
         </div>
 
         {backendHasPrefetch && (
-          <div className="mx-4 sm:mx-6 mt-3 flex items-center gap-2 rounded-lg border border-rose-300/80 bg-rose-50 dark:border-rose-700/60 dark:bg-rose-950/40 px-3 py-2 text-xs text-rose-900 dark:text-rose-200">
+          <div className="mx-3 mt-3 flex items-center gap-2 rounded-md border border-rose-300/80 bg-rose-50 px-3 py-2 text-sm text-rose-900 dark:border-rose-700/60 dark:bg-rose-950/40 dark:text-rose-200 sm:mx-4">
             <ShieldAlert className="h-4 w-4 shrink-0" />
             <span>{t('cycle_stale_prefetch_warning')}</span>
           </div>
         )}
         {configDirty && (
-          <div className="mx-4 sm:mx-6 mt-3 flex items-center gap-2 rounded-lg border border-amber-300/80 bg-amber-50 dark:border-amber-700/60 dark:bg-amber-950/40 px-3 py-2 text-xs text-amber-900 dark:text-amber-200">
+          <div className="mx-3 mt-3 flex items-center gap-2 rounded-md border border-amber-300/80 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-700/60 dark:bg-amber-950/40 dark:text-amber-200 sm:mx-4">
             <ShieldAlert className="h-4 w-4 shrink-0" />
             <span>{t('cycle_unsaved_warning')}</span>
           </div>
         )}
 
-        <div className="max-h-[500px] overflow-y-auto p-2 sm:p-4 space-y-1.5 divide-y divide-slate-100 dark:divide-slate-800/60 font-sans">
+        <div className="max-h-[min(520px,52vh)] overflow-y-auto space-y-1 p-3 sm:p-4">
           {filteredSteps.map((step) => {
             const isCurrent = currentRunningStep === step.id;
             const stepDelayVal = step.delayKey
@@ -853,7 +893,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
             return (
               <div
                 key={step.id}
-                className={`group flex items-center justify-between p-2 sm:px-3.5 rounded-lg transition-all ${
+                className={`${hmiCycleStepRow} ${
                   isCurrent
                     ? 'bg-teal-500/10 dark:bg-teal-950/60 border border-teal-500/40 shadow-xs ring-1 ring-teal-500/20'
                     : step.type === 'background'
@@ -865,9 +905,9 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                     : 'hover:bg-slate-50 dark:hover:bg-slate-800/40'
                 }`}
               >
-                <div className="flex items-start sm:items-center gap-2.5 sm:gap-3.5 min-w-0 flex-1">
+                <div className="flex items-start sm:items-center gap-3 sm:gap-4 min-w-0 flex-1">
                   {step.type === 'action' && (
-                    <div className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-mono font-bold border ${
+                    <div className={`${hmiCycleStepIcon} ${
                       isCurrent
                         ? 'bg-teal-500 text-white border-teal-600 ring-2 ring-teal-300'
                         : 'border-teal-500/40 text-teal-600 dark:text-teal-400 bg-teal-50/50 dark:bg-teal-950/30'
@@ -877,34 +917,34 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                   )}
 
                   {step.type === 'delay' && (
-                    <div className={`flex h-6 w-6 shrink-0 items-center justify-center rounded text-xs font-mono font-medium ${
+                    <div className={`${hmiCycleStepIcon} rounded-md ${
                       isCurrent
-                        ? 'bg-teal-500 text-white ring-2 ring-teal-300'
-                        : 'text-teal-600 dark:text-teal-400 bg-teal-50/80 dark:bg-teal-950/40'
+                        ? 'bg-teal-500 text-white ring-2 ring-teal-300 border-transparent'
+                        : 'text-teal-600 dark:text-teal-400 bg-teal-50/80 dark:bg-teal-950/40 border-teal-500/30'
                     }`}>
-                      <Timer className="h-4 w-4" />
+                      <Timer className="h-5 w-5 sm:h-6 sm:w-6" />
                     </div>
                   )}
 
                   {step.type === 'background' && (
-                    <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 font-mono font-black text-xs border border-amber-300 dark:border-amber-800">
+                    <div className={`${hmiCycleStepIcon} rounded-md bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 border-amber-300 dark:border-amber-800`}>
                       ||
                     </div>
                   )}
 
                   {step.type === 'join' && (
-                    <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-teal-100 dark:bg-teal-950 text-teal-700 dark:text-teal-400 font-mono font-black text-xs border border-teal-300 dark:border-teal-800">
+                    <div className={`${hmiCycleStepIcon} rounded-md bg-teal-100 dark:bg-teal-950 text-teal-700 dark:text-teal-400 border-teal-300 dark:border-teal-800`}>
                       ||
                     </div>
                   )}
 
-                  <span className="font-mono text-xs font-semibold text-slate-400 dark:text-slate-500 min-w-[20px]">
+                  <span className="font-mono text-sm font-semibold text-slate-400 dark:text-slate-500 min-w-[1.75rem] sm:text-base">
                     {step.id}
                   </span>
 
                   <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className={`text-xs sm:text-sm font-medium ${
+                    <div className="flex items-center gap-2.5 flex-wrap">
+                      <span className={`${hmiCycleStepTitle} ${
                         isCurrent
                           ? 'font-bold text-teal-900 dark:text-teal-100'
                           : step.type === 'delay'
@@ -915,71 +955,71 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                       </span>
 
                       {step.badge === 'background' && (
-                        <span className="rounded bg-amber-500/20 text-amber-700 dark:text-amber-400 border border-amber-500/30 px-1.5 py-0.2 font-mono text-[10px] font-bold uppercase">
-                          background
+                        <span className={`${hmiCycleStepBadge} bg-amber-500/20 text-amber-700 dark:text-amber-400 border-amber-500/30`}>
+                          {t('badge_background')}
                         </span>
                       )}
 
                       {step.badge === 'join' && (
-                        <span className="rounded bg-teal-500/20 text-teal-700 dark:text-teal-400 border border-teal-500/30 px-1.5 py-0.2 font-mono text-[10px] font-bold uppercase">
-                          join
+                        <span className={`${hmiCycleStepBadge} bg-teal-500/20 text-teal-700 dark:text-teal-400 border-teal-500/30`}>
+                          {t('badge_join')}
                         </span>
                       )}
 
                       {stepModeActive && step.sbsPause && (
-                        <span className="rounded bg-teal-600/15 text-teal-800 dark:text-teal-300 border border-teal-500/25 px-1.5 py-0.2 font-mono text-[10px] font-bold uppercase">
+                        <span className={`${hmiCycleStepBadge} bg-teal-600/15 text-teal-800 dark:text-teal-300 border-teal-500/25`}>
                           {t('step_sbs_checkpoint')}
                         </span>
                       )}
 
                       {stepModeActive && !step.sbsPause && (
-                        <span className="rounded bg-slate-500/10 text-slate-500 dark:text-slate-400 border border-slate-400/20 px-1.5 py-0.2 font-mono text-[10px] font-bold uppercase">
+                        <span className={`${hmiCycleStepBadge} bg-slate-500/10 text-slate-500 dark:text-slate-400 border-slate-400/20`}>
                           {t('step_sbs_auto')}
                         </span>
                       )}
 
                       {isCurrent && (
-                        <span className="inline-flex items-center gap-1 rounded bg-teal-500 text-white px-2 py-0.2 font-mono text-[10px] font-bold animate-pulse">
-                          EN EJECUCIÓN
+                        <span className={`${hmiCycleStepBadge} bg-teal-500 text-white border-teal-600 animate-pulse normal-case tracking-normal`}>
+                          {t('cycle_step_running')}
                         </span>
                       )}
                     </div>
 
                     {step.note && (
-                      <p className="mt-1 text-[11px] italic text-slate-500 dark:text-slate-400">
+                      <p className={`${hmiCycleStepNote} italic`}>
                         • {step.note}
                       </p>
                     )}
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2 shrink-0 ml-2">
+                <div className="flex items-center gap-2 shrink-0 ml-3">
                   {step.type === 'delay' && step.delayKey && (
                     step.delayEditable === false ||
                     (step.delayKey && LOCKED_DELAY_KEYS.has(step.delayKey)) ? (
                       <div
-                        className="flex items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800/80 px-2.5 py-1 shadow-2xs"
-                        title="Fijo por pulso PLC KEEP (≥150 ms)"
+                        className="flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800/80 px-3 py-2 shadow-2xs"
+                        title={t('cycle_step_fixed_delay_hint')}
                       >
-                        <span className="font-mono font-bold text-xs sm:text-sm text-slate-600 dark:text-slate-300">
+                        <span className="font-mono font-bold text-sm text-slate-600 dark:text-slate-300 sm:text-base">
                           {Math.max(150, delayMs)}
                         </span>
-                        <span className="text-[11px] font-mono text-slate-400 dark:text-slate-500 select-none">
+                        <span className="text-sm font-mono text-slate-400 dark:text-slate-500 select-none">
                           ms
                         </span>
                       </div>
                     ) : (
-                    <div className="flex items-center gap-1 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 hover:border-teal-500 dark:hover:border-teal-500 rounded-lg p-0.5 shadow-2xs transition">
+                    <div className="flex items-center gap-1 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 hover:border-teal-500 dark:hover:border-teal-500 rounded-lg p-1 shadow-2xs transition">
                       <button
                         type="button"
                         onClick={() => handleUpdateDelay(step.delayKey, Math.max(0, delayMs - 25))}
                         title="Restar 25ms"
-                        className="flex h-6 w-6 items-center justify-center rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white transition active:scale-95 cursor-pointer"
+                        className="flex h-8 w-8 items-center justify-center rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white transition active:scale-95 cursor-pointer sm:h-9 sm:w-9"
                       >
-                        <Minus className="h-3 w-3" />
+                        <Minus className="h-4 w-4" />
                       </button>
 
-                      <div className="flex items-center gap-0.5 px-1">
+                      <div className="flex items-center gap-1 px-1">
                         <input
                           id={`input-delay-step-${step.id}`}
                           type="number"
@@ -987,9 +1027,9 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                           step={10}
                           value={Number.isFinite(delayMs) ? delayMs : ''}
                           onChange={(e) => handleUpdateDelay(step.delayKey, Number(e.target.value))}
-                          className="w-16 sm:w-20 bg-transparent text-center font-mono font-bold text-xs sm:text-sm text-teal-600 dark:text-teal-400 focus:outline-hidden focus:ring-1 focus:ring-teal-500 rounded"
+                          className="w-20 sm:w-24 bg-transparent text-center font-mono font-bold text-base text-teal-600 dark:text-teal-400 focus:outline-hidden focus:ring-1 focus:ring-teal-500 rounded sm:text-lg"
                         />
-                        <span className="text-[11px] font-mono text-slate-400 dark:text-slate-500 select-none">
+                        <span className="text-sm font-mono text-slate-400 dark:text-slate-500 select-none">
                           ms
                         </span>
                       </div>
@@ -998,9 +1038,9 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                         type="button"
                         onClick={() => handleUpdateDelay(step.delayKey, delayMs + 25)}
                         title="Sumar 25ms"
-                        className="flex h-6 w-6 items-center justify-center rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white transition active:scale-95 cursor-pointer"
+                        className="flex h-8 w-8 items-center justify-center rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white transition active:scale-95 cursor-pointer sm:h-9 sm:w-9"
                       >
-                        <Plus className="h-3 w-3" />
+                        <Plus className="h-4 w-4" />
                       </button>
                     </div>
                     )
@@ -1012,15 +1052,15 @@ export const CycleTab: React.FC<CycleTabProps> = ({
         </div>
       </div>
 
-      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-3 shadow-2xs space-y-3">
+      <div className={`${hmiPanelCls} space-y-3 p-3 sm:p-4`}>
         <div>
           <div className="mb-1.5 flex items-center gap-1.5">
             <Droplets className="h-3.5 w-3.5 text-sky-600 dark:text-sky-400" />
-            <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+            <h3 className={hmiSectionTitleMb}>
               {t('refill_helpers_title')}
             </h3>
           </div>
-          <div className={cfgGrid}>
+          <div className={hmiCfgGrid}>
             <label className="min-w-0">
               <span className={cfgLabel}>{t('cfg_refill_mm')}</span>
               <input
@@ -1029,7 +1069,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                 step={0.5}
                 value={config.refillMm ?? 55}
                 onChange={(e) => updateConfigField('refillMm', Number(e.target.value))}
-                className={compactInputCls}
+                className={hmiModuleCompactFieldInput}
               />
             </label>
             <label className="min-w-0">
@@ -1039,7 +1079,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                 step={1}
                 value={config.refillAsdaMm ?? -300}
                 onChange={(e) => updateConfigField('refillAsdaMm', Number(e.target.value))}
-                className={compactInputCls}
+                className={hmiModuleCompactFieldInput}
               />
             </label>
           </div>
@@ -1048,23 +1088,21 @@ export const CycleTab: React.FC<CycleTabProps> = ({
         <div className="border-t border-slate-100 dark:border-slate-800 pt-2.5">
           <div className="mb-1.5 flex items-center gap-1.5">
             <Boxes className="h-3.5 w-3.5 text-teal-600 dark:text-teal-400" />
-            <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+            <h3 className={hmiSectionTitleMb}>
               {t('material_handling_title')}
             </h3>
           </div>
-          <div className={cfgGrid}>
+          <div className={hmiCfgGrid}>
             <div className="min-w-0">
               <span className={cfgLabel}>{t('cfg_feed_sides')}</span>
-              <div className="flex h-7 items-center gap-1">
+              <div className="flex items-center gap-1">
                 {(['L', 'R', 'LR'] as const).map((side) => (
                   <button
                     key={side}
                     type="button"
                     onClick={() => handleFeedSides(side)}
-                    className={`${cfgChip} ${
-                      config.feedSides === side
-                        ? 'bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 border-slate-900 dark:border-white'
-                        : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700'
+                    className={`${hmiModuleBtnChip} ${
+                      config.feedSides === side ? hmiModuleBtnChipOn : hmiModuleBtnChipOff
                     }`}
                   >
                     {side === 'LR' ? t('cfg_feed_sides_both') : side}
@@ -1074,16 +1112,16 @@ export const CycleTab: React.FC<CycleTabProps> = ({
             </div>
             <div className="min-w-0">
               <span className={cfgLabel}>{t('cfg_pf_trigger')}</span>
-              <div className="flex h-7 items-center gap-1">
+              <div className="flex items-center gap-1">
                 {([true, false] as const).map((on) => (
                   <button
                     key={on ? 'on' : 'off'}
                     type="button"
                     onClick={() => updateConfigField('pfTriggerEnabled', on)}
-                    className={`${cfgChip} ${
+                    className={`${hmiModuleBtnChip} ${
                       (config.pfTriggerEnabled !== false) === on
-                        ? 'bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 border-slate-900 dark:border-white'
-                        : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700'
+                        ? hmiModuleBtnChipOn
+                        : hmiModuleBtnChipOff
                     }`}
                   >
                     {on ? t('cfg_pf_trigger_on') : t('cfg_pf_trigger_off')}
@@ -1098,7 +1136,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                 min={1}
                 value={config.depositBatchSize}
                 onChange={(e) => updateConfigField('depositBatchSize', Number(e.target.value))}
-                className={compactInputCls}
+                className={hmiModuleCompactFieldInput}
               />
             </label>
             <label className="min-w-0">
@@ -1108,7 +1146,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                 step={0.1}
                 value={config.depositExtraMm}
                 onChange={(e) => updateConfigField('depositExtraMm', Number(e.target.value))}
-                className={compactInputCls}
+                className={hmiModuleCompactFieldInput}
               />
             </label>
             <label className="min-w-0">
@@ -1119,7 +1157,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                 min={0}
                 value={config.depositStackGapMm ?? 20}
                 onChange={(e) => updateConfigField('depositStackGapMm', Number(e.target.value))}
-                className={compactInputCls}
+                className={hmiModuleCompactFieldInput}
               />
             </label>
             <label className="min-w-0">
@@ -1130,7 +1168,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                 min={1}
                 value={config.depositMaxTravelMm ?? 1500}
                 onChange={(e) => updateConfigField('depositMaxTravelMm', Number(e.target.value))}
-                className={compactInputCls}
+                className={hmiModuleCompactFieldInput}
               />
             </label>
             <label className="min-w-0">
@@ -1141,7 +1179,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                 min={0}
                 value={config.gripperClearanceMm ?? 0}
                 onChange={(e) => updateConfigField('gripperClearanceMm', Number(e.target.value))}
-                className={compactInputCls}
+                className={hmiModuleCompactFieldInput}
               />
             </label>
             <label className="min-w-0">
@@ -1151,7 +1189,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                 step={0.1}
                 value={config.cutOffsetMm ?? 0}
                 onChange={(e) => updateConfigField('cutOffsetMm', Number(e.target.value))}
-                className={compactInputCls}
+                className={hmiModuleCompactFieldInput}
               />
             </label>
             <label className="min-w-0">
@@ -1163,7 +1201,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                 onChange={(e) =>
                   updateConfigField('wipBlowerInicioOffsetMm', Number(e.target.value))
                 }
-                className={compactInputCls}
+                className={hmiModuleCompactFieldInput}
               />
             </label>
           </div>
@@ -1172,11 +1210,11 @@ export const CycleTab: React.FC<CycleTabProps> = ({
         <div className="border-t border-slate-100 dark:border-slate-800 pt-2.5">
           <div className="mb-1.5 flex items-center gap-1.5">
             <ShieldAlert className="h-3.5 w-3.5 text-teal-600 dark:text-teal-400" />
-            <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+            <h3 className={hmiSectionTitleMb}>
               {t('timeouts_title')}
             </h3>
           </div>
-          <div className={cfgGrid}>
+          <div className={hmiCfgGrid}>
             <label className="min-w-0">
               <span className={cfgLabel}>{t('cfg_timeout_piece')}</span>
               <input
@@ -1184,7 +1222,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                 min={3}
                 value={config.pieceWatchTimeoutS ?? 20}
                 onChange={(e) => updateConfigField('pieceWatchTimeoutS', Number(e.target.value))}
-                className={compactInputCls}
+                className={hmiModuleCompactFieldInput}
               />
             </label>
             <label className="min-w-0">
@@ -1194,7 +1232,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                 min={1}
                 value={config.motionWaitTimeoutS}
                 onChange={(e) => updateConfigField('motionWaitTimeoutS', Number(e.target.value))}
-                className={compactInputCls}
+                className={hmiModuleCompactFieldInput}
               />
             </label>
             <label className="min-w-0">
@@ -1204,7 +1242,7 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                 min={1}
                 value={config.feedWaitTimeoutS}
                 onChange={(e) => updateConfigField('feedWaitTimeoutS', Number(e.target.value))}
-                className={compactInputCls}
+                className={hmiModuleCompactFieldInput}
               />
             </label>
             <label className="min-w-0">
@@ -1214,29 +1252,31 @@ export const CycleTab: React.FC<CycleTabProps> = ({
                 min={1}
                 value={config.pfReadyTimeoutS}
                 onChange={(e) => updateConfigField('pfReadyTimeoutS', Number(e.target.value))}
-                className={compactInputCls}
+                className={hmiModuleCompactFieldInput}
               />
             </label>
           </div>
         </div>
       </div>
 
-      <div className="flex items-center gap-3">
+      <div className={hmiModuleBtnGroup}>
         <button
           id="btn-save-cycle-config"
+          type="button"
           onClick={handleSave}
-          className="flex items-center gap-2 rounded-lg bg-teal-600 hover:bg-teal-500 text-white px-5 py-2 text-sm font-bold shadow-2xs transition active:scale-95 cursor-pointer"
+          className={hmiModuleBtnPrimary}
         >
-          <Save className="h-4 w-4" />
+          <Save className={hmiModuleIconBtn} />
           <span>{t('btn_save')}</span>
         </button>
 
         <button
           id="btn-reload-cycle-config"
+          type="button"
           onClick={handleReload}
-          className="flex items-center gap-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 px-4 py-2 text-sm font-semibold shadow-2xs transition active:scale-95 cursor-pointer"
+          className={hmiModuleBtnSecondary}
         >
-          <RotateCcw className="h-4 w-4 text-slate-500" />
+          <RotateCcw className={hmiModuleIconBtn} />
           <span>{t('btn_reload')}</span>
         </button>
       </div>

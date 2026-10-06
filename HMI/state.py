@@ -13,9 +13,13 @@ from pathlib import Path
 from typing import Any, Callable
 
 HMI_ROOT = Path(__file__).resolve().parent
+
+from checklist import ChecklistManager
 PLC_CONFIG_PATH = HMI_ROOT / "config" / "plc_config.json"
 APP_CONFIG_PATH = HMI_ROOT / "config" / "app_config.json"
 DEFAULT_BLOWER_SEC = 2.0
+
+
 DEFAULT_ANDON_BUZZER_MUTE = False
 # CMD_MOVE (0x05): reintentos de transporte acotados (no loop infinito).
 MOTION_MOVE_TX_ATTEMPTS = 3  # 1 envío + 2 reintentos máx.
@@ -312,6 +316,11 @@ class HmiState:
         self._andon_buzzer_mute = DEFAULT_ANDON_BUZZER_MUTE
         self._andon_mute_resync = False
         self._debug_password = "tcm"
+        self._maintenance_cycle_count = 0
+        self._checklist = ChecklistManager(
+            log_fn=lambda msg: _append_log(self._main_log, msg),
+            notify_fn=self._on_checklist_changed,
+        )
         self._load_app_config()
         self._andon = {
             "connected": False,
@@ -452,6 +461,7 @@ class HmiState:
         if self._started:
             return
         self._started = True
+        self._checklist.mark_required_on_boot()
         self._notify_thread.start()
         self._client.start_background()
         self._plc_client.start_background()
@@ -503,7 +513,31 @@ class HmiState:
                     pass
 
     def _notify(self) -> None:
-        self._notify_event.set()
+        ev = getattr(self, "_notify_event", None)
+        if ev is not None:
+            ev.set()
+
+    def _on_checklist_changed(self) -> None:
+        self._sync_checklist_andon()
+        self._notify()
+
+    def _sync_checklist_andon(self) -> None:
+        """Durante checklist: rojo+alarma si hay error; verde al corregir."""
+        with self._lock:
+            if self._error_policy.latch.active:
+                return
+            if self._cycle.is_active() and not self._checklist.allow_checklist_piece_start():
+                return
+        cl = self._checklist.snapshot(self)
+        session = cl.get("session")
+        if not session:
+            if not cl.get("required"):
+                self._broadcast_machine_state(self._cycle.state_byte())
+            return
+        if cl.get("stepError") or cl.get("workerError"):
+            self._broadcast_machine_state(MACH_ERROR)
+        else:
+            self._broadcast_machine_state(MACH_IDLE)
 
     def snapshot(self, *, slim: bool = False) -> dict[str, Any]:
         cycle_snap = self._cycle.snapshot()
@@ -542,17 +576,17 @@ class HmiState:
                 "resumeEnabled": resume,
                 "cycle": cycle_snap,
                 "motionLink": {
-                    "connected": self._motion["connected"],
+                    "connected": self.motion_connected(),
                     "host": DEFAULT_HOST,
                     "port": DEFAULT_PORT,
                 },
                 "plcLink": {
-                    "connected": self._plc["connected"],
+                    "connected": self.plc_connected(),
                     "host": PLC_HOST,
                     "port": PLC_PORT,
                 },
                 "pfLink": {
-                    "connected": self._pf["connected"],
+                    "connected": self.pf_connected(),
                     "host": PF_HOST,
                     "port": PF_PORT,
                 },
@@ -563,7 +597,9 @@ class HmiState:
                 },
                 "appConfig": {
                     "andonBuzzerMute": self._andon_buzzer_mute,
+                    "maintenanceCycleCount": int(self._maintenance_cycle_count),
                 },
+                "checklist": self._checklist.snapshot(self),
                 "andon": {
                     "connected": self._andon["connected"],
                     "green": self._andon["green"],
@@ -574,13 +610,18 @@ class HmiState:
                     "byte": self._andon.get("byte"),
                     "pressure": self._andon.get("pressure", False),
                 },
-                "motion": dict(self._motion),
+                "motion": {
+                    **dict(self._motion),
+                    "connected": self.motion_connected(),
+                },
                 "plc": {
                     **self._plc,
+                    "connected": self.plc_connected(),
                     "valves": {k: dict(v) for k, v in self._plc["valves"].items()},
                 },
                 "prefeeder": {
                     **self._pf,
+                    "connected": self.pf_connected(),
                     "errors": {k: dict(v) for k, v in self._pf["errors"].items()},
                 },
                 "logs": {
@@ -1485,8 +1526,11 @@ class HmiState:
 
     # --- Comandos máquina / ciclo ---
 
-    def cmd_start(self, qty: int | None = None) -> dict:
+    def cmd_start(self, qty: int | None = None, *, checklist_bypass: bool = False) -> dict:
         """Start máquina (0x040): lote Cycle con mm/qty del modelo."""
+        if not checklist_bypass and self._checklist.is_start_blocked():
+            if not self._checklist.allow_checklist_piece_start():
+                return {"ok": False, "error": "Checklist pendiente"}
         with self._lock:
             blocked = self._work_blocked_error()
             if blocked:
@@ -1512,7 +1556,7 @@ class HmiState:
                     _append_log(self._main_log, f"Start rechazado: {err}")
                 self._notify()
             return res
-        if self._pf_client.connected:
+        if self.pf_connected():
             if not self._manual_pf(lambda: self._pf_client.cmd_start()):
                 return {"ok": False, "error": "PreFeeder no aceptó Start"}
         return res
@@ -1839,7 +1883,7 @@ class HmiState:
 
         e050_lot = (
             code == "E050"
-            and self._cycle.is_active()
+            and self._cycle.is_lot_alive()
             and not self._cycle.is_refill_active()
         )
         if e050_lot:
@@ -1862,18 +1906,29 @@ class HmiState:
                 self._andon_buzzer_mute = bool(data["andonBuzzerMute"])
             if "debugPassword" in data and str(data["debugPassword"]).strip():
                 self._debug_password = str(data["debugPassword"]).strip()
+            if "maintenanceCycleCount" in data:
+                try:
+                    self._maintenance_cycle_count = max(
+                        0, int(data["maintenanceCycleCount"])
+                    )
+                except (TypeError, ValueError):
+                    pass
+            self._checklist.load_from_config(data)
         except Exception:
             pass
 
     def _save_app_config(self) -> None:
         try:
             APP_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            merged = {
+                "andonBuzzerMute": self._andon_buzzer_mute,
+                "debugPassword": self._debug_password,
+                "maintenanceCycleCount": self._maintenance_cycle_count,
+            }
+            merged.update(self._checklist.export_to_config())
             APP_CONFIG_PATH.write_text(
                 json.dumps(
-                    {
-                        "andonBuzzerMute": self._andon_buzzer_mute,
-                        "debugPassword": self._debug_password,
-                    },
+                    merged,
                     indent=2,
                     ensure_ascii=False,
                 )
@@ -1886,7 +1941,10 @@ class HmiState:
     def get_app_config(self) -> dict[str, Any]:
         with self._lock:
             # No exponer debugPassword al cliente
-            return {"andonBuzzerMute": self._andon_buzzer_mute}
+            return {
+                "andonBuzzerMute": self._andon_buzzer_mute,
+                "maintenanceCycleCount": int(self._maintenance_cycle_count),
+            }
 
     def set_app_config(self, data: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
@@ -1905,6 +1963,55 @@ class HmiState:
         self._load_app_config()
         with self._lock:
             return str(password).strip() == str(self._debug_password).strip()
+
+    def increment_maintenance_cycle_count(self) -> int:
+        with self._lock:
+            self._maintenance_cycle_count += 1
+            count = int(self._maintenance_cycle_count)
+            self._save_app_config()
+        self._notify()
+        return count
+
+    def reset_maintenance_cycle_count(
+        self, employee_id: str, password: str
+    ) -> dict[str, Any]:
+        emp = str(employee_id or "").strip()
+        if not emp.isdigit() or len(emp) != 5:
+            return {"ok": False, "error": "invalid_employee"}
+        if not self.check_debug_password(password):
+            return {"ok": False, "error": "invalid_password"}
+        with self._lock:
+            self._maintenance_cycle_count = 0
+            self._save_app_config()
+            count = 0
+        _append_log(
+            self._main_log,
+            f"Mantenimiento: contador de ciclos reseteado (empleado {emp})",
+        )
+        self._notify()
+        return {"ok": True, "maintenanceCycleCount": count}
+
+    def cmd_checklist(self, action: str, **kwargs: Any) -> dict[str, Any]:
+        if action == "start":
+            res = self._checklist.start_session(str(kwargs.get("employeeId", "")))
+        elif action == "close":
+            res = self._checklist.close_session()
+        elif action == "complete":
+            res = self._checklist.complete_checklist(self)
+        elif action == "action":
+            name = str(kwargs.pop("name", ""))
+            res = self._checklist.action(self, name, **kwargs)
+        else:
+            return {"ok": False, "error": f"Acción checklist desconocida: {action}"}
+        if res.get("ok"):
+            self._checklist.clear_step_error()
+            self._save_app_config()
+        elif res.get("error"):
+            self._checklist.set_step_error(str(res["error"]))
+        self._sync_checklist_andon()
+        self._notify()
+        res["checklist"] = self._checklist.snapshot(self)
+        return res
 
     def _push_andon_prefs(self) -> None:
         """HMI es fuente de verdad del mute; Andon no persiste buzzerMuted."""
@@ -3215,6 +3322,30 @@ class HmiState:
         )
         self._notify()
         return results
+
+    def reconnect_module(self, name: str) -> bool:
+        """Fuerza reconexión TCP de un solo módulo (motion, plc, prefeeder, andon)."""
+        key = (name or "").strip().lower()
+        client: ModuleTcpClient | None = None
+        if key == "motion":
+            client = self._client
+        elif key == "plc":
+            client = self._plc_client
+        elif key == "prefeeder":
+            client = self._pf_client
+        elif key == "andon":
+            if os.environ.get("ANDON_ENABLE", "1") != "1":
+                return False
+            client = self._andon_client
+        if client is None:
+            return False
+        ok = client.reconnect(silent=True)
+        _append_log(
+            self._main_log,
+            f"Reconexión {key}: {'OK' if ok else 'OFF'}",
+        )
+        self._notify()
+        return ok
 
     def _cycle_live_progress(self, cycle_snap: dict[str, Any]) -> int:
         if cycle_snap.get("completed"):

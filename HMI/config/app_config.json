@@ -1,4 +1,8 @@
 {
   "andonBuzzerMute": true,
-  "debugPassword": "tcm2026"
+  "debugPassword": "tcm2026",
+  "maintenanceCycleCount": 0,
+  "checklistRequired": false,
+  "checklistLastCompletedAt": "2026-10-06T13:31:57Z",
+  "checklistSession": null
 }

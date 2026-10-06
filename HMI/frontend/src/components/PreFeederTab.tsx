@@ -8,13 +8,26 @@ import {
 } from 'lucide-react';
 import { PreFeederState, LogEntry, PreFeederSensor } from '../types';
 import { LogTerminal } from './LogTerminal';
-import { ModuleConnectionPanel } from './ModuleConnectionPanel';
+import { ModuleStatusBar } from './ModuleStatusBar';
 import { useApp } from '../context/AppContext';
+import {
+  hmiBadge,
+  hmiModuleBtnDark,
+  hmiModuleBtnDangerSoft,
+  hmiModuleBtnGroup,
+  hmiModuleBtnSecondary,
+  hmiModuleBtnSuccess,
+  hmiModuleIconBtn,
+  hmiModuleIconSection,
+  hmiModuleBadge,
+  hmiModuleSectionTitle,
+  hmiPanelCls,
+  hmiPanelHeader,
+  hmiPanelPadding,
+} from '../styles/hmiUi';
 
 interface PreFeederTabProps {
   preFeederState: PreFeederState;
-  onReconnectNetwork?: () => void;
-  reconnecting?: boolean;
   cycleMaterialist?: boolean;
   cycleBusy?: boolean;
   onStart: () => void;
@@ -37,8 +50,6 @@ export const PreFeederTab: React.FC<PreFeederTabProps> = ({
   onStop,
   onReset,
   onBusy,
-  onReconnectNetwork,
-  reconnecting = false,
   showLogs = true,
   logs,
   onClearLogs,
@@ -52,7 +63,7 @@ export const PreFeederTab: React.FC<PreFeederTabProps> = ({
     return (
       <div
         key={sensor.id}
-        className={`flex items-center justify-between rounded-lg px-3.5 py-2.5 border shadow-2xs ${
+        className={`flex items-center justify-between rounded-lg px-4 py-4 border shadow-2xs sm:px-5 sm:py-5 ${
           alarm
             ? 'bg-red-50/50 dark:bg-red-950/30 border-red-200 dark:border-red-800'
             : warn
@@ -60,9 +71,9 @@ export const PreFeederTab: React.FC<PreFeederTabProps> = ({
               : 'bg-slate-50 dark:bg-slate-800/60 border-slate-200 dark:border-slate-700'
         }`}
       >
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-3">
           <span
-            className={`h-2.5 w-2.5 rounded-full transition-all ${
+            className={`h-3.5 w-3.5 rounded-full transition-all shrink-0 ${
               alarm
                 ? 'bg-red-500 ring-2 ring-red-200 dark:ring-red-900'
                 : ok
@@ -72,12 +83,12 @@ export const PreFeederTab: React.FC<PreFeederTabProps> = ({
                     : 'bg-slate-300 dark:bg-slate-600'
             }`}
           />
-          <span className="text-sm font-medium text-slate-800 dark:text-slate-200">
+          <span className="text-xl font-semibold text-slate-800 dark:text-slate-200 sm:text-2xl">
             {sensor.name}
           </span>
         </div>
 
-        <div className="flex items-center gap-2 font-mono text-xs">
+        <div className="flex items-center gap-2 font-mono text-lg font-bold sm:text-xl">
           <span
             className={`font-bold transition ${
               alarm
@@ -120,115 +131,65 @@ export const PreFeederTab: React.FC<PreFeederTabProps> = ({
         ? t('status_in_process')
         : t('status_idle');
 
+  const statusTone = !connected
+    ? 'disconnected'
+    : hasError
+      ? 'error'
+      : pfMode === 'materialist'
+        ? 'materialist'
+        : pfMode === 'busy'
+          ? 'busy'
+          : 'ready';
+
   return (
     <div className="space-y-4">
-      <ModuleConnectionPanel
-        label={t('prefeeder_node')}
-        conn={preFeederState.connection}
-        onReconnectAll={onReconnectNetwork}
-        reconnecting={reconnecting}
+      <ModuleStatusBar
+        headline={pfHeadline}
+        tone={statusTone}
+        connection={preFeederState.connection}
+        headlineError={hasError}
+        metric={{
+          label: t('feed_status'),
+          value: pfFeedLabel,
+          tone:
+            pfMode === 'materialist'
+              ? 'violet'
+              : pfMode === 'busy'
+                ? 'success'
+                : 'default',
+        }}
       />
 
-      {/* Unified Compact Status & Link Bar */}
-      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-2.5 text-slate-800 dark:text-slate-200 shadow-2xs flex flex-wrap items-center justify-between gap-3 transition-colors">
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2">
-            <span
-              className={`h-2.5 w-2.5 rounded-full ${
-                !connected
-                  ? 'bg-red-500'
-                  : hasError
-                    ? 'bg-red-500'
-                    : pfMode === 'materialist'
-                      ? 'bg-violet-500'
-                      : pfMode === 'busy'
-                        ? 'bg-emerald-500 animate-pulse'
-                        : 'bg-emerald-500'
-              }`}
-            />
-            <span
-              className={`text-sm font-semibold tracking-tight ${
-                hasError
-                  ? 'text-red-700 dark:text-red-300'
-                  : 'text-slate-900 dark:text-white'
-              }`}
-            >
-              {pfHeadline}
-            </span>
-          </div>
-
-          <span className="text-slate-300 dark:text-slate-700">|</span>
-
-          <div className="flex items-center gap-1.5 font-mono text-xs text-slate-600 dark:text-slate-400">
-            <span className="text-slate-400 dark:text-slate-500">{t('link_label')}:</span>
-            <span className={`font-semibold ${connected ? 'text-emerald-700 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
-              {connected ? t('node_connected') : t('node_disconnected')}
-            </span>
-            <span className="text-slate-400 dark:text-slate-500 text-[11px]">
-              ({preFeederState.connection.ip}:{preFeederState.connection.port})
-            </span>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1.5 text-xs font-mono">
-            <span className="text-slate-500 dark:text-slate-400">{t('feed_status')}:</span>
-            <span
-              className={`font-bold px-2 py-0.5 rounded-md border text-xs ${
-                pfMode === 'materialist'
-                  ? 'bg-violet-50 dark:bg-violet-950/40 text-violet-800 dark:text-violet-200 border-violet-200 dark:border-violet-800'
-                  : pfMode === 'busy'
-                    ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
-                    : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-700'
-              }`}
-            >
-              {pfFeedLabel}
-            </span>
-          </div>
-        </div>
-      </div>
-
-      {/* Action Buttons */}
-      <div className="flex flex-wrap items-center gap-2">
+      <div className={hmiModuleBtnGroup}>
         <button
           id="btn-start-prefeeder"
+          type="button"
           onClick={onStart}
           disabled={preFeederState.isRunning}
-          className={`group flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-bold transition active:scale-95 shadow-2xs border ${
-            preFeederState.isRunning
-              ? 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-600 border-slate-200 dark:border-slate-700 cursor-not-allowed'
-              : 'bg-slate-900 dark:bg-slate-100 hover:bg-slate-800 dark:hover:bg-white text-white dark:text-slate-900 border-slate-900 dark:border-white'
-          }`}
+          className={preFeederState.isRunning ? `${hmiModuleBtnSecondary} opacity-40` : hmiModuleBtnDark}
         >
-          <Play className="h-3.5 w-3.5 fill-current" />
+          <Play className={`${hmiModuleIconBtn} fill-current`} />
           <span>{t('btn_start')}</span>
-          <span className="rounded bg-slate-800 dark:bg-slate-200 px-1 py-0.2 font-mono text-[10px] text-slate-300 dark:text-slate-800 border border-slate-700 dark:border-slate-300">
-            0x02A
-          </span>
         </button>
 
         <button
           id="btn-stop-prefeeder"
+          type="button"
           onClick={onStop}
-          className="group flex items-center justify-center gap-1.5 rounded-lg border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/40 hover:bg-red-100 dark:hover:bg-red-950/70 px-3.5 py-2 text-xs font-bold text-red-700 dark:text-red-300 transition active:scale-95 shadow-2xs"
+          className={hmiModuleBtnDangerSoft}
         >
-          <Square className="h-3 w-3 fill-current text-red-600 dark:text-red-400" />
+          <Square className={`${hmiModuleIconBtn} fill-current`} />
           <span>{t('btn_stop')}</span>
-          <span className="rounded bg-red-100 dark:bg-red-900/60 px-1 py-0.2 font-mono text-[10px] text-red-800 dark:text-red-200 border border-red-200 dark:border-red-800">
-            0x02B
-          </span>
         </button>
 
         <button
           id="btn-reset-prefeeder"
+          type="button"
           onClick={onReset}
-          className="group flex items-center justify-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 px-3.5 py-2 text-xs font-bold text-slate-700 dark:text-slate-200 transition active:scale-95 shadow-2xs"
+          className={`group ${hmiModuleBtnSecondary}`}
         >
-          <RotateCcw className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400 group-hover:rotate-45 transition-transform" />
+          <RotateCcw className={`${hmiModuleIconBtn} text-amber-600 dark:text-amber-400 group-hover:rotate-45 transition-transform`} />
           <span>{t('btn_reset')}</span>
-          <span className="rounded bg-slate-100 dark:bg-slate-700 px-1 py-0.2 font-mono text-[10px] text-amber-700 dark:text-amber-300 border border-slate-200 dark:border-slate-600">
-            0x02C
-          </span>
         </button>
 
         <button
@@ -236,51 +197,42 @@ export const PreFeederTab: React.FC<PreFeederTabProps> = ({
           type="button"
           onClick={onBusy}
           disabled={!onBusy}
-          className={`group flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-bold transition active:scale-95 shadow-2xs border ${
-            cycleBusy
-              ? 'border-emerald-500 bg-emerald-500 text-white [&_svg]:text-white'
-              : 'border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200'
-          }`}
+          className={cycleBusy ? hmiModuleBtnSuccess : hmiModuleBtnSecondary}
         >
-          <Activity className="h-3.5 w-3.5" />
+          <Activity className={hmiModuleIconBtn} />
           <span>{t('btn_busy_cycle')}</span>
         </button>
       </div>
 
-      {/* Dual Column Cards: Lado L & Lado R */}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 shadow-2xs transition-colors">
-          <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2.5">
+        <div className={`${hmiPanelCls} ${hmiPanelPadding}`}>
+          <div className={hmiPanelHeader}>
             <div className="flex items-center gap-2">
-              <Layers className="h-4 w-4 text-slate-600 dark:text-slate-400" />
-              <h2 className="text-xs font-bold uppercase tracking-wider text-slate-800 dark:text-slate-200">
+              <Layers className={`${hmiModuleIconSection} text-slate-600 dark:text-slate-400`} />
+              <h2 className={`${hmiModuleSectionTitle} text-slate-800 dark:text-slate-200`}>
                 {t('side_l')}
               </h2>
             </div>
-            <span className="rounded bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-2 py-0.5 font-mono text-[10px] text-slate-600 dark:text-slate-400">
-              {t('left_channel')}
-            </span>
+            <span className={hmiModuleBadge}>{t('left_channel')}</span>
           </div>
 
-          <div className="mt-3 space-y-1.5">
+          <div className="space-y-2.5">
             {preFeederState.sensorsL.map((s) => renderSensorRow(s))}
           </div>
         </div>
 
-        <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 shadow-2xs transition-colors">
-          <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2.5">
+        <div className={`${hmiPanelCls} ${hmiPanelPadding}`}>
+          <div className={hmiPanelHeader}>
             <div className="flex items-center gap-2">
-              <Layers className="h-4 w-4 text-slate-600 dark:text-slate-400" />
-              <h2 className="text-xs font-bold uppercase tracking-wider text-slate-800 dark:text-slate-200">
+              <Layers className={`${hmiModuleIconSection} text-slate-600 dark:text-slate-400`} />
+              <h2 className={`${hmiModuleSectionTitle} text-slate-800 dark:text-slate-200`}>
                 {t('side_r')}
               </h2>
             </div>
-            <span className="rounded bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 px-2 py-0.5 font-mono text-[10px] text-slate-600 dark:text-slate-400">
-              {t('right_channel')}
-            </span>
+            <span className={hmiModuleBadge}>{t('right_channel')}</span>
           </div>
 
-          <div className="mt-3 space-y-1.5">
+          <div className="space-y-2.5">
             {preFeederState.sensorsR.map((s) => renderSensorRow(s))}
           </div>
         </div>

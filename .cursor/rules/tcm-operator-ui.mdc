@@ -1,0 +1,32 @@
+---
+description: Textos y controles de la HMI para operadores — lenguaje claro, máximo dos botones por flujo.
+alwaysApply: true
+---
+
+# TCM — UI para operador (mandatorio)
+
+Aplica a pantallas y flujos que usa el **operador** en la HMI (Máquina, checklist, recovery, modales de confirmación). **No** aplica a pestañas técnicas (Parámetros, PLC, Motion, debug).
+
+## Lenguaje
+
+- Español claro, directo, imperativo cuando toque («Continuar», «Espera a que termine»).
+- **Prohibido** en textos visibles al operador: siglas sin explicar, nombres de firmware, opcodes, fórmulas, tolerancias con ±, abreviaciones (L/R, mm, CAN, ASDA, Stage2, PF, PLC, HOME, etc.).
+- Usar nombres de la máquina que el operador conoce: «eje de corte», «alimentador», «aire comprimido», «lado izquierdo / derecho», «milímetros» escrito en frase si hace falta el dato.
+- Los nombres técnicos de sensores/válvulas en **Parámetros** siguen siendo los del backend (Holder, Buffer Full, etc.) — no confundir con flujos de operador.
+
+## Botones
+
+- **Máximo 2 botones** accionables por pantalla o paso de un flujo guiado (checklist, recovery, purga, etc.).
+- Preferir **un solo botón principal** cuando baste; el segundo solo si hay una acción alternativa real (p. ej. «Probar aire» + «Continuar»).
+- No mezclar botones en el cuerpo y otro bloque en el pie: **barra de acciones unificada** al final del modal/panel.
+- Etiquetas de botón = verbo + objeto («Continuar», «Hacer purga», «Abrir mantenimiento»). Evitar «Confirmar paso», «OK», «Sí/No» sin contexto.
+
+## Errores y estados
+
+- Mensajes de error en lenguaje humano («Llama al técnico», «Revisa el aire de planta»). Nunca mostrar códigos internos, `workerPhase` crudo ni cadenas tipo `escape=ON`.
+- Estados de espera: «Espera, la máquina está trabajando…» en lugar de fases técnicas.
+
+## Checklist de arranque
+
+- Referencia de implementación: `ChecklistModal.tsx` + claves `checklist_*` en `translations.ts`.
+- Cada paso: contenido informativo arriba, **≤2 botones** abajo.

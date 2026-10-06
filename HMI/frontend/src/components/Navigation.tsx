@@ -1,5 +1,5 @@
 import React from 'react';
-import { Repeat, Move, CircuitBoard, Layers, Lightbulb, ArrowLeft, LogOut } from 'lucide-react';
+import { Repeat, Move, CircuitBoard, Layers, Lightbulb, Network, ArrowLeft, LogOut } from 'lucide-react';
 import { TabType, ConnectionState } from '../types';
 import { useApp } from '../context/AppContext';
 
@@ -42,33 +42,38 @@ export const Navigation: React.FC<NavigationProps> = ({
     {
       id: 'cycle',
       label: t('tab_cycle'),
-      icon: <Repeat className="h-5 w-5" />,
+      icon: <Repeat className="h-6 w-6" />,
     },
     {
       id: 'motion',
       label: t('tab_motion'),
-      icon: <Move className="h-5 w-5" />,
+      icon: <Move className="h-6 w-6" />,
       isConnected: motionConn.connected,
       hasError: hasErrors?.motion,
     },
     {
       id: 'plc',
       label: t('tab_plc'),
-      icon: <CircuitBoard className="h-5 w-5" />,
+      icon: <CircuitBoard className="h-6 w-6" />,
       isConnected: plcConn.connected,
       hasError: hasErrors?.plc,
     },
     {
       id: 'prefeeder',
       label: t('tab_prefeeder'),
-      icon: <Layers className="h-5 w-5" />,
+      icon: <Layers className="h-6 w-6" />,
       isConnected: preFeederConn.connected,
       hasError: hasErrors?.prefeeder,
     },
     {
+      id: 'conexion',
+      label: t('tab_conexion'),
+      icon: <Network className="h-6 w-6" />,
+    },
+    {
       id: 'andon',
       label: t('tab_andon'),
-      icon: <Lightbulb className="h-5 w-5" />,
+      icon: <Lightbulb className="h-6 w-6" />,
       isConnected: andonConn.connected,
     },
   ];
@@ -80,7 +85,7 @@ export const Navigation: React.FC<NavigationProps> = ({
           id="btn-back-maquina"
           type="button"
           onClick={onBackToMaquina}
-          className="flex items-center gap-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2.5 text-sm font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition"
+          className="flex items-center gap-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2.5 text-sm font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition sm:text-base"
         >
           <ArrowLeft className="h-4 w-4" />
           <span className="hidden sm:inline">{t('btn_back_maquina')}</span>
@@ -96,7 +101,7 @@ export const Navigation: React.FC<NavigationProps> = ({
             : tab.isConnected
               ? t('node_connected')
               : t('node_disconnected');
-          const ledClass = `h-2.5 w-2.5 rounded-full ${
+          const ledClass = `h-3 w-3 rounded-full ${
             tab.hasError
               ? 'bg-red-500 animate-ping'
               : tab.isConnected
@@ -113,7 +118,7 @@ export const Navigation: React.FC<NavigationProps> = ({
               key={tab.id}
               id={`nav-tab-${tab.id}`}
               onClick={() => onSelectTab(tab.id)}
-              className={`group relative flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-all duration-150 cursor-pointer ${
+              className={`group relative flex items-center gap-2.5 rounded-lg px-5 py-3 text-base font-medium transition-all duration-150 cursor-pointer sm:text-lg ${
                 isActive
                   ? 'bg-sky-800 dark:bg-sky-600 text-white shadow-2xs border border-sky-800 dark:border-sky-500 font-bold'
                   : problem

@@ -2,25 +2,37 @@ import React from 'react';
 import {
   Lightbulb,
   Volume2,
-  VolumeX,
   PowerOff,
   RotateCcw,
   Circle,
-  Check,
 } from 'lucide-react';
 import { AndonState, LogEntry } from '../types';
 import { LogTerminal } from './LogTerminal';
-import { ModuleConnectionPanel } from './ModuleConnectionPanel';
+import { ModuleStatusBar } from './ModuleStatusBar';
 import { useApp } from '../context/AppContext';
+import {
+  hmiModuleBadge,
+  hmiModuleBtnBase,
+  hmiModuleBtnGroup,
+  hmiModuleBtnSecondary,
+  hmiModuleBtnSuccess,
+  hmiModuleCenterSectionTitle,
+  hmiModuleIconBtn,
+  hmiModuleIconSection,
+  hmiPanelCls,
+  hmiPanelHeader,
+  hmiPanelPadding,
+  hmiStatusChip,
+  hmiStatusDivider,
+  hmiStatusMeta,
+  hmiStatusMetaLabel,
+} from '../styles/hmiUi';
 
 interface AndonTabProps {
   andonState: AndonState;
   machineByte?: number;
   machineName?: string;
   buzzerMute?: boolean;
-  onBuzzerMute?: (mute: boolean) => void;
-  onReconnectNetwork?: () => void;
-  reconnecting?: boolean;
   onSetOut: (out: 'green' | 'yellow' | 'red' | 'buzzer', on: boolean) => void;
   onAllOff: () => void;
   onResumeAuto: () => void;
@@ -72,15 +84,22 @@ const PRESETS: {
     | 'andon_preset_error'
     | 'andon_preset_finish'
     | 'andon_preset_materialist';
-  hint: string;
+  hintKey:
+    | 'andon_hint_idle'
+    | 'andon_hint_busy'
+    | 'andon_hint_pause'
+    | 'andon_hint_stop'
+    | 'andon_hint_error'
+    | 'andon_hint_finish'
+    | 'andon_hint_materialist';
 }[] = [
-  { byte: 0x44, labelKey: 'andon_preset_idle', hint: 'Green' },
-  { byte: 0x45, labelKey: 'andon_preset_busy', hint: 'Green' },
-  { byte: 0x48, labelKey: 'andon_preset_pause', hint: 'Yellow' },
-  { byte: 0x42, labelKey: 'andon_preset_stop', hint: 'Red' },
-  { byte: 0x46, labelKey: 'andon_preset_error', hint: 'Red + Buzzer' },
-  { byte: 0x47, labelKey: 'andon_preset_finish', hint: 'R→Y→G + Buzzer' },
-  { byte: 0x49, labelKey: 'andon_preset_materialist', hint: 'Yellow + Buzzer' },
+  { byte: 0x44, labelKey: 'andon_preset_idle', hintKey: 'andon_hint_idle' },
+  { byte: 0x45, labelKey: 'andon_preset_busy', hintKey: 'andon_hint_busy' },
+  { byte: 0x48, labelKey: 'andon_preset_pause', hintKey: 'andon_hint_pause' },
+  { byte: 0x42, labelKey: 'andon_preset_stop', hintKey: 'andon_hint_stop' },
+  { byte: 0x46, labelKey: 'andon_preset_error', hintKey: 'andon_hint_error' },
+  { byte: 0x47, labelKey: 'andon_preset_finish', hintKey: 'andon_hint_finish' },
+  { byte: 0x49, labelKey: 'andon_preset_materialist', hintKey: 'andon_hint_materialist' },
 ];
 
 export const AndonTab: React.FC<AndonTabProps> = ({
@@ -88,9 +107,6 @@ export const AndonTab: React.FC<AndonTabProps> = ({
   machineByte,
   machineName,
   buzzerMute = false,
-  onBuzzerMute,
-  onReconnectNetwork,
-  reconnecting = false,
   onSetOut,
   onAllOff,
   onResumeAuto,
@@ -106,121 +122,76 @@ export const AndonTab: React.FC<AndonTabProps> = ({
   const buzzerShown = buzzerMute ? false : s.buzzer;
   const activeCount = [s.green, s.yellow, s.red, buzzerShown].filter(Boolean).length;
 
+  const connected = s.connection.connected;
+
   return (
     <div className="space-y-4">
-      <div className="grid gap-4 md:grid-cols-2">
-        <ModuleConnectionPanel
-          label={t('andon_node')}
-          conn={s.connection}
-          onReconnectAll={onReconnectNetwork}
-          reconnecting={reconnecting}
-        />
-        {onBuzzerMute && (
-          <button
-            type="button"
-            onClick={() => onBuzzerMute(!buzzerMute)}
-            className={`flex w-full items-center justify-between rounded-xl border p-3.5 text-left transition shadow-2xs ${
-              buzzerMute
-                ? 'border-amber-500 bg-amber-50 dark:bg-amber-950/30 ring-2 ring-amber-500/20'
-                : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/50'
-            }`}
-          >
-            <div className="flex items-center gap-2.5">
-              {buzzerMute ? (
-                <VolumeX className="h-4 w-4 text-amber-600" />
-              ) : (
-                <Volume2 className="h-4 w-4 text-slate-500" />
-              )}
-              <div>
-                <div className="text-xs font-bold">{t('andon_buzzer_mute_title')}</div>
-                <div className="text-[10px] text-slate-500 dark:text-slate-400">
-                  {buzzerMute ? t('andon_buzzer_muted') : t('andon_buzzer_on')}
-                </div>
-              </div>
+      <ModuleStatusBar
+        headline={
+          !connected
+            ? t('andon_no_link')
+            : s.manual
+              ? t('andon_mode_manual')
+              : t('andon_follows_machine')
+        }
+        tone={connected ? (s.manual ? 'warning' : 'ready') : 'disconnected'}
+        connection={s.connection}
+        metric={{
+          label: t('andon_active_outputs'),
+          value: `${activeCount} / 4`,
+          tone: activeCount > 0 ? 'success' : 'default',
+        }}
+        extra={
+          <>
+            <span className={hmiStatusDivider}>|</span>
+            <div className={hmiStatusMeta}>
+              <span className={hmiStatusMetaLabel}>{t('andon_current_state')}:</span>
+              <strong className="text-slate-800 dark:text-slate-200">
+                {machineName || '—'}
+                {currentByte
+                  ? ` · 0x${currentByte.toString(16).toUpperCase().padStart(2, '0')}`
+                  : ''}
+              </strong>
             </div>
-            {buzzerMute && <Check className="h-4 w-4 text-amber-600" />}
-          </button>
-        )}
-      </div>
+            {s.pressure && (
+              <>
+                <span className={hmiStatusDivider}>|</span>
+                <span
+                  className={`${hmiStatusChip} bg-red-50 dark:bg-red-950/40 text-red-800 dark:text-red-200 border-red-300 dark:border-red-800 uppercase tracking-wider text-xs sm:text-sm`}
+                  title={t('andon_pressure_fault_hint')}
+                >
+                  {t('andon_pressure_fault')}
+                </span>
+              </>
+            )}
+            {buzzerMute && (
+              <>
+                <span className={hmiStatusDivider}>|</span>
+                <span
+                  className={`${hmiStatusChip} bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-200 border-amber-300 dark:border-amber-800 uppercase tracking-wider text-xs sm:text-sm`}
+                  title={t('andon_buzzer_muted_hint')}
+                >
+                  {t('andon_buzzer_muted')}
+                </span>
+              </>
+            )}
+          </>
+        }
+      />
 
-      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-2.5 shadow-2xs flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <span
-            className={`h-2.5 w-2.5 rounded-full ${
-              s.connection.connected ? 'bg-emerald-500 animate-pulse' : 'bg-red-500'
-            }`}
-          />
-          <span className="text-sm font-semibold text-slate-900 dark:text-white">
-            {!s.connection.connected
-              ? t('andon_no_link')
-              : s.manual
-                ? t('andon_mode_manual')
-                : t('andon_follows_machine')}
-          </span>
-          <span className="text-slate-300 dark:text-slate-700">|</span>
-          <span className="font-mono text-xs text-slate-600 dark:text-slate-400">
-            {t('andon_current_state')}:{' '}
-            <strong className="text-slate-800 dark:text-slate-200">
-              {machineName || '—'}
-              {currentByte
-                ? ` · 0x${currentByte.toString(16).toUpperCase().padStart(2, '0')}`
-                : ''}
-            </strong>
-          </span>
-          {s.pressure && (
-            <>
-              <span className="text-slate-300 dark:text-slate-700">|</span>
-              <span
-                className="rounded border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/40 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-red-800 dark:text-red-200"
-                title={t('andon_pressure_fault_hint')}
-              >
-                {t('andon_pressure_fault')}
-              </span>
-            </>
-          )}
-          {buzzerMute && (
-            <>
-              <span className="text-slate-300 dark:text-slate-700">|</span>
-              <span
-                className="rounded border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-800 dark:text-amber-200"
-                title={t('andon_buzzer_muted_hint')}
-              >
-                {t('andon_buzzer_muted')}
-              </span>
-            </>
-          )}
-        </div>
-        <div className="flex items-center gap-2 text-xs font-mono">
-          <span className="text-slate-500">{t('andon_active_outputs')}:</span>
-          <span className="font-bold text-slate-900 dark:text-white">
-            {activeCount} / 4
-          </span>
-        </div>
-      </div>
-
-      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 shadow-2xs">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-3">
+      <div className={`${hmiPanelCls} ${hmiPanelPadding}`}>
+        <div className={hmiPanelHeader}>
           <div className="flex items-center gap-2">
-            <Lightbulb className="h-4 w-4 text-amber-500" />
-            <h2 className="text-xs font-bold uppercase tracking-wider text-slate-800 dark:text-slate-200">
-              {t('andon_manual_title')}
-            </h2>
+            <Lightbulb className={`${hmiModuleIconSection} text-amber-500`} />
+            <h2 className={hmiModuleCenterSectionTitle}>{t('andon_manual_title')}</h2>
           </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={onResumeAuto}
-              className="flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700"
-            >
-              <RotateCcw className="h-3.5 w-3.5" />
+          <div className={hmiModuleBtnGroup}>
+            <button type="button" onClick={onResumeAuto} className={hmiModuleBtnSecondary}>
+              <RotateCcw className={hmiModuleIconBtn} />
               {t('andon_resume_auto')}
             </button>
-            <button
-              type="button"
-              onClick={onAllOff}
-              className="flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700"
-            >
-              <PowerOff className="h-3.5 w-3.5" />
+            <button type="button" onClick={onAllOff} className={hmiModuleBtnSecondary}>
+              <PowerOff className={hmiModuleIconBtn} />
               {t('andon_all_off')}
             </button>
           </div>
@@ -232,11 +203,11 @@ export const AndonTab: React.FC<AndonTabProps> = ({
             return (
               <div
                 key={id}
-                className={`rounded-xl border p-4 transition ${active ? activeClass : 'border-slate-200 dark:border-slate-800'}`}
+                className={`rounded-xl border p-5 sm:p-6 transition ${active ? activeClass : 'border-slate-200 dark:border-slate-800'}`}
               >
-                <div className="flex items-center gap-2 mb-3">
-                  <span className={`h-3 w-3 rounded-full ${active ? dotClass : 'bg-slate-300 dark:bg-slate-600'}`} />
-                  <span className="text-sm font-bold text-slate-800 dark:text-slate-100">
+                <div className="flex items-center gap-3 mb-4">
+                  <span className={`h-4 w-4 rounded-full ${active ? dotClass : 'bg-slate-300 dark:bg-slate-600'}`} />
+                  <span className="text-lg font-bold text-slate-800 dark:text-slate-100 sm:text-xl">
                     {t(labelKey)}
                   </span>
                   {id === 'buzzer' && (
@@ -254,16 +225,12 @@ export const AndonTab: React.FC<AndonTabProps> = ({
                     </span>
                   )}
                 </div>
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-2 gap-3">
                   <button
                     type="button"
                     id={`btn-andon-${id}-on`}
                     onClick={() => onSetOut(id, true)}
-                    className={`rounded-lg border px-2 py-2 text-xs font-bold transition ${
-                      active
-                        ? 'border-emerald-600 bg-emerald-600 text-white'
-                        : 'border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-800'
-                    }`}
+                    className={`${active ? hmiModuleBtnSuccess : hmiModuleBtnSecondary} w-full`}
                   >
                     ON
                   </button>
@@ -271,11 +238,11 @@ export const AndonTab: React.FC<AndonTabProps> = ({
                     type="button"
                     id={`btn-andon-${id}-off`}
                     onClick={() => onSetOut(id, false)}
-                    className={`rounded-lg border px-2 py-2 text-xs font-bold transition ${
+                    className={`${
                       !active
-                        ? 'border-slate-700 bg-slate-800 text-white dark:border-slate-500 dark:bg-slate-600'
-                        : 'border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-800'
-                    }`}
+                        ? `${hmiModuleBtnBase} border-slate-700 bg-slate-800 text-white dark:border-slate-500 dark:bg-slate-600`
+                        : hmiModuleBtnSecondary
+                    } w-full`}
                   >
                     OFF
                   </button>
@@ -286,35 +253,33 @@ export const AndonTab: React.FC<AndonTabProps> = ({
         </div>
       </div>
 
-      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 shadow-2xs">
-        <div className="flex items-center gap-2 border-b border-slate-100 dark:border-slate-800 pb-3 mb-3">
-          <Circle className="h-4 w-4 text-indigo-500" />
-          <h2 className="text-xs font-bold uppercase tracking-wider text-slate-800 dark:text-slate-200">
-            {t('andon_presets_title')}
-          </h2>
-          <span className="text-[10px] text-slate-500 dark:text-slate-400 ml-1">
-            {t('andon_presets_desc')}
-          </span>
+      <div className={`${hmiPanelCls} ${hmiPanelPadding}`}>
+        <div className={hmiPanelHeader}>
+          <div className="flex flex-wrap items-center gap-2">
+            <Circle className={`${hmiModuleIconSection} text-indigo-500`} />
+            <h2 className={hmiModuleCenterSectionTitle}>{t('andon_presets_title')}</h2>
+            <span className="text-base text-slate-500 dark:text-slate-400 sm:text-lg">
+              {t('andon_presets_desc')}
+            </span>
+          </div>
         </div>
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-          {PRESETS.map(({ byte, labelKey, hint }) => (
+          {PRESETS.map(({ byte, labelKey, hintKey }) => (
             <button
               key={byte}
               type="button"
               id={`btn-andon-preset-${byte}`}
               onClick={() => onMachineState(byte)}
-              className={`flex items-center justify-between rounded-lg border px-3 py-2.5 text-left transition ${
+              className={`${hmiModuleBtnSecondary} w-full justify-between text-left ${
                 currentByte === byte
-                  ? 'border-indigo-400 dark:border-indigo-600 bg-indigo-50 dark:bg-indigo-950/40 ring-1 ring-indigo-300 dark:ring-indigo-800'
-                  : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 hover:bg-slate-100 dark:hover:bg-slate-800'
+                  ? 'border-indigo-400 bg-indigo-50 ring-1 ring-indigo-300 dark:border-indigo-600 dark:bg-indigo-950/40 dark:ring-indigo-800'
+                  : 'bg-slate-50 dark:bg-slate-800/60'
               }`}
             >
-              <span className="text-xs font-bold text-slate-800 dark:text-slate-200">
+              <span className="text-base font-bold text-slate-800 dark:text-slate-200 sm:text-lg">
                 {t(labelKey)}
               </span>
-              <span className="font-mono text-[10px] text-slate-500">
-                0x{byte.toString(16).toUpperCase().padStart(2, '0')} · {hint}
-              </span>
+              <span className={`${hmiModuleBadge} ml-2`}>{t(hintKey)}</span>
             </button>
           ))}
         </div>

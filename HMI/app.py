@@ -270,6 +270,12 @@ def api_network_reconnect():
     return jsonify({"ok": True, "links": get_state().reconnect_all_modules()})
 
 
+@app.post("/api/network/reconnect/<module>")
+def api_network_reconnect_module(module: str):
+    ok = get_state().reconnect_module(module)
+    return jsonify({"ok": ok})
+
+
 @app.post("/api/model")
 def api_model():
     body = request.get_json(silent=True) or {}
@@ -437,6 +443,23 @@ def api_debug_unlock():
     password = str(body.get("password", ""))
     ok = get_state().check_debug_password(password)
     return jsonify({"ok": ok, "error": None if ok else "invalid_password"})
+
+
+@app.post("/api/checklist")
+def api_checklist():
+    body = request.get_json(silent=True) or {}
+    action = str(body.pop("action", ""))
+    return jsonify(get_state().cmd_checklist(action, **body))
+
+
+@app.post("/api/maintenance/cycle-counter/reset")
+def api_maintenance_cycle_counter_reset():
+    body = request.get_json(silent=True) or {}
+    result = get_state().reset_maintenance_cycle_count(
+        str(body.get("employeeId", "")),
+        str(body.get("password", "")),
+    )
+    return jsonify(result)
 
 
 @app.post("/api/motion")

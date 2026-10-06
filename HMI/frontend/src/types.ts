@@ -1,4 +1,13 @@
-export type TabType = 'maquina' | 'cycle' | 'motion' | 'plc' | 'prefeeder' | 'andon';
+export type TabType =
+  | 'maquina'
+  | 'cycle'
+  | 'motion'
+  | 'plc'
+  | 'prefeeder'
+  | 'andon'
+  | 'conexion';
+
+export type HmiModuleKey = 'motion' | 'plc' | 'prefeeder' | 'andon';
 
 /** Purga: Long feed desde await_feed / after_feed (skipValidate en Motion). */
 export const REFILL_LONG_FEED_MM = 100;
@@ -149,6 +158,8 @@ export interface MachineState {
   errorActive?: boolean;
   /** Latch EXXX o fallo PLC (ErrorState / sensor) — bloquea Start/Refill. */
   workBlocked?: boolean;
+  /** Checklist de arranque pendiente — bloquea Iniciar. */
+  checklistRequired?: boolean;
   /** Status del módulo del EXXX (Motion/PLC/PreFeeder). */
   faultModuleStatus?: string;
   /** Cola de EXXX activos (el primero es el que se muestra). */

@@ -12,6 +12,7 @@ import type {
   PreFeederSensor,
   ValveItem,
 } from '../types';
+import type { ChecklistState, ChecklistStepId } from '../types/checklist';
 
 const VALVE_MAP: { byte: number; id: string }[] = [
   { byte: 0x19, id: 'cutter-r' },
@@ -241,6 +242,7 @@ export function mapMachineState(
     targetPieces,
     cycleCompleted: cycle.completed ?? false,
     safetyExhaust: !!snap.motion.safetyExhaust,
+    checklistRequired: !!snap.checklist?.required,
     errorActive,
     workBlocked:
       errorActive ||
@@ -463,9 +465,34 @@ export function mapAndonState(snap: BackendSnapshot): AndonState {
   };
 }
 
-export function mapAppConfig(snap: BackendSnapshot): { andonBuzzerMute: boolean } {
+export function mapChecklistState(snap: BackendSnapshot): ChecklistState {
+  const cl = snap.checklist ?? {};
+  const stepStatus = (cl.stepStatus ?? {}) as ChecklistState['stepStatus'];
+  return {
+    required: !!cl.required,
+    lastCompletedAt: cl.lastCompletedAt ?? null,
+    currentStepId: (cl.currentStepId ?? '') as ChecklistStepId,
+    session: (cl.session as ChecklistState['session']) ?? null,
+    workerBusy: !!cl.workerBusy,
+    workerPhase: String(cl.workerPhase ?? ''),
+    workerError: String(cl.workerError ?? ''),
+    stepError: String(cl.stepError ?? ''),
+    airTestActive: !!cl.airTestActive,
+    pieceTestStarted: !!cl.pieceTestStarted,
+    stepStatus,
+  };
+}
+
+export function mapAppConfig(snap: BackendSnapshot): {
+  andonBuzzerMute: boolean;
+  maintenanceCycleCount: number;
+} {
+  const raw = snap.appConfig?.maintenanceCycleCount;
+  const maintenanceCycleCount =
+    typeof raw === 'number' && Number.isFinite(raw) ? Math.max(0, Math.floor(raw)) : 0;
   return {
     andonBuzzerMute: !!snap.appConfig?.andonBuzzerMute,
+    maintenanceCycleCount,
   };
 }
 
