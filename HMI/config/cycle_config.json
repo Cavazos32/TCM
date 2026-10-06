@@ -12,7 +12,7 @@
   "depositExtraMm": 140.0,
   "depositStackGapMm": 80.0,
   "depositMaxTravelMm": 1500.0,
-  "gripperClearanceMm": 5.0,
+  "gripperClearanceMm": 25.0,
   "cutOffsetMm": 2.75,
   "wipBlowerInicioOffsetMm": 130.0,
   "motionWaitTimeoutS": 25.0,

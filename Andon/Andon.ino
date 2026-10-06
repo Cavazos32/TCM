@@ -264,7 +264,8 @@ void PressureError()
 
 bool andonPressureFaultRaw()
 {
-  return digitalRead(PIN_PRESSURE_FRL) == LOW;
+  // Presostato FRL: LOW = presión correcta; HIGH = falta de presión.
+  return digitalRead(PIN_PRESSURE_FRL) == HIGH;
 }
 
 void andonServicePressure()
