@@ -1,5 +1,33 @@
 # Revisión técnica — PreFeeder RC / Buffer Full (para ChatGPT)
 
+## Actualización del código local — 2026-10-13
+
+El historial inferior describe ensayos anteriores; sus referencias a Brake,
+400 ms y colas no representan necesariamente este árbol. El archivo local
+`PF/PF_LR/Config.h` mantiene el filtro OFF de **200 ms**.
+
+Corrección en `PF/PF_LR/PF_LR.ino`, común a L/R:
+
+- Full mantiene el neutro de 1500 us sin marcar el pin dirty en cada loop.
+  Una orden forzada tampoco provoca Detach si LEDC está sano.
+- La recuperación del pin comprueba `ledcAttachChannel` y `ledcWrite`.
+  Un fallo conserva dirty y la parada pendiente; los intentos fallidos de
+  recuperación se espacian 20 ms, sin esperas bloqueantes.
+- El software solo registra neutro aplicado tras éxito del controlador.
+  La marcha queda inhibida mientras se resuelve la parada pendiente.
+- Full detectado al aplicar PWM también lleva AUTO a HOME_HOLD y reinicia
+  la ventana OFF; no depende de que la primera lectura del loop vea el flanco.
+- Se conserva Materialista/refill, la selección L/R y el filtro OFF de 200 ms.
+  No se cambian TCP, WiFi, opcodes ni el orden del loop. La corrección está
+  limitada al dominio del servo y a su arranque automático, sin nuevos delays.
+
+Validación física pendiente: cargar cada variante y medir GPIO26 durante
+cambios rápidos de GPIO19, incluyendo actividad de DeReeler/M2. Full debe
+producir 1500 us a 50 Hz sostenidos; LOW estable permite el siguiente arranque.
+El éxito de la API LEDC no demuestra por sí solo señal física ni eje detenido.
+
+---
+
 **Fecha del documento:** 2026-10-02  
 **Proyecto:** TCM — PreFeeder L/R  
 **Objetivo de este MD:** dar a otro modelo (ChatGPT) todo el contexto de análisis, evidencias de banco, intentos fallidos/parciales y estado del código, para proponer el siguiente paso **sin reinventar** ni tocar Communication Core.

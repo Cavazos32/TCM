@@ -1,0 +1,50 @@
+#pragma once
+
+#include <Arduino.h>
+
+// Maestro organiza el bus: comandos globales vs volátiles (por lado).
+// Globales → broadcast L+R vía peerDoCmd() en PF_LR.ino (misma lógica que /api/auto local).
+//   enable=1 → start | enable=0 → stop | reset=1 → reset
+//   idle_mode → setIdleMode | in_process → setInProcess
+// Volátiles → un solo esclavo (trigger, settings, etc.) vía side=L|R.
+
+enum class PfCmdScope : uint8_t
+{
+  Unknown = 0,
+  Global  = 1,
+  Side    = 2,
+};
+
+static inline PfCmdScope pfMasterCmdScope(const String& cmd)
+{
+  if (cmd == "start" || cmd == "stop" || cmd == "reset"
+      || cmd == "setIdleMode" || cmd == "idleMode"
+      || cmd == "setTestMode" || cmd == "testMode"
+      || cmd == "materialistaCall" || cmd == "setMaterialistaCall"
+      || cmd == "setInProcess" || cmd == "inProcess"
+      // HTTP Master: refill L+R. HMI TCP Materialist JOG usa side L|R (pfTcpDoRefill).
+      || cmd == "refillMaterial" || cmd == "refillDereeler"
+      || cmd == "refillServo" || cmd == "refillFeeder"
+      || cmd == "refillHoldMaterial" || cmd == "refillHoldDereeler"
+      || cmd == "refillHoldServo" || cmd == "refillHoldFeeder"
+      || cmd == "halt" || cmd == "motionStop" || cmd == "hardStop"
+      || cmd == "ping")
+    return PfCmdScope::Global;
+
+  if (cmd == "trigger"
+      || cmd == "setRefillPulseS" || cmd == "refillPulseS"
+      || cmd == "setTriggerFeed" || cmd == "setTriggerCfg"
+      || cmd == "setAllCfg" || cmd == "applyAllCfg")
+    return PfCmdScope::Side;
+
+  return PfCmdScope::Unknown;
+}
+
+static inline char pfMasterParseSideArg(const String& s)
+{
+  if (s.length() != 1) return '-';
+  const char c = s.charAt(0);
+  if (c == 'L' || c == 'l') return 'L';
+  if (c == 'R' || c == 'r') return 'R';
+  return '-';
+}

@@ -138,6 +138,8 @@ bool      servoRunning      = false;
 uint16_t  servoLastOutputUs = 0;
 // RMT Stop/Brake puede soltar el pin LEDC del servo (marcar dirty → remux).
 static volatile bool servoPinDirty = false;
+// No permitir marcha hasta que el controlador acepte el neutro pendiente.
+static bool servoStopPending = false;
 
 static void servoMarkPinDirty()
 {
@@ -231,22 +233,34 @@ static void servoTimingOnPwmNeutralWritten();
 
 // Remux completo tras RMT: Detach → GPIO bajo → Attach. Sin el pinMode
 // intermedio ledcAttachChannel puede quedar sin pulso real en GPIO26.
-static void servoRemuxWriteUs(uint16_t us)
+static bool servoRemuxWriteUs(uint16_t us)
 {
+  static bool retryPending = false;
+  static uint32_t lastAttemptMs = 0;
+  const uint32_t now = millis();
+  if (retryPending && (uint32_t)(now - lastAttemptMs) < SERVO_STOP_REASSERT_MS)
+    return false;
+  lastAttemptMs = now;
   us = constrain(us, SERVO_PWM_MIN_US, SERVO_PWM_MAX_US);
   const uint32_t duty = servoUsToDuty(us);
   servoPinDirty = false;
-  servoLastOutputUs = us;
 
   ledcDetach(PIN_SERVO_PWM);
   pinMode(PIN_SERVO_PWM, OUTPUT);
   digitalWrite(PIN_SERVO_PWM, LOW);
-  ledcAttachChannel(PIN_SERVO_PWM, 50, SERVO_LEDC_BITS, SERVO_LEDC_CHANNEL);
-  ledcWrite(PIN_SERVO_PWM, duty);
-  ledcWrite(PIN_SERVO_PWM, duty);
+  const bool attached = ledcAttachChannel(PIN_SERVO_PWM, 50, SERVO_LEDC_BITS, SERVO_LEDC_CHANNEL);
+  if (!attached || !ledcWrite(PIN_SERVO_PWM, duty) || servoPinDirty)
+  {
+    servoPinDirty = true;
+    retryPending = true;
+    return false;
+  }
+  retryPending = false;
+  servoLastOutputUs = us;
+  return true;
 }
 
-static void servoWriteUsForced(uint16_t us)
+static bool servoWriteUsForced(uint16_t us)
 {
   us = constrain(us, SERVO_PWM_MIN_US, SERVO_PWM_MAX_US);
   const uint32_t duty = servoUsToDuty(us);
@@ -256,18 +270,19 @@ static void servoWriteUsForced(uint16_t us)
   if (!remux && ledcRead(PIN_SERVO_PWM) == duty)
   {
     servoLastOutputUs = us;
-    return;
+    return true;
   }
   if (!remux && ledcWrite(PIN_SERVO_PWM, duty))
   {
     servoLastOutputUs = us;
-    return;
+    return true;
   }
 
-  servoRemuxWriteUs(us);
+  servoPinDirty = true;
+  return servoRemuxWriteUs(us);
 }
 
-// Neutro 1500. Remux solo si dirty o force con cache mentiroso.
+// Neutro continuo. Force adelanta la escritura, nunca fuerza Detach si el pin está sano.
 static void servoHardStopNeutral(bool force)
 {
   static uint32_t lastHardMs = 0;
@@ -275,9 +290,8 @@ static void servoHardStopNeutral(bool force)
   const bool dirty = servoPinDirty;
   const bool wasRunning = servoRunning
       || servoLastOutputUs != SERVO_PWM_NEUTRAL_US;
-  const bool remux = dirty || (force && !wasRunning);
 
-  if (!remux && !wasRunning
+  if (!force && !dirty && !servoStopPending && !wasRunning
       && (uint32_t)(now - lastHardMs) < SERVO_STOP_REASSERT_MS)
   {
     // Diagnóstico: ya neutro; no inventar latencia de parada.
@@ -293,39 +307,31 @@ static void servoHardStopNeutral(bool force)
     return;
   }
 
-  servoPinDirty = false;
-  servoLastOutputUs = SERVO_PWM_NEUTRAL_US;
+  servoStopPending = true;
+  if (!servoWriteUsForced(SERVO_PWM_NEUTRAL_US))
+    return;
+  servoStopPending = false;
   servoRunning = false;
-
-  if (remux)
-  {
-    servoRemuxWriteUs(SERVO_PWM_NEUTRAL_US);
-  }
-  else if (!ledcWrite(PIN_SERVO_PWM, servoUsToDuty(SERVO_PWM_NEUTRAL_US)))
-  {
-    servoRemuxWriteUs(SERVO_PWM_NEUTRAL_US);
-  }
   lastHardMs = now;
   servoTimingOnPwmNeutralWritten();
 }
 
 static void servoAssertNeutral(bool force)
 {
-  static uint32_t lastNeutralMs = 0;
-  const bool need = servoRunning || servoLastOutputUs != SERVO_PWM_NEUTRAL_US;
-  if (!force && !servoPinDirty && !need
-      && (uint32_t)(millis() - lastNeutralMs) < SERVO_STOP_REASSERT_MS)
-    return;
-  servoWriteUsForced(SERVO_PWM_NEUTRAL_US);
-  servoRunning = false;
-  lastNeutralMs = millis();
+  servoHardStopNeutral(force);
 }
 
 static bool bufferFullStopNow();
+static void bufferFullApplyHoldStop();
 
 static void servoAssertRun(bool force)
 {
   if (!idleMode && bufferFullStopNow())
+  {
+    bufferFullApplyHoldStop();
+    return;
+  }
+  if (servoStopPending)
   {
     servoHardStopNeutral(true);
     return;
@@ -336,14 +342,18 @@ static void servoAssertRun(bool force)
   if (!force && !servoPinDirty && servoRunning && servoLastOutputUs == us
       && (uint32_t)(millis() - lastRunMs) < SERVO_STOP_REASSERT_MS)
     return;
-  servoWriteUsForced(us);
+  if (!servoWriteUsForced(us))
+  {
+    servoStopPending = true;
+    return;
+  }
   servoRunning = true;
   lastRunMs = millis();
 }
 
 static void servoStop()
 {
-  if (!servoPinDirty && !servoRunning && servoLastOutputUs == SERVO_PWM_NEUTRAL_US)
+  if (!servoStopPending && !servoPinDirty && !servoRunning && servoLastOutputUs == SERVO_PWM_NEUTRAL_US)
     return;
   servoAssertNeutral(true);
 }
@@ -353,7 +363,7 @@ static void applyServoActivePwmUs(uint16_t us)
   us = constrain(us, SERVO_PWM_MIN_US, SERVO_PWM_MAX_US);
   servoActivePwmUs = us;
   if (servoRunning)
-    servoWriteUsForced(servoActivePwmUs);
+    servoAssertRun(true);
 }
 
 static bool sensorsMotionArmed()
@@ -415,10 +425,8 @@ static void serviceServoPwm()
   }
   if (bufferFullStopNow())
   {
-    // Mismo camino de parada del servo usado por Detener HTML:
-    // marcar pin dirty para que servoStop() fuerce remux + neutro.
-    servoMarkPinDirty();
-    servoStop();
+    // Mantener 1500 us sin interrumpir LEDC en cada vuelta de Full activo.
+    bufferFullApplyHoldStop();
     return;
   }
   if (servoShouldRunAuto())
@@ -431,8 +439,7 @@ static void setupRotationServo()
 {
   servoPinDirty = true;
   servoLastOutputUs = 0;
-  servoRemuxWriteUs(SERVO_PWM_NEUTRAL_US);
-  servoRunning = false;
+  servoHardStopNeutral(true);
 }
 
 static bool bufferFullRaw()
@@ -588,6 +595,9 @@ static void bufferFullApplyHoldStop()
   if (!bufferFullStopNow())
     return;
 
+  // Una lectura HIGH posterior al filtro también exige una nueva ventana OFF.
+  if (bufferFullRaw())
+    bufferFullLowAccumMs = 0;
   servoTimingOnForceStopFromBufferFull();
   forceStopDereelerAndServo();
 
@@ -1007,6 +1017,11 @@ static void serviceTensionReverse()
 // Vacío no es EXXX: se sigue alimentando. Solo falla enclavada para el auto.
 static void beginAutoCwWithServoLead()
 {
+  if (servoStopPending)
+  {
+    servoHardStopNeutral(false);
+    return;
+  }
   // Protección local para el arranque automático que escribe PWM directamente.
   if (!idleMode && bufferFullStopNow())
   {
@@ -1018,8 +1033,7 @@ static void beginAutoCwWithServoLead()
   servoLeadStartMs = millis();
   autoState = AUTO_SERVO_LEAD;
   // Arranque inmediato del RC (Forced: no depender de cache si forceStop dejó neutro).
-  servoWriteUsForced(servoMotionPwmUs());
-  servoRunning = true;
+  servoAssertRun(true);
   DBG_PRINTLN("AUTO: Buffer Full inactivo -> servo lead");
 }
 
@@ -1583,6 +1597,11 @@ static void serviceAuto()
 
     case AUTO_SERVO_LEAD:
       servoAssertRun(true);
+      if (servoStopPending || !servoRunning)
+      {
+        servoLeadStartMs = millis();
+        break;
+      }
       if ((uint32_t)(millis() - servoLeadStartMs) >= DEREELER_START_DELAY_MS)
       {
         motorRunAutoDereeler();
