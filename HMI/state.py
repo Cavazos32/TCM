@@ -1995,7 +1995,7 @@ class HmiState:
         if action == "start":
             res = self._checklist.start_session(str(kwargs.get("employeeId", "")))
         elif action == "close":
-            res = self._checklist.close_session()
+            res = self._checklist.close_session(self)
         elif action == "complete":
             res = self._checklist.complete_checklist(self)
         elif action == "action":
@@ -2004,7 +2004,10 @@ class HmiState:
         else:
             return {"ok": False, "error": f"Acción checklist desconocida: {action}"}
         if res.get("ok"):
-            self._checklist.clear_step_error()
+            # Al cerrar no se borra el error del paso: debe seguir visible y
+            # reintentable cuando el operador reabra el checklist.
+            if action != "close":
+                self._checklist.clear_step_error()
             self._save_app_config()
         elif res.get("error"):
             self._checklist.set_step_error(str(res["error"]))

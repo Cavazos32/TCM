@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   ClipboardCheck,
   X,
@@ -54,6 +54,7 @@ const CHECKLIST_ERROR_KEYS: Record<string, string> = {
   air_test_failed: 'checklist_err_air_test_failed',
   stage2_pending: 'checklist_err_stage2_pending',
   purge_active: 'checklist_err_purge_active',
+  purge_pending: 'checklist_err_purge_pending',
   measurements_missing: 'checklist_err_measurements_missing',
   measurements_out_of_tolerance: 'checklist_err_measurements_out',
   checklist_busy: 'checklist_err_busy',
@@ -98,6 +99,12 @@ export const ChecklistModal: React.FC<ChecklistModalProps> = ({
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
+  // El error local es solo del intento en curso: no debe pegarse al
+  // cambiar de paso ni al cerrar y reabrir (el fallo real viaja en la sesión).
+  useEffect(() => {
+    setError('');
+  }, [isOpen, checklist.currentStepId]);
+
   if (!isOpen) return null;
 
   const session = checklist.session;
@@ -106,7 +113,11 @@ export const ChecklistModal: React.FC<ChecklistModalProps> = ({
   const expectedPieceMm = nominalPieceMm + CHECKLIST_PIECE_EXTRA_MM;
   const status = checklist.stepStatus;
   const motionBlocked = !!status.motionBlocked;
-  const stepFault = !!(error || checklist.stepError || checklist.workerError);
+  // Paso que falló o quedó interrumpido al cerrar: sobrevive en la sesión
+  // para que al reabrir ofrezca «Reintentar» en el mismo paso.
+  const stepFailed =
+    !!checklist.workerError || (!!stepId && session?.failedStep === stepId);
+  const stepFault = !!(error || checklist.stepError || stepFailed);
   const stepReady =
     !!session && !!stepId && !!status.ready && !stepFault && !checklist.workerBusy;
 
@@ -149,8 +160,15 @@ export const ChecklistModal: React.FC<ChecklistModalProps> = ({
   };
 
   const handleClose = async () => {
-    await checklistCmd('close');
-    onClose();
+    // Cerrar siempre debe funcionar: el backend cancela el trabajo en
+    // curso y guarda el paso; si la llamada falla, se cierra igual.
+    try {
+      await checklistCmd('close');
+    } catch {
+      // Sin respuesta: cerrar la pantalla igualmente.
+    } finally {
+      onClose();
+    }
   };
 
   const handleConfirm = () =>
@@ -242,18 +260,7 @@ export const ChecklistModal: React.FC<ChecklistModalProps> = ({
 
       case 'asda_roundtrip':
         if (checklist.workerBusy) return [];
-        if (checklist.workerError) {
-          return [
-            {
-              id: 'asda-retry',
-              label: t('checklist_btn_retry'),
-              primary: true,
-              disabled: busy || motionBlocked,
-              onClick: () =>
-                run(() => checklistCmd('action', { name: 'start_asda_roundtrip' })),
-            },
-          ];
-        }
+        // Si el recorrido ya salió bien, un fallo viejo no tapa «Continuar».
         if (status.asdaOk || status.ready) {
           return [
             {
@@ -262,6 +269,18 @@ export const ChecklistModal: React.FC<ChecklistModalProps> = ({
               primary: true,
               disabled: busy || motionBlocked,
               onClick: handleConfirm,
+            },
+          ];
+        }
+        if (stepFailed) {
+          return [
+            {
+              id: 'asda-retry',
+              label: t('checklist_btn_retry'),
+              primary: true,
+              disabled: busy || motionBlocked,
+              onClick: () =>
+                run(() => checklistCmd('action', { name: 'start_asda_roundtrip' })),
             },
           ];
         }
@@ -278,7 +297,51 @@ export const ChecklistModal: React.FC<ChecklistModalProps> = ({
 
       case 'feeder_can_purge':
         if (checklist.workerBusy) return [];
-        if (checklist.workerError) {
+        // La purga pide confirmaciones; se resuelven aquí, sin salir del paso.
+        if (status.refillAwaitingConfirm && status.refillPrompt === 'await_feed') {
+          return [
+            {
+              id: 'purge-feed',
+              label: t('btn_refill_confirm_retry'),
+              primary: true,
+              disabled: busy,
+              onClick: () =>
+                run(() => checklistCmd('action', { name: 'feed_purge' })),
+            },
+            {
+              id: 'purge-continue',
+              label: t('btn_refill_confirm_next_cut'),
+              disabled: busy,
+              onClick: () =>
+                run(() => checklistCmd('action', { name: 'confirm_purge' })),
+            },
+          ];
+        }
+        if (status.refillAwaitingConfirm && status.refillPrompt === 'after_feed') {
+          return [
+            {
+              id: 'purge-continue',
+              label: t('btn_refill_confirm_next_cut'),
+              primary: true,
+              disabled: busy,
+              onClick: () =>
+                run(() => checklistCmd('action', { name: 'confirm_purge' })),
+            },
+          ];
+        }
+        // Purga ya terminada bien: «Continuar», aunque hubiera un fallo antes.
+        if (status.purgeDone) {
+          return [
+            {
+              id: 'continue',
+              label: t('checklist_btn_continue'),
+              primary: true,
+              disabled: busy || motionBlocked,
+              onClick: handleConfirm,
+            },
+          ];
+        }
+        if (stepFailed) {
           return [
             {
               id: 'feeder-retry',
@@ -306,17 +369,8 @@ export const ChecklistModal: React.FC<ChecklistModalProps> = ({
             },
           ];
         }
-        if (status.stage2Ok && status.purgeIdle) {
-          return [
-            {
-              id: 'continue',
-              label: t('checklist_btn_continue'),
-              primary: true,
-              disabled: busy || motionBlocked,
-              onClick: handleConfirm,
-            },
-          ];
-        }
+        // Purga en curso: esperar a que termine, sin botones.
+        if (!status.purgeIdle) return [];
         return [
           {
             id: 'purge',
@@ -353,7 +407,20 @@ export const ChecklistModal: React.FC<ChecklistModalProps> = ({
             },
           ];
         }
-        return [];
+        // La máquina sigue cortando: esperar, sin botones.
+        if (status.cycleActive) return [];
+        // La prueba se detuvo antes de completar (error resuelto fuera,
+        // ciclo detenido): ofrecer cortarla de nuevo en este mismo paso.
+        return [
+          {
+            id: 'retry-pieces',
+            label: t('checklist_btn_cut_test_pieces'),
+            primary: true,
+            disabled: busy || motionBlocked,
+            onClick: () =>
+              run(() => checklistCmd('action', { name: 'start_piece_test' })),
+          },
+        ];
 
       default:
         if (session && !stepId) {
@@ -489,18 +556,18 @@ export const ChecklistModal: React.FC<ChecklistModalProps> = ({
         return (
           <div className="space-y-4">
             <p className={hmiAssistHint}>{t('checklist_step_asda_hint')}</p>
-            {(checklist.workerBusy || checklist.workerPhase) && (
+            {checklist.workerBusy && (
               <div className="flex items-center gap-2 text-sky-700 dark:text-sky-300">
                 <Loader2 className="h-5 w-5 animate-spin" />
                 <span>{t('checklist_working')}</span>
               </div>
             )}
-            {checklist.workerError && (
+            {stepFailed && !status.asdaOk && (
               <p className="text-sm font-medium text-red-700 dark:text-red-300">
                 {t('checklist_err_worker')}
               </p>
             )}
-            {status.asdaOk && !checklist.workerError && (
+            {status.asdaOk && !stepFailed && (
               <p className="text-sm font-medium text-emerald-800 dark:text-emerald-200">
                 {t('checklist_step_ok')}
               </p>
@@ -512,18 +579,38 @@ export const ChecklistModal: React.FC<ChecklistModalProps> = ({
         return (
           <div className="space-y-4">
             <p className={hmiAssistHint}>{t('checklist_step_feeder_hint')}</p>
-            {(checklist.workerBusy || checklist.workerPhase) && (
+            {checklist.workerBusy && (
               <div className="flex items-center gap-2 text-sky-700 dark:text-sky-300">
                 <Loader2 className="h-5 w-5 animate-spin" />
                 <span>{t('checklist_working')}</span>
               </div>
             )}
-            {status.stage2Ok && !status.purgeIdle && (
+            {status.purgeHandsWarning && (
+              <p className="rounded-lg border border-red-400 bg-red-50 p-3 text-sm font-bold text-red-800 dark:border-red-700 dark:bg-red-950/40 dark:text-red-200">
+                {t('purge_hands_warning')}
+              </p>
+            )}
+            {status.refillAwaitingConfirm && status.refillPrompt === 'await_feed' && (
+              <p className="text-sm font-medium text-sky-800 dark:text-sky-200">
+                {t('refill_confirm_hint_await')}
+              </p>
+            )}
+            {status.refillAwaitingConfirm && status.refillPrompt === 'after_feed' && (
+              <p className="text-sm font-medium text-sky-800 dark:text-sky-200">
+                {t('refill_confirm_hint_feed')}
+              </p>
+            )}
+            {status.stage2Ok && !status.purgeIdle && !status.refillAwaitingConfirm && (
               <p className="text-sm font-medium text-sky-800 dark:text-sky-200">
                 {t('checklist_purge_running_hint')}
               </p>
             )}
-            {checklist.workerError && (
+            {status.purgeDone && !stepFailed && (
+              <p className="text-sm font-medium text-emerald-800 dark:text-emerald-200">
+                {t('checklist_step_ok')}
+              </p>
+            )}
+            {stepFailed && !status.purgeDone && (
               <p className="text-sm font-medium text-red-700 dark:text-red-300">
                 {t('checklist_err_worker')}
               </p>
@@ -570,7 +657,9 @@ export const ChecklistModal: React.FC<ChecklistModalProps> = ({
                 )}
                 {(status.piecesDone ?? 0) < 2 && (
                   <p className="text-sm text-slate-600 dark:text-slate-400">
-                    {t('checklist_pieces_waiting')}
+                    {status.canRetry
+                      ? t('checklist_pieces_stopped')
+                      : t('checklist_pieces_waiting')}
                   </p>
                 )}
               </>

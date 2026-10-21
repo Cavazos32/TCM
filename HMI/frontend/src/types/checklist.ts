@@ -18,7 +18,14 @@ export interface ChecklistStepStatus {
   plcValvesOk?: boolean;
   stage2Ok?: boolean;
   purgeIdle?: boolean;
+  purgeStarted?: boolean;
+  purgeDone?: boolean;
+  refillPrompt?: string;
+  refillAwaitingConfirm?: boolean;
+  purgeHandsWarning?: boolean;
   piecesDone?: number;
+  cycleActive?: boolean;
+  canRetry?: boolean;
   measurements?: { l: number | null; r: number | null };
   motionBlocked?: boolean;
   asdaOk?: boolean;
@@ -29,7 +36,10 @@ export interface ChecklistSession {
   startedAt: string;
   currentStepIndex: number;
   completedSteps?: string[];
+  failedStep?: string;
   stage2Ok?: boolean;
+  purgeStarted?: boolean;
+  purgeDone?: boolean;
   asdaOk?: boolean;
   airTestVerified?: boolean;
   pieceTestStarted?: boolean;

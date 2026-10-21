@@ -29,6 +29,10 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+class _ChecklistCancelled(Exception):
+    """El operador cerró el checklist con un trabajo en curso: no seguir."""
+
+
 class ChecklistManager:
     """Estado y acciones del checklist de arranque (HMI Main)."""
 
@@ -46,6 +50,7 @@ class ChecklistManager:
         self._session: dict[str, Any] | None = None
         self._worker: threading.Thread | None = None
         self._worker_busy = False
+        self._worker_cancel: threading.Event | None = None
         self._worker_error = ""
         self._worker_phase = ""
         self._air_test_active = False
@@ -62,6 +67,7 @@ class ChecklistManager:
             raw = data.get("checklistSession")
             self._session = dict(raw) if isinstance(raw, dict) else None
             self._normalize_session_index_locked()
+            self._invalidate_unfinished_motion_checks_locked()
             self._repair_stuck_session_locked()
             self._sync_required_with_session_locked()
             self._restore_runtime_flags_from_session_locked()
@@ -152,6 +158,22 @@ class ChecklistManager:
         completed = list(self._session.get("completedSteps") or [])
         self._session["currentStepIndex"] = self._step_index_from_completed(completed)
 
+    def _invalidate_unfinished_motion_checks_locked(self) -> None:
+        """Descarta marcas físicas guardadas si el paso no se confirmó.
+
+        Una sesión restaurada no debe habilitar «Continuar» por marcas
+        previas (p. ej. la antigua omisión sin enlace): si el paso del
+        actuador o del alimentador no quedó confirmado, se vuelve a ejecutar.
+        """
+        if not self._session:
+            return
+        completed = list(self._session.get("completedSteps") or [])
+        if "asda_roundtrip" not in completed:
+            self._session.pop("asdaOk", None)
+        if "feeder_can_purge" not in completed:
+            self._session.pop("stage2Ok", None)
+            self._reset_purge_flags_locked()
+
     def _restore_runtime_flags_from_session_locked(self) -> None:
         if not self._session:
             self._piece_test_started = False
@@ -229,6 +251,7 @@ class ChecklistManager:
                 "currentStepIndex": 0,
                 "completedSteps": [],
                 "measurements": {"l": None, "r": None},
+                "failedStep": "",
             }
             self._worker_error = ""
             self._worker_phase = ""
@@ -241,18 +264,47 @@ class ChecklistManager:
         self._notify()
         return {"ok": True}
 
-    def close_session(self) -> dict[str, Any]:
+    def close_session(self, host: Any = None) -> dict[str, Any]:
+        """Cerrar el modal sin perder el paso ni el estado reintentable.
+
+        Si hay un trabajo en curso (actuador / alimentador), se cancela y se
+        espera a que deje de dar órdenes antes de soltar la pantalla: el
+        operador va a manipular la máquina desde fuera y el checklist no
+        debe seguir moviéndola por detrás. El error NO se borra: al reabrir,
+        el paso aparece como fallido y con su botón de reintento.
+        """
+        worker = self._worker
         with self._lock:
-            if self._worker_busy:
-                return {"ok": False, "error": "checklist_busy"}
-            if self._air_test_active:
-                self._air_test_active = False
-            self._worker_phase = ""
-            self._worker_error = ""
+            busy = self._worker_busy
+            if busy and self._worker_cancel is not None:
+                self._worker_cancel.set()
+            was_air_test = self._air_test_active
+            self._air_test_active = False
+        if busy and worker is not None and worker.is_alive():
+            worker.join(timeout=3.0)
+        # La prueba de aire deja las válvulas accionadas: apagarlas al salir.
+        if was_air_test and host is not None:
+            try:
+                if host.plc_connected():
+                    self._manual_plc_air_off(host)
+            except Exception:  # noqa: BLE001
+                pass
+        with self._lock:
+            if not self._worker_busy:
+                self._worker_phase = ""
             self._sync_required_with_session_locked()
+            still_busy = self._worker_busy
         self._log("Checklist: sesión cerrada (progreso guardado)")
         self._notify()
-        return {"ok": True}
+        return {"ok": True, "workerCancelling": still_busy}
+
+    def _set_failed_step_locked(self, step_id: str) -> None:
+        if self._session is not None:
+            self._session["failedStep"] = step_id
+
+    def _clear_failed_step_locked(self, step_id: str) -> None:
+        if self._session is not None and self._session.get("failedStep") == step_id:
+            self._session["failedStep"] = ""
 
     def complete_checklist(self, host: Any) -> dict[str, Any]:
         with self._lock:
@@ -285,6 +337,7 @@ class ChecklistManager:
             self._session["currentStepIndex"] = self._step_index_from_completed(completed)
             if step_id == "asda_roundtrip":
                 self._session.pop("asdaOk", None)
+            self._clear_failed_step_locked(step_id)
             self._worker_error = ""
             self._worker_phase = ""
             self._step_error = ""
@@ -328,25 +381,59 @@ class ChecklistManager:
             }
         if step_id == "feeder_can_purge":
             busy = self._worker_busy and self._worker_phase.startswith("feeder")
-            stage2_ok = bool((session or {}).get("stage2Ok"))
-            purge_idle = not host._cycle.is_purge_busy() and not host._cycle.snapshot().get("refillActive")
+            sess = self._session or session or {}
+            stage2_ok = bool(sess.get("stage2Ok"))
+            cyc = host._cycle.snapshot() if getattr(host, "_cycle", None) else {}
+            purge_idle = not host._cycle.is_purge_busy() and not cyc.get("refillActive")
+            # La purga solo cuenta como hecha si se vio en curso y terminó
+            # bien. Si falló o se resolvió/canceló fuera, queda reintentable.
+            if sess.get("purgeStarted") and not purge_idle and self._session is not None:
+                self._session["purgeSeenBusy"] = True
+            seen_busy = bool(sess.get("purgeSeenBusy") or sess.get("purgeDone"))
+            purge_done = bool(
+                sess.get("purgeDone")
+                or (
+                    sess.get("purgeStarted")
+                    and seen_busy
+                    and purge_idle
+                    and cyc.get("lastOk")
+                    and not cyc.get("fault")
+                )
+            )
+            if purge_done and self._session is not None:
+                self._session["purgeDone"] = True
             return {
-                "ready": stage2_ok and purge_idle and not busy and not self._worker_error,
+                "ready": stage2_ok and purge_done and not busy and not self._worker_error,
                 "detail": self._worker_phase or self._worker_error,
                 "stage2Ok": stage2_ok,
                 "purgeIdle": purge_idle,
+                "purgeStarted": bool(sess.get("purgeStarted")),
+                "purgeDone": purge_done,
+                "refillPrompt": str(cyc.get("refillPrompt") or ""),
+                "refillAwaitingConfirm": bool(cyc.get("refillAwaitingConfirm")),
+                "purgeHandsWarning": bool(cyc.get("purgeHandsWarning")),
             }
         if step_id == "piece_measure":
             snap = host._cycle.snapshot() if getattr(host, "_cycle", None) else {}
             pieces = int(snap.get("piecesDone") or 0)
+            cycle_active = bool(getattr(host, "_cycle", None) and host._cycle.is_active())
             if not self._piece_test_started:
-                return {"ready": False, "detail": "waiting_start", "piecesDone": pieces}
+                return {
+                    "ready": False,
+                    "detail": "waiting_start",
+                    "piecesDone": pieces,
+                    "cycleActive": cycle_active,
+                }
             meas = (session or {}).get("measurements") or {}
             return {
                 "ready": pieces >= 2,
                 "detail": "measure",
                 "piecesDone": pieces,
                 "measurements": meas,
+                "cycleActive": cycle_active,
+                # Prueba iniciada pero el ciclo ya paró sin completar (p. ej.
+                # error resuelto fuera con Stop): se puede cortar de nuevo.
+                "canRetry": pieces < 2 and not cycle_active,
             }
         return {"ready": False, "detail": ""}
 
@@ -376,6 +463,8 @@ class ChecklistManager:
             "start_asda_roundtrip": lambda: self._start_worker(host, "asda_roundtrip"),
             "start_feeder_can": lambda: self._start_worker(host, "feeder_can_purge"),
             "start_purge": lambda: self._action_start_purge(host),
+            "confirm_purge": lambda: self._action_purge_step(host, confirm=True),
+            "feed_purge": lambda: self._action_purge_step(host, confirm=False),
             "start_piece_test": lambda: self._action_start_piece_test(host),
             "set_measurements": lambda: self._action_set_measurements(
                 host, float(kwargs.get("lengthL", 0)), float(kwargs.get("lengthR", 0))
@@ -417,6 +506,8 @@ class ChecklistManager:
                     return {"ok": False, "error": "stage2_pending"}
                 if host._cycle.is_purge_busy() or host._cycle.snapshot().get("refillActive"):
                     return {"ok": False, "error": "purge_active"}
+                if not status.get("purgeDone"):
+                    return {"ok": False, "error": "purge_pending"}
         elif step_id == "piece_measure":
             return self._action_confirm_measurements(host)
         else:
@@ -453,6 +544,7 @@ class ChecklistManager:
                 self._air_test_verified = False
                 if self._session:
                     self._session["airTestVerified"] = False
+                self._set_failed_step_locked("air_pressure")
             self.set_step_error("air_test_failed")
             return {"ok": False, "error": "air_test_failed"}
 
@@ -471,7 +563,10 @@ class ChecklistManager:
             self._air_test_verified = verified
             if self._session:
                 self._session["airTestVerified"] = verified
-            if not verified:
+            if verified:
+                self._clear_failed_step_locked("air_pressure")
+            else:
+                self._set_failed_step_locked("air_pressure")
                 self._air_test_active = False
                 self._manual_plc_air_off(host)
 
@@ -506,12 +601,14 @@ class ChecklistManager:
             self._piece_test_started = True
             if self._session:
                 self._session["pieceTestStarted"] = True
+                self._clear_failed_step_locked("piece_measure")
         res = host.cmd_start(qty=2, checklist_bypass=True)
         if not res.get("ok"):
             with self._lock:
                 self._piece_test_started = False
                 if self._session:
                     self._session["pieceTestStarted"] = False
+                    self._set_failed_step_locked("piece_measure")
             self.set_step_error(str(res.get("error") or "worker_failed"))
         else:
             self.clear_step_error()
@@ -577,6 +674,8 @@ class ChecklistManager:
             self._worker_error = ""
             self._worker_phase = f"{kind}:starting"
             self._step_error = ""
+            self._worker_cancel = threading.Event()
+            self._clear_failed_step_locked(expected)
             if kind == "asda_roundtrip" and self._session:
                 self._session.pop("asdaOk", None)
 
@@ -586,10 +685,21 @@ class ChecklistManager:
                     self._run_asda_roundtrip(host)
                 else:
                     self._run_feeder_purge(host)
+            except _ChecklistCancelled:
+                # Cierre del operador: el paso no se completó, queda
+                # marcado como fallido/reintentable para la reapertura.
+                with self._lock:
+                    self._set_failed_step_locked(expected)
+                    self._worker_error = ""
+                    self._step_error = ""
+                    self._worker_phase = ""
+                self._log(f"Checklist: {kind} interrumpido por cierre")
             except Exception as exc:  # noqa: BLE001
                 with self._lock:
                     self._worker_error = str(exc)
                     self._step_error = "worker_failed"
+                    self._worker_phase = ""
+                    self._set_failed_step_locked(expected)
                 self._log(f"Checklist: error en {kind} — {exc}")
             finally:
                 with self._lock:
@@ -604,17 +714,32 @@ class ChecklistManager:
     def _motion_online(self, host: Any) -> bool:
         return bool(host.motion_connected())
 
+    def _wait_motion_or_cancel(self, host: Any, timeout_s: float) -> bool:
+        """Espera Idle/Reached en tramos cortos.
+
+        Sale enseguida si el operador cierra el checklist (cancelación) o si
+        se enclava un error de máquina: el paso queda reintentable en vez de
+        seguir esperando minutos y moviendo la máquina por detrás.
+        """
+        deadline = time.monotonic() + timeout_s
+        while True:
+            if self._worker_cancel is not None and self._worker_cancel.is_set():
+                raise _ChecklistCancelled()
+            is_latched = getattr(host, "error_is_latched", None)
+            if callable(is_latched) and is_latched():
+                raise RuntimeError("Error de máquina durante el paso")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            if host.wait_motion_idle_or_reached(min(0.25, remaining)):
+                return True
+
     def _run_asda_roundtrip(self, host: Any) -> None:
         from motion import motion_http_asda_position_mm
 
         if not host._client.connected:
-            self._log("Checklist: sin enlace Motion — paso omitido")
-            with self._lock:
-                if self._session:
-                    self._session["asdaOk"] = True
-            self.clear_step_error()
-            self._set_phase("")
-            return
+            # Igual que el alimentador: sin enlace no hubo recorrido real.
+            raise RuntimeError("Sin enlace — actuador lineal no verificado")
 
         self._set_phase("asda:servo_on")
         if not host._manual_motion(lambda: host._client.cmd_on()):
@@ -625,7 +750,7 @@ class ChecklistManager:
         host.clear_motion_reached_flag()
         if not host._manual_motion(lambda: host._client.cmd_home("F")):
             raise RuntimeError("Buscar HOME falló")
-        if not host.wait_motion_idle_or_reached(120.0):
+        if not self._wait_motion_or_cancel(host, 120.0):
             raise RuntimeError("Timeout esperando HOME")
 
         cfg = host._cycle.get_config()
@@ -639,7 +764,7 @@ class ChecklistManager:
         host.clear_motion_reached_flag()
         if not host.cmd_motion_move_mm(travel, float(host._rpm)):
             raise RuntimeError("MOVE ida falló")
-        if not host.wait_motion_idle_or_reached(180.0):
+        if not self._wait_motion_or_cancel(host, 180.0):
             raise RuntimeError("Timeout MOVE ida")
         pos1 = motion_http_asda_position_mm(host=host_motion_host)
         if pos1 is None or abs(pos1 - pos0) < 5.0:
@@ -649,7 +774,7 @@ class ChecklistManager:
         host.clear_motion_reached_flag()
         if not host.cmd_motion_move_zero(float(host._rpm)):
             raise RuntimeError("MOVE a 0 falló")
-        if not host.wait_motion_idle_or_reached(180.0):
+        if not self._wait_motion_or_cancel(host, 180.0):
             raise RuntimeError("Timeout MOVE vuelta")
         pos2 = motion_http_asda_position_mm(host=host_motion_host)
         if pos2 is None or abs(pos2) > 2.0:
@@ -662,14 +787,18 @@ class ChecklistManager:
         self.clear_step_error()
         self._set_phase("")
 
+    def _reset_purge_flags_locked(self, *, done: bool = False) -> None:
+        if not self._session:
+            return
+        self._session["purgeStarted"] = False
+        self._session["purgeSeenBusy"] = False
+        self._session["purgeDone"] = done
+
     def _run_feeder_purge(self, host: Any) -> None:
         if not host._client.connected:
-            with self._lock:
-                if self._session:
-                    self._session["stage2Ok"] = True
-            self._log("Checklist: sin enlace — alimentador omitido")
-            self._set_phase("feeder:purge_ready")
-            return
+            # Sin enlace no hay preparación real: el paso debe quedar
+            # fallido/reintentable, nunca listo ni con la purga cumplida.
+            raise RuntimeError("Sin enlace — alimentador no preparado")
 
         self._set_phase("feeder:can_init")
         host.arm_stage2()
@@ -677,7 +806,9 @@ class ChecklistManager:
         if not host.cmd_motion_stage2_start(piece_mm=piece, sides="LR"):
             fault = host.stage2_fault() or "Stage2 start falló"
             raise RuntimeError(fault)
-        result = host.wait_stage2_result(120.0)
+        result = host.wait_stage2_result(120.0, abort_event=self._worker_cancel)
+        if result == "aborted":
+            raise _ChecklistCancelled()
         if result != "ok":
             fault = host.stage2_fault() or result
             raise RuntimeError(f"CAN/Stage2: {fault}")
@@ -685,17 +816,54 @@ class ChecklistManager:
         with self._lock:
             if self._session:
                 self._session["stage2Ok"] = True
+                self._reset_purge_flags_locked()
         self._log("Checklist: CAN/Stage2 init OK — iniciar purga manual")
-        self._set_phase("feeder:purge_ready")
+        self._set_phase("")
 
     def _action_start_purge(self, host: Any) -> dict[str, Any]:
         with self._lock:
             if not self._session or not self._session.get("stage2Ok"):
                 return {"ok": False, "error": "stage2_pending"}
-        res = host.cmd_cycle_refill(float(host._rpm))
+        # cmd_cycle_refill es keyword-only: pasarle rpm posicional lanzaba
+        # TypeError y la purga del checklist nunca arrancaba.
+        res = host.cmd_cycle_refill()
         if res.get("ok"):
-            self._set_phase("feeder:purge_running")
+            with self._lock:
+                if self._session:
+                    self._session["purgeStarted"] = True
+                    self._session["purgeSeenBusy"] = False
+                    self._session["purgeDone"] = False
+                self._clear_failed_step_locked("feeder_can_purge")
+                self._worker_error = ""
+                self._step_error = ""
+                self._worker_phase = ""
             self._log("Checklist: purga iniciada")
+        else:
+            with self._lock:
+                self._set_failed_step_locked("feeder_can_purge")
+            self.set_step_error("worker_failed")
+        self._notify()
+        return res
+
+    def _action_purge_step(self, host: Any, *, confirm: bool) -> dict[str, Any]:
+        """Botones de la purga dentro del checklist (Alimentar / Continuar).
+
+        Sin esto, las confirmaciones de la purga solo existen en la pantalla
+        principal, tapadas por este modal: la purga nunca avanzaba y el paso
+        no se podía ni completar ni reintentar.
+        """
+        with self._lock:
+            if not self._session or not self._session.get("stage2Ok"):
+                return {"ok": False, "error": "stage2_pending"}
+        res = (
+            host.cmd_cycle_refill_confirm(True)
+            if confirm
+            else host.cmd_cycle_refill_retry()
+        )
+        if not res.get("ok"):
+            with self._lock:
+                self._set_failed_step_locked("feeder_can_purge")
+            self.set_step_error("worker_failed")
         self._notify()
         return res
 

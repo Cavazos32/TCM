@@ -532,6 +532,8 @@ export const translations = {
     checklist_motion_blocked: 'Espera a que la máquina termine de moverse antes de continuar.',
     checklist_pieces_done: 'Piezas listas: {count} de 2',
     checklist_pieces_waiting: 'Espera a que se corten las dos piezas de prueba.',
+    checklist_pieces_stopped:
+      'La prueba se detuvo antes de terminar. Pulsa «Cortar piezas de prueba» para intentarlo de nuevo.',
     checklist_measure_left: 'Longitud lado izquierdo',
     checklist_measure_right: 'Longitud lado derecho',
     checklist_err_invalid_employee: 'El número de empleado debe tener cinco dígitos.',
@@ -541,6 +543,7 @@ export const translations = {
     checklist_err_air_test_failed: 'Error al accionar las válvulas. Revisa el control neumático.',
     checklist_err_stage2_pending: 'Primero prepara el alimentador.',
     checklist_err_purge_active: 'Espera a que termine la purga.',
+    checklist_err_purge_pending: 'Primero haz la purga y espera a que termine.',
     checklist_err_measurements_missing: 'Escribe las dos medidas antes de terminar.',
     checklist_err_measurements_out: 'Las medidas no coinciden. Llama al técnico.',
     checklist_err_busy: 'Espera a que termine la acción anterior.',
