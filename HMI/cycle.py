@@ -27,6 +27,7 @@ from machine_states import (
     TX_STOP,
 )
 from error_catalog import format_ui, lookup
+from plc import CMD_ENCODER, CMD_GRIPPER, CMD_HOLDER
 
 HMI_ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = HMI_ROOT / "config" / "cycle_config.json"
@@ -102,7 +103,10 @@ WIP_BLOWER_LINEAL_MATCH_MAX_S = 30.0
 PLC_VALVE_PULSE_MS = 100
 PLC_VALVE_GAP_MS = 50
 PLC_VALVE_SLOT_MS = PLC_VALVE_PULSE_MS + PLC_VALVE_GAP_MS  # 150
-PLC_PRECUT_VALVE_CMDS = 2  # holder + encoder
+# Plazo para el ACK del PLC tras una orden de válvula crítica. El PLC
+# responde al terminar el pulso (~150 ms por válvula, en orden de envío);
+# 2 s cubre la cola de pulsos sin convertir un PLC mudo en avance a ciegas.
+PLC_ACK_TIMEOUT_S = 2.0
 # Asiento desde el Set HMI: 2 slots (Set+Res) + carrera neumática.
 # 250 ms desde Res era corto: coincidía con el drenaje de Holder/Encoder.
 CUTTER_SETTLE_BEFORE_DEPOSIT_MS = 400
@@ -497,6 +501,10 @@ class CycleHost(Protocol):
     def cmd_motion_enc_set0_r(self) -> bool: ...
     def cmd_motion_enc_set0_l(self) -> bool: ...
     def plc_valve_is_on(self, byte_code: int) -> bool | None: ...
+    def plc_ack_seq(self) -> int: ...
+    def wait_plc_ack(
+        self, byte_code: int, since_seq: int, timeout_s: float
+    ) -> bool | None: ...
     def plc_blower_sec(self) -> float: ...
     def cmd_plc_holder(self, on: bool) -> bool: ...
     def cmd_plc_encoder(self, on: bool) -> bool: ...
@@ -3823,15 +3831,20 @@ class CycleRunner:
         """Target lineal del lote: longitud de pieza + offset HMI vigente."""
         return self._effective_mm(self._lot_length_mm)
 
-    def _arm_holder_encoder(self) -> None:
-        """Cierra Holder+Encoder (ON). Idempotente: no re-pulsa si ya están ON."""
-        self._host.cmd_plc_holder(True)
-        self._host.cmd_plc_encoder(True)
+    def _arm_holder_encoder(self) -> bool:
+        """Cierra Holder+Encoder (ON). Idempotente: no re-pulsa si ya están ON.
 
-    def _open_holder_encoder(self) -> None:
-        """Abre Holder+Encoder (OFF) para el avance lineal."""
-        self._host.cmd_plc_holder(False)
-        self._host.cmd_plc_encoder(False)
+        False = algún envío no salió; el caller no debe avanzar.
+        """
+        ok_holder = self._host.cmd_plc_holder(True)
+        ok_encoder = self._host.cmd_plc_encoder(True)
+        return bool(ok_holder and ok_encoder)
+
+    def _open_holder_encoder(self) -> bool:
+        """Abre Holder+Encoder (OFF) para el avance lineal. False = envío fallido."""
+        ok_holder = self._host.cmd_plc_holder(False)
+        ok_encoder = self._host.cmd_plc_encoder(False)
+        return bool(ok_holder and ok_encoder)
 
     def _ensure_holder_encoder_closed_for_feed(self) -> bool:
         """Feed con Holder/Encoder abiertos: la rueda no toca → E028/E002/E003.
@@ -3845,8 +3858,31 @@ class CycleRunner:
         self._host.cycle_log(
             "Holder+Encoder abiertos antes del feed (Reset PLC / All Off) — re-cerrar"
         )
-        self._arm_holder_encoder()
-        return not self._pausable_delay(int(self.get_config().holder_on_ms or 0))
+        # Solo se espera ACK de la válvula que hizo falta enviar.
+        need_holder = self._host.plc_valve_is_on(CMD_HOLDER) is not True
+        need_encoder = self._host.plc_valve_is_on(CMD_ENCODER) is not True
+        ack_seq = self._host.plc_ack_seq()
+        if not self._arm_holder_encoder():
+            self._host.cycle_log("Feed sin Holder/Encoder: envío al PLC falló")
+            self._raise_fault("E066")
+            return False
+        if self._pausable_delay(int(self.get_config().holder_on_ms or 0)):
+            return False
+        if need_holder and (
+            self._host.wait_plc_ack(CMD_HOLDER, ack_seq, PLC_ACK_TIMEOUT_S)
+            is not True
+        ):
+            self._host.cycle_log("Feed sin Holder: el PLC no confirmó el cierre")
+            self._raise_fault("E066")
+            return False
+        if need_encoder and (
+            self._host.wait_plc_ack(CMD_ENCODER, ack_seq, PLC_ACK_TIMEOUT_S)
+            is not True
+        ):
+            self._host.cycle_log("Feed sin Encoder: el PLC no confirmó el cierre")
+            self._raise_fault("E066")
+            return False
+        return True
 
     def _ensure_asda_at_zero(self, *, reason: str = "Start") -> bool:
         """Si ASDA no está en 0 (caché Reached), MOVE_ZERO y esperar Reached.
@@ -3884,11 +3920,38 @@ class CycleRunner:
         self._host.cycle_log(
             "prepareBeforeCut: cutters/grippers safe + Holder/Encoder cerrados"
         )
-        self._host.cmd_plc_tools_safe()
-        self._arm_holder_encoder()
+        if not self._host.cmd_plc_tools_safe():
+            self._host.cycle_log("prepareBeforeCut: envío de seguro al PLC falló")
+            self._raise_fault("E066")
+            return False
+        need_holder = self._host.plc_valve_is_on(CMD_HOLDER) is not True
+        need_encoder = self._host.plc_valve_is_on(CMD_ENCODER) is not True
+        ack_seq = self._host.plc_ack_seq()
+        if not self._arm_holder_encoder():
+            self._host.cycle_log("prepareBeforeCut: envío Holder/Encoder falló")
+            self._raise_fault("E066")
+            return False
         if self._should_abort():
             return False
-        return self._ensure_asda_at_zero()
+        if not self._ensure_asda_at_zero():
+            return False
+        # El ACK se solapa con el MOVE_ZERO de arriba; aquí solo se bloquea
+        # el resto hasta que el PLC confirme ambos cierres antes del feed.
+        if need_holder and (
+            self._host.wait_plc_ack(CMD_HOLDER, ack_seq, PLC_ACK_TIMEOUT_S)
+            is not True
+        ):
+            self._host.cycle_log("prepareBeforeCut: el PLC no confirmó Holder")
+            self._raise_fault("E066")
+            return False
+        if need_encoder and (
+            self._host.wait_plc_ack(CMD_ENCODER, ack_seq, PLC_ACK_TIMEOUT_S)
+            is not True
+        ):
+            self._host.cycle_log("prepareBeforeCut: el PLC no confirmó Encoder")
+            self._raise_fault("E066")
+            return False
+        return True
     def _confirm_asda_at_zero_for_feed(self) -> bool:
         """Tras HOME: alimentar solo si ASDA está en 0 (caché TCP / Reached)."""
         pos = self._host.asda_position_mm()
@@ -4318,18 +4381,16 @@ class CycleRunner:
         self._end_op(op, ok=not aborted)
         return aborted
 
-    def _plc_precut_drain_remain_ms(self, already_ms: int) -> int:
-        """Ms que faltan para que el PLC termine Holder+Encoder precut."""
-        need = PLC_PRECUT_VALVE_CMDS * PLC_VALVE_SLOT_MS
-        return max(0, need - max(0, int(already_ms)))
-
     def _ensure_cutter_settled_before_travel(self, cut_sides: str) -> bool:
         """True = abort. ASDA no se mueve hasta KEEP Set/Res asentado.
 
         El Set HMI va fire-and-forget: si Holder+Encoder aún ocupan el ESP,
         el pulso real del cortador llega tarde. El reloj cuenta desde el Set.
         """
-        self._host.cmd_plc_cutters(False, sides=cut_sides, force=True)
+        if not self._host.cmd_plc_cutters(False, sides=cut_sides, force=True):
+            self._host.cycle_log("Cortador OFF (asiento): envío al PLC falló")
+            self._raise_fault("E066")
+            return True
         need_from_set_ms = (
             2 * PLC_VALVE_SLOT_MS
             + max(
@@ -4544,14 +4605,50 @@ class CycleRunner:
                             if self._enter(rep, qty, "holder_on"):
                                 break
                             hold_op = self._begin_op("holder_on")
-                            self._arm_holder_encoder()
-                            self._end_op(hold_op)
+                            need_holder_ack = (
+                                self._host.plc_valve_is_on(CMD_HOLDER) is not True
+                            )
+                            need_encoder_ack = (
+                                self._host.plc_valve_is_on(CMD_ENCODER) is not True
+                            )
+                            ack_seq = self._host.plc_ack_seq()
+                            arm_ok = self._arm_holder_encoder()
+                            self._end_op(hold_op, ok=arm_ok)
+                            if not arm_ok:
+                                self._host.cycle_log(
+                                    "Holder+Encoder ON: envío al PLC falló"
+                                )
+                                self._raise_fault("E066")
+                                break
                             self._host.cycle_log(
                                 f"Holder+Encoder ON (inicio pieza {rep})"
                             )
                             if self._after_step("holder_on"):
                                 break
                             if self._do_wait(rep, qty, "wait_holder_on", "holder_on_ms"):
+                                break
+                            # Alimentar solo con ambos cierres confirmados.
+                            if need_holder_ack and (
+                                self._host.wait_plc_ack(
+                                    CMD_HOLDER, ack_seq, PLC_ACK_TIMEOUT_S
+                                )
+                                is not True
+                            ):
+                                self._host.cycle_log(
+                                    "Feed sin Holder cerrado: el PLC no confirmó"
+                                )
+                                self._raise_fault("E066")
+                                break
+                            if need_encoder_ack and (
+                                self._host.wait_plc_ack(
+                                    CMD_ENCODER, ack_seq, PLC_ACK_TIMEOUT_S
+                                )
+                                is not True
+                            ):
+                                self._host.cycle_log(
+                                    "Feed sin Encoder cerrado: el PLC no confirmó"
+                                )
+                                self._raise_fault("E066")
                                 break
                         # Pause/error en HOME puede dejar ASDA sin confirmar en 0.
                         if recovery_restart and not self._ensure_asda_at_zero(
@@ -4659,8 +4756,12 @@ class CycleRunner:
                         if self._enter(rep, qty, "grippers_on"):
                             break
                         grip_op = self._begin_op("grippers_on")
-                        self._host.cmd_plc_gripper(True)
-                        self._end_op(grip_op)
+                        grip_ok = self._host.cmd_plc_gripper(True)
+                        self._end_op(grip_op, ok=grip_ok)
+                        if not grip_ok:
+                            self._host.cycle_log("Pinzas ON: envío al PLC falló")
+                            self._raise_fault("E066")
+                            break
                         self._host.cycle_log("Pinzas ON (cierran)")
                         if self._after_step("grippers_on"):
                             break
@@ -4676,14 +4777,54 @@ class CycleRunner:
                         if self._enter(rep, qty, "holder_off"):
                             break
                         hold_off_op = self._begin_op("holder_off")
-                        self._open_holder_encoder()
-                        self._end_op(hold_off_op)
+                        # Solo se espera ACK de la válvula que estaba cerrada
+                        # (la otra no genera envío ni pulso).
+                        need_holder_ack = (
+                            self._host.plc_valve_is_on(CMD_HOLDER) is not False
+                        )
+                        need_encoder_ack = (
+                            self._host.plc_valve_is_on(CMD_ENCODER) is not False
+                        )
+                        ack_seq = self._host.plc_ack_seq()
+                        open_ok = self._open_holder_encoder()
+                        self._end_op(hold_off_op, ok=open_ok)
+                        if not open_ok:
+                            self._host.cycle_log(
+                                "Holder+Encoder OFF: envío al PLC falló"
+                            )
+                            self._raise_fault("E066")
+                            break
                         self._host.cycle_log(
                             "Holder+Encoder OFF (abren para lineal)"
                         )
                         if self._after_step("holder_off"):
                             break
                         if self._do_wait(rep, qty, "wait_holder_open", "holder_open_ms"):
+                            break
+                        # El avance lineal no arranca hasta que el PLC
+                        # confirme ambas aperturas (ACK tras el pulso). La
+                        # espera de arriba (holderOpenMs) ya cubre el inicio.
+                        if need_holder_ack and (
+                            self._host.wait_plc_ack(
+                                CMD_HOLDER, ack_seq, PLC_ACK_TIMEOUT_S
+                            )
+                            is not True
+                        ):
+                            self._host.cycle_log(
+                                "Lineal sin Holder abierto: el PLC no confirmó"
+                            )
+                            self._raise_fault("E066")
+                            break
+                        if need_encoder_ack and (
+                            self._host.wait_plc_ack(
+                                CMD_ENCODER, ack_seq, PLC_ACK_TIMEOUT_S
+                            )
+                            is not True
+                        ):
+                            self._host.cycle_log(
+                                "Lineal sin Encoder abierto: el PLC no confirmó"
+                            )
+                            self._raise_fault("E066")
                             break
 
                         if self._enter(rep, qty, "lineal_fwd"):
@@ -4709,23 +4850,52 @@ class CycleRunner:
                         if self._enter(rep, qty, "holder_precut"):
                             break
                         precut_op = self._begin_op("holder_precut")
-                        self._arm_holder_encoder()
-                        self._end_op(precut_op)
+                        need_holder_ack = (
+                            self._host.plc_valve_is_on(CMD_HOLDER) is not True
+                        )
+                        need_encoder_ack = (
+                            self._host.plc_valve_is_on(CMD_ENCODER) is not True
+                        )
+                        ack_seq = self._host.plc_ack_seq()
+                        arm_ok = self._arm_holder_encoder()
+                        self._end_op(precut_op, ok=arm_ok)
+                        if not arm_ok:
+                            self._host.cycle_log(
+                                "Holder+Encoder ON pre-corte: envío al PLC falló"
+                            )
+                            self._raise_fault("E066")
+                            break
                         self._host.cycle_log("Holder+Encoder ON (cierran pre-corte)")
                         if self._after_step("holder_precut"):
                             break
                         if self._do_wait(rep, qty, "wait_holder_precut", "holder_on_ms"):
                             break
-                        precut_wait = max(0, int(self.get_config().holder_on_ms or 0))
-                        drain_ms = self._plc_precut_drain_remain_ms(precut_wait)
-                        if drain_ms > 0 and self._wait_ms_op(
-                            drain_ms,
-                            "plc_precut_drain",
-                            f"PLC: drena Holder+Encoder {drain_ms} ms "
-                            f"antes del cortador "
-                            f"({PLC_PRECUT_VALVE_CMDS}×{PLC_VALVE_SLOT_MS} ms "
-                            f"− {precut_wait} ms ya esperados)",
+                        # Corte solo con ambos cierres confirmados por el PLC.
+                        # Sin drenaje fijo: el ACK del PLC llega tras completar
+                        # cada pulso (plcTcpDoByte), así que wait_plc_ack ya
+                        # garantiza Holder+Encoder terminados; esperar además
+                        # los slots por tiempo duplicaba esa misma condición.
+                        if need_holder_ack and (
+                            self._host.wait_plc_ack(
+                                CMD_HOLDER, ack_seq, PLC_ACK_TIMEOUT_S
+                            )
+                            is not True
                         ):
+                            self._host.cycle_log(
+                                "Corte sin Holder cerrado: el PLC no confirmó"
+                            )
+                            self._raise_fault("E066")
+                            break
+                        if need_encoder_ack and (
+                            self._host.wait_plc_ack(
+                                CMD_ENCODER, ack_seq, PLC_ACK_TIMEOUT_S
+                            )
+                            is not True
+                        ):
+                            self._host.cycle_log(
+                                "Corte sin Encoder cerrado: el PLC no confirmó"
+                            )
+                            self._raise_fault("E066")
                             break
                         # 14–17 Corte solo en lados de feed (evita pulsar el cortador vacío)
                         # force=True: no omitir Set/Res por caché HMI desfasada.
@@ -4762,7 +4932,13 @@ class CycleRunner:
                                 break
                         cut_op = self._begin_op("corte")
                         self._host.cycle_log(f"Cortador ON (Set) lados={cut_sides}")
-                        self._host.cmd_plc_cutters(True, sides=cut_sides, force=True)
+                        if not self._host.cmd_plc_cutters(
+                            True, sides=cut_sides, force=True
+                        ):
+                            self._end_op(cut_op, ok=False)
+                            self._host.cycle_log("Cortador ON: envío al PLC falló")
+                            self._raise_fault("E066")
+                            break
                         self._mark_cutter_set()
                         if self._after_step("cutter_on"):
                             self._end_op(cut_op, ok=False)
@@ -4776,7 +4952,13 @@ class CycleRunner:
                             self._end_op(cut_op, ok=False)
                             self._host.cmd_plc_cutters(False, sides=cut_sides, force=True)
                             break
-                        self._host.cmd_plc_cutters(False, sides=cut_sides, force=True)
+                        if not self._host.cmd_plc_cutters(
+                            False, sides=cut_sides, force=True
+                        ):
+                            self._end_op(cut_op, ok=False)
+                            self._host.cycle_log("Cortador OFF: envío al PLC falló")
+                            self._raise_fault("E066")
+                            break
                         self._mark_cutter_res()
                         cut_sec = self._end_op(cut_op, ok=True)
                         self._host.cycle_log(
@@ -4862,12 +5044,31 @@ class CycleRunner:
                         if self._enter(rep, qty, "grippers_off"):
                             break
                         grip_off_op = self._begin_op("grippers_off")
-                        self._host.cmd_plc_gripper(False)
-                        self._end_op(grip_off_op)
+                        ack_seq = self._host.plc_ack_seq()
+                        grip_ok = self._host.cmd_plc_gripper(False)
+                        self._end_op(grip_off_op, ok=grip_ok)
+                        if not grip_ok:
+                            self._host.cycle_log("Pinzas OFF: envío al PLC falló")
+                            self._raise_fault("E066")
+                            break
                         self._host.cycle_log("Pinzas OFF (abren)")
                         if self._after_step("grippers_off"):
                             break
                         if self._do_wait(rep, qty, "wait_gripper_release", "gripper_release_ms"):
+                            break
+                        # Despeje solo con la apertura confirmada por el PLC
+                        # (ACK tras el pulso), no solo con el envío. La
+                        # espera de arriba (gripperReleaseMs) cubre el inicio.
+                        if (
+                            self._host.wait_plc_ack(
+                                CMD_GRIPPER, ack_seq, PLC_ACK_TIMEOUT_S
+                            )
+                            is not True
+                        ):
+                            self._host.cycle_log(
+                                "Despeje sin pinzas abiertas: el PLC no confirmó"
+                            )
+                            self._raise_fault("E066")
                             break
                         # 23 Despeje ASDA tras abrir pinzas → actualiza ref WIP (soplo fin)
                         if self._enter(rep, qty, "gripper_clearance"):

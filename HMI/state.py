@@ -313,6 +313,11 @@ class HmiState:
             },
         }
         self._load_plc_config()
+        # Último ACK del PLC por byte de válvula: byte → (seq global, ok).
+        # El PLC manda el ACK tras ejecutar el pulso; seq permite al ciclo
+        # aceptar solo el ACK posterior a su envío (sin seq en el protocolo).
+        self._plc_ack_seq = 0
+        self._plc_ack_by_byte: dict[int, tuple[int, bool]] = {}
         self._andon_buzzer_mute = DEFAULT_ANDON_BUZZER_MUTE
         self._andon_mute_resync = False
         self._debug_password = "tcm"
@@ -1406,6 +1411,30 @@ class HmiState:
 
     def cmd_plc_gripper(self, on: bool) -> bool:
         return self._plc_client.cmd_gripper(on)
+
+    def plc_ack_seq(self) -> int:
+        """Marca global de ACK del PLC. El ciclo la toma antes de enviar."""
+        with self._lock:
+            return self._plc_ack_seq
+
+    def wait_plc_ack(
+        self, byte_code: int, since_seq: int, timeout_s: float
+    ) -> bool | None:
+        """Espera el ACK del PLC para `byte_code` posterior a `since_seq`.
+
+        True = ACK ok, False = ACK de rechazo, None = sin ACK en el plazo.
+        El ACK confirma que el PLC recibió la orden y ejecutó su rutina de
+        pulso (o ya tenía ese estado lógico); no confirma movimiento físico.
+        """
+        deadline = time.monotonic() + max(0.0, float(timeout_s))
+        while True:
+            with self._lock:
+                entry = self._plc_ack_by_byte.get(int(byte_code))
+                if entry is not None and entry[0] > since_seq:
+                    return bool(entry[1])
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(0.01)
 
     def cmd_plc_cutters(
         self, on: bool, *, sides: str | None = None, force: bool = False
@@ -3826,6 +3855,11 @@ class HmiState:
                 detail = msg.get("message", "")
                 byte_code = int(msg.get("byte", 0) or 0)
                 if msg.get("actuator") == "plc":
+                    self._plc_ack_seq += 1
+                    self._plc_ack_by_byte[byte_code] = (
+                        self._plc_ack_seq,
+                        bool(ok),
+                    )
                     if ok:
                         if byte_code == CMD_RESET:
                             self._plc_apply_home_valve_cache()
