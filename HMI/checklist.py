@@ -236,6 +236,14 @@ class ChecklistManager:
             idx = int(self._session.get("currentStepIndex", 0))
             return STEP_IDS[idx] == "piece_measure" and not self._piece_test_started
 
+    def is_piece_test_started(self) -> bool:
+        """La prueba de 2 piezas del checklist ya arrancó (lote propio)."""
+        with self._lock:
+            if not self._session or not self._piece_test_started:
+                return False
+            idx = int(self._session.get("currentStepIndex", 0))
+            return 0 <= idx < len(STEP_IDS) and STEP_IDS[idx] == "piece_measure"
+
     # --- sesión ---
 
     def start_session(self, employee_id: str) -> dict[str, Any]:
@@ -272,6 +280,11 @@ class ChecklistManager:
         operador va a manipular la máquina desde fuera y el checklist no
         debe seguir moviéndola por detrás. El error NO se borra: al reabrir,
         el paso aparece como fallido y con su botón de reintento.
+
+        Si la prueba de piezas está corriendo, queda en pausa (lote vivo):
+        cerrar la ventana no debe obligar a Detener ni a Reset para poder
+        manipular la máquina; solo el arranque sigue bloqueado hasta
+        terminar la revisión.
         """
         worker = self._worker
         with self._lock:
@@ -287,6 +300,25 @@ class ChecklistManager:
             try:
                 if host.plc_connected():
                     self._manual_plc_air_off(host)
+            except Exception:  # noqa: BLE001
+                pass
+        # Prueba de piezas en curso: pausarla, no detenerla. El lote queda
+        # vivo y la máquina queda manipulable (ajustes, manuales, mtto,
+        # Materialista) sin pasar por Stop/Reset.
+        if host is not None and self.is_piece_test_started():
+            try:
+                cycle = getattr(host, "_cycle", None)
+                if (
+                    cycle is not None
+                    and cycle.is_active()
+                    and not cycle.snapshot().get("paused")
+                ):
+                    res = host.cmd_cycle_pause()
+                    if res.get("ok"):
+                        self._log(
+                            "Checklist: ventana cerrada — "
+                            "prueba de piezas en pausa (lote vivo)"
+                        )
             except Exception:  # noqa: BLE001
                 pass
         with self._lock:

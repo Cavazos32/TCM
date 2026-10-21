@@ -478,14 +478,21 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
   const showPfCoach =
     !machineState.isRunning && machineState.cycleMaterialist;
   const checklistRequired = !!checklistState?.required || !!machineState.checklistRequired;
+  // Con la revisión sin terminar solo se bloquea arrancar producción
+  // (Iniciar y, salvo la propia prueba de piezas, Reanudar). Ajustes,
+  // acciones manuales, mantenimiento y Materialista quedan libres.
   const startDisabled =
     hasFault ||
     machineState.isRunning ||
     machineState.refillActive ||
     checklistRequired;
+  const checklistBlocksResume =
+    checklistRequired &&
+    !(checklistState?.pieceTestStarted && machineState.isPaused);
   const resumeDisabled =
     hasFault ||
     !resumeEnabled ||
+    checklistBlocksResume ||
     machineState.refillAwaitingConfirm ||
     machineState.recoveryAwaitingConfirm ||
     machineState.refillActive ||

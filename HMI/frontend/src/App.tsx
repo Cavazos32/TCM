@@ -25,6 +25,7 @@ function AppMain() {
   const [showParamPassword, setShowParamPassword] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
   const [checklistOpen, setChecklistOpen] = useState(false);
+  const [checklistDismissed, setChecklistDismissed] = useState(false);
   const [checklistDoneFlash, setChecklistDoneFlash] = useState(false);
   const hadChecklistSessionRef = useRef(false);
   const hmi = useHmiState();
@@ -41,11 +42,30 @@ function AppMain() {
     pfStop,
   } = hmi;
 
+  // La revisión se abre sola al arrancar, pero si el operador la cierra
+  // para manipular la máquina (ajustes, manuales, mantenimiento,
+  // Materialista), no debe reabrirse sola: solo vuelve si él la abre o
+  // si surge una nueva obligación de checklist. Lo único bloqueado con
+  // la revisión sin terminar es el arranque de producción.
   useEffect(() => {
-    if (view.checklistState.required) {
+    if (!view.checklistState.required) {
+      setChecklistDismissed(false);
+      return;
+    }
+    if (!checklistDismissed) {
       setChecklistOpen(true);
     }
-  }, [view.checklistState.required]);
+  }, [view.checklistState.required, checklistDismissed]);
+
+  const handleCloseChecklist = useCallback(() => {
+    setChecklistDismissed(true);
+    setChecklistOpen(false);
+  }, []);
+
+  const handleOpenChecklist = useCallback(() => {
+    setChecklistDismissed(false);
+    setChecklistOpen(true);
+  }, []);
 
   useEffect(() => {
     const hasSession = !!view.checklistState.session;
@@ -164,7 +184,7 @@ function AppMain() {
             !view.machineState.asdaMoveWarning
           ) {
             if (view.resumeEnabled) resume();
-            else start();
+            else if (!view.checklistState.required) start();
           }
         }
       } else if (e.key === 'Escape') {
@@ -191,6 +211,7 @@ function AppMain() {
     view.machineState.purgeHandsWarning,
     view.machineState.asdaMoveWarning,
     view.resumeEnabled,
+    view.checklistState.required,
     isSettingsOpen,
     showParamPassword,
     setIsSettingsOpen,
@@ -290,7 +311,7 @@ function AppMain() {
             onClearLogs={() => hmi.clearLogs('all')}
             onOpenParametros={handleOpenParametros}
             onOpenMantenimiento={() => setIsSettingsOpen(true)}
-            onOpenChecklist={() => setChecklistOpen(true)}
+            onOpenChecklist={handleOpenChecklist}
             checklistState={view.checklistState}
             checklistCompletedFlash={checklistDoneFlash}
             maintenanceCycleCount={view.maintenanceCycleCount}
@@ -447,7 +468,7 @@ function AppMain() {
 
       <ChecklistModal
         isOpen={checklistOpen}
-        onClose={() => setChecklistOpen(false)}
+        onClose={handleCloseChecklist}
         checklist={view.checklistState}
         maintenanceCycleCount={view.maintenanceCycleCount}
         nominalPieceMm={Math.abs(view.models[view.selectedModelIndex]?.mm ?? view.machineState.mm ?? 0)}
@@ -455,7 +476,7 @@ function AppMain() {
         andonPressure={!!view.andonState.pressure}
         plcState={view.plcState}
         onOpenMantenimiento={() => {
-          setChecklistOpen(false);
+          handleCloseChecklist();
           setIsSettingsOpen(true);
         }}
         onChecklistUpdate={hmi.updateChecklistState}

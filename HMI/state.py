@@ -1527,10 +1527,15 @@ class HmiState:
     # --- Comandos máquina / ciclo ---
 
     def cmd_start(self, qty: int | None = None, *, checklist_bypass: bool = False) -> dict:
-        """Start máquina (0x040): lote Cycle con mm/qty del modelo."""
+        """Start máquina (0x040): lote Cycle con mm/qty del modelo.
+
+        Es la única puerta que bloquea el checklist sin terminar: ajustes,
+        acciones manuales, mantenimiento, purga, Home y Materialista no
+        pasan por aquí y quedan libres. Solo la prueba de piezas del propio
+        checklist entra con checklist_bypass.
+        """
         if not checklist_bypass and self._checklist.is_start_blocked():
-            if not self._checklist.allow_checklist_piece_start():
-                return {"ok": False, "error": "Checklist pendiente"}
+            return {"ok": False, "error": "Checklist pendiente"}
         with self._lock:
             blocked = self._work_blocked_error()
             if blocked:
@@ -1577,6 +1582,13 @@ class HmiState:
         if blocked:
             return {"ok": False, "error": blocked}
         snap = self._cycle.snapshot()
+        # Reanudar un lote en pausa también es arrancar producción: con el
+        # checklist sin terminar solo se permite el lote propio de la
+        # prueba de piezas (p. ej. tras cerrar la ventana y precargar).
+        if self._checklist.is_start_blocked() and not (
+            self._checklist.is_piece_test_started() and snap.get("paused")
+        ):
+            return {"ok": False, "error": "Checklist pendiente"}
         if snap.get("materialist"):
             return {
                 "ok": False,
