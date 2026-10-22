@@ -2648,6 +2648,17 @@ static void appendErrorObject(String& json)
 
 // ====================== OTA (red local + GitHub Release) ======================
 static bool arduinoOtaStarted = false;
+static volatile bool arduinoOtaInProgress = false;
+
+static void serviceArduinoOta(uint8_t passes = 4)
+{
+  if (!arduinoOtaStarted) return;
+  for (uint8_t i = 0; i < passes; i++)
+  {
+    ArduinoOTA.handle();
+    yield();
+  }
+}
 
 static void pfOtaStopMotion()
 {
@@ -2661,14 +2672,21 @@ static void ensureArduinoOta()
   ArduinoOTA.setHostname(OTA_HOSTNAME);
   ArduinoOTA.setPassword(OTA_PASSWORD);
   ArduinoOTA.onStart([]() {
+    arduinoOtaInProgress = true;
     pfOtaStopMotion();
     Serial.println("[OTA] inicio (red local)");
   });
-  ArduinoOTA.onEnd([]() { Serial.println("\n[OTA] listo (red local)"); });
+  ArduinoOTA.onEnd([]() {
+    arduinoOtaInProgress = false;
+    Serial.println("\n[OTA] listo (red local)");
+  });
   ArduinoOTA.onProgress([](unsigned int prog, unsigned int total) {
     if (total) Serial.printf("[OTA] %u%%\r", (prog * 100U) / total);
   });
-  ArduinoOTA.onError([](ota_error_t err) { Serial.printf("[OTA] error %u\n", err); });
+  ArduinoOTA.onError([](ota_error_t err) {
+    arduinoOtaInProgress = false;
+    Serial.printf("[OTA] error %u\n", err);
+  });
   ArduinoOTA.begin();
   arduinoOtaStarted = true;
   Serial.printf("[OTA] red local listo hostname=%s (IDE → puerto de red)\n", OTA_HOSTNAME);
@@ -3270,6 +3288,7 @@ static void serviceHttp(uint8_t passes = 12)
   for (uint8_t i = 0; i < passes; i++)
   {
     server.handleClient();
+    serviceArduinoOta(1);
     yield();
   }
 }
@@ -4112,9 +4131,16 @@ void setup()
 
 void loop()
 {
+  if (arduinoOtaInProgress)
+  {
+    serviceArduinoOta(24);
+    serviceHttp(8);
+    return;
+  }
+
   serviceHttp(12);
-  if (arduinoOtaStarted) ArduinoOTA.handle();
-  remoteUpdate.loop();
+  serviceArduinoOta(4);
+  if (!arduinoOtaInProgress) remoteUpdate.loop();
   if (remoteUpdate.flashing()) pfOtaStopMotion();
 
   updateBufferFullFilter();

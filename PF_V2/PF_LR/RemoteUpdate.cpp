@@ -1,6 +1,7 @@
 #include "RemoteUpdate.h"
 
 #include <WiFi.h>
+#include <WiFiClient.h>
 #include <NetworkClientSecure.h>
 #include <HTTPClient.h>
 #include <HTTPUpdate.h>
@@ -221,6 +222,35 @@ static void configureTls(NetworkClientSecure& client) {
   client.setTimeout(kHttpTimeoutMs / 1000);
 }
 
+static bool urlIsHttpOrHttps(const String& url) {
+  return url.startsWith("https://") || url.startsWith("http://");
+}
+
+static bool httpGetBody(const String& url, String& body, int& outCode) {
+  outCode = -1;
+  if (!urlIsHttpOrHttps(url)) return false;
+
+  HTTPClient http;
+  http.useHTTP10(true);
+  http.setTimeout(kHttpTimeoutMs);
+  http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+  http.setUserAgent("TCM-PF-V2");
+
+  if (url.startsWith("https://")) {
+    NetworkClientSecure sec;
+    configureTls(sec);
+    if (!http.begin(sec, url)) return false;
+  } else {
+    WiFiClient plain;
+    if (!http.begin(plain, url)) return false;
+  }
+
+  outCode = http.GET();
+  if (outCode == HTTP_CODE_OK) body = http.getString();
+  http.end();
+  return outCode == HTTP_CODE_OK;
+}
+
 void RemoteUpdate::begin(const char* currentVersion, const char* manifestUrl, uint32_t intervalMs, uint32_t bootDelayMs, uint32_t retryMs) {
   _currentVersion = currentVersion;
   _manifestUrl = manifestUrl;
@@ -291,51 +321,30 @@ int RemoteUpdate::compareVersions(const char* a, const char* b) {
 }
 
 bool RemoteUpdate::fetchManifest(String& version, String& url, String& md5, String& sha256) {
-  IPAddress ghIp;
-  if (WiFi.hostByName("github.com", ghIp) != 1)
-  {
-    setStatus("error", "DNS: no resuelve github.com (revisa DNS/firewall)");
-    return false;
-  }
-  Serial.printf("OTA DNS github.com -> %s\n", ghIp.toString().c_str());
-
-  NetworkClientSecure client;
-  configureTls(client);
-
-  HTTPClient http;
-  http.useHTTP10(true);  // sin keep-alive: GitHub redirige a otro host
-  http.setTimeout(kHttpTimeoutMs);
-  http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
-  http.setUserAgent("TCM-PF-V2");
-  if (!http.begin(client, _manifestUrl)) {
-    setStatus("error", "URL de manifiesto invalida");
+  if (!urlIsHttpOrHttps(_manifestUrl)) {
+    setStatus("error", "Manifiesto: URL invalida");
     return false;
   }
 
-  const int code = http.GET();
-  if (code != HTTP_CODE_OK) {
+  String body;
+  int code = -1;
+  if (!httpGetBody(_manifestUrl, body, code)) {
     char msg[96];
     if (code == HTTP_CODE_NOT_FOUND) {
-      snprintf(msg, sizeof(msg), "Manifiesto no encontrado (404): no hay release publicado");
+      snprintf(msg, sizeof(msg), "Manifiesto no encontrado (404)");
     } else if (code == -1) {
-      snprintf(msg, sizeof(msg),
-               "Sin enlace HTTPS a GitHub (443). VLAN sin internet o bloqueada");
+      snprintf(msg, sizeof(msg), "Sin enlace al servidor OTA (Master /ota/)");
     } else {
-      snprintf(msg, sizeof(msg), "Manifiesto HTTP %d (%s)", code, http.errorToString(code).c_str());
+      snprintf(msg, sizeof(msg), "Manifiesto HTTP %d", code);
     }
-    http.end();
     setStatus("error", msg);
     return false;
   }
 
-  const int len = http.getSize();
-  if (len > static_cast<int>(kMaxManifestBytes)) {
-    http.end();
+  if (body.length() > kMaxManifestBytes) {
     setStatus("error", "Manifiesto demasiado grande");
     return false;
   }
-  const String body = http.getString();
-  http.end();
 
   StaticJsonDocument<512> doc;
   if (body.length() > kMaxManifestBytes || deserializeJson(doc, body)) {
@@ -348,8 +357,8 @@ bool RemoteUpdate::fetchManifest(String& version, String& url, String& md5, Stri
   md5 = doc["md5"] | "";
   sha256 = doc["sha256"] | "";
 
-  if (version.isEmpty() || !url.startsWith("https://")) {
-    setStatus("error", "Manifiesto sin version o url https");
+  if (version.isEmpty() || !urlIsHttpOrHttps(url)) {
+    setStatus("error", "Manifiesto sin version o url http(s)");
     return false;
   }
   if (md5.length() != 32 && sha256.length() != 64) {
@@ -395,9 +404,6 @@ void RemoteUpdate::runCheck() {
   snprintf(msg, sizeof(msg), "Descargando v%s...", version.c_str());
   setStatus("downloading", msg);
 
-  NetworkClientSecure client;
-  configureTls(client);
-
   if (md5.length() != 32) {
     setStatus("error", "Manifiesto sin MD5 (este core no verifica SHA-256)");
     _nextCheckMs = millis() + _retryMs;
@@ -407,8 +413,6 @@ void RemoteUpdate::runCheck() {
   HTTPUpdate updater(static_cast<int>(kHttpTimeoutMs));
   updater.rebootOnUpdate(false);
   updater.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
-  // Update.end() rechaza la imagen si el MD5 no coincide; el firmware actual
-  // sigue intacto y no se cambia la partición de arranque.
   updater.setMD5sum(md5);
   (void)sha256;
   updater.onStart([this]() { _flashing = true; });
@@ -416,7 +420,15 @@ void RemoteUpdate::runCheck() {
     if (total > 0) _progress = static_cast<int>((static_cast<int64_t>(cur) * 100) / total);
   });
 
-  const HTTPUpdateResult res = updater.update(client, url, _currentVersion);
+  HTTPUpdateResult res = HTTP_UPDATE_FAILED;
+  if (url.startsWith("https://")) {
+    NetworkClientSecure client;
+    configureTls(client);
+    res = updater.update(client, url, _currentVersion);
+  } else {
+    WiFiClient client;
+    res = updater.update(client, url, _currentVersion);
+  }
   _flashing = false;
 
   switch (res) {

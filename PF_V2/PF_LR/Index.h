@@ -835,7 +835,7 @@ const char index_html[] PROGMEM = R"rawliteral(
       <div class="btn-row">
         <button type="button" class="btn btn-primary" id="ota-btn">Buscar actualización</button>
       </div>
-      <p class="hint" style="margin-top:10px">Requiere Wi‑Fi con internet. Tras una versión nueva en GitHub, el módulo descarga, verifica e reinicia.</p>
+      <p class="hint" style="margin-top:10px">Descarga desde el Master (10.10.32.100). Publica release → copia archivos a Master LittleFS → Buscar actualización.</p>
     </div>
 
     <p class="footer">Estado automático cada ~600 ms · pulsa Guardar para escribir en flash</p>

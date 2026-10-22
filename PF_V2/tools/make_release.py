@@ -65,6 +65,11 @@ def main() -> int:
     ap.add_argument("--version", help="versión (por defecto FW_VERSION del Config.h del producto)")
     ap.add_argument("--tag", help="tag del release (por defecto v<version>)")
     ap.add_argument("--repo", default=DEFAULT_REPO, help=f"usuario/repo (por defecto {DEFAULT_REPO})")
+    ap.add_argument(
+        "--lan-base",
+        help="URL base LAN para el .bin en el manifiesto (p. ej. http://10.10.32.100/ota). "
+        "Si se omite, usa GitHub Releases.",
+    )
     ap.add_argument("--out", type=Path, help="carpeta de salida")
     ap.add_argument(
         "--allow-secrets",
@@ -113,7 +118,10 @@ def main() -> int:
         return 2
 
     tag = args.tag or f"v{version}"
-    url = f"https://github.com/{args.repo}/releases/download/{tag}/{bin_name}"
+    if args.lan_base:
+        url = f"{args.lan_base.rstrip('/')}/{bin_name}"
+    else:
+        url = f"https://github.com/{args.repo}/releases/download/{tag}/{bin_name}"
     manifest = {
         "version": version,
         "url": url,
