@@ -3841,7 +3841,7 @@ static void peerRetryWifi()
   delay(500);
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
-  WiFi.config(STA_IP, STA_GW, STA_MASK, STA_GW);
+  WiFi.config(STA_IP, STA_GW, STA_MASK, STA_DNS1, STA_DNS2);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   Serial.println("[PEER] Reintentando STA...");
 }
@@ -3979,7 +3979,7 @@ void setupWiFi()
   WiFi.setAutoReconnect(true);
   delay(100);
 
-  if (!WiFi.config(STA_IP, STA_GW, STA_MASK, STA_GW))
+  if (!WiFi.config(STA_IP, STA_GW, STA_MASK, STA_DNS1, STA_DNS2))
     Serial.println("WiFi.config() fallo.");
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   Serial.printf("Buscando router \"%s\"...\n", WIFI_SSID);

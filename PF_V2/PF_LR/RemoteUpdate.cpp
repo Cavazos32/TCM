@@ -291,6 +291,14 @@ int RemoteUpdate::compareVersions(const char* a, const char* b) {
 }
 
 bool RemoteUpdate::fetchManifest(String& version, String& url, String& md5, String& sha256) {
+  IPAddress ghIp;
+  if (WiFi.hostByName("github.com", ghIp) != 1)
+  {
+    setStatus("error", "DNS: no resuelve github.com (revisa DNS/firewall)");
+    return false;
+  }
+  Serial.printf("OTA DNS github.com -> %s\n", ghIp.toString().c_str());
+
   NetworkClientSecure client;
   configureTls(client);
 
@@ -309,6 +317,9 @@ bool RemoteUpdate::fetchManifest(String& version, String& url, String& md5, Stri
     char msg[96];
     if (code == HTTP_CODE_NOT_FOUND) {
       snprintf(msg, sizeof(msg), "Manifiesto no encontrado (404): no hay release publicado");
+    } else if (code == -1) {
+      snprintf(msg, sizeof(msg),
+               "Sin enlace HTTPS a GitHub (443). VLAN sin internet o bloqueada");
     } else {
       snprintf(msg, sizeof(msg), "Manifiesto HTTP %d (%s)", code, http.errorToString(code).c_str());
     }

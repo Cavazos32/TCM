@@ -78,6 +78,9 @@ static const char* const WIFI_SSID = "R&D_TCM";
 static const char* const WIFI_PASS = "TCM2026!r&d";
 static const IPAddress STA_GW(10, 10, 32, 72);
 static const IPAddress STA_MASK(255, 255, 255, 0);
+// DNS: el gateway a veces no resuelve internet; 8.8.8.8 ayuda si el firewall permite salida :443.
+static const IPAddress STA_DNS1(8, 8, 8, 8);
+static const IPAddress STA_DNS2(1, 1, 1, 1);
 static const IPAddress TCM_IP(10, 10, 32, 100);
 constexpr uint16_t PEER_PORT = 8765;
 constexpr uint32_t PEER_STATUS_MS = 2000;
@@ -160,7 +163,7 @@ constexpr const char* PREFS_NS             = "prefeeder2";
 // ====================== FIRMWARE / OTA ======================
 // Release: PF_V2/tools/make_release.py → GitHub Release (bin + *_version.json).
 // Red local: Arduino IDE → puerto de red (OTA_PASSWORD).
-#define FW_VERSION "0.1.2"
+#define FW_VERSION "0.1.3"
 #define OTA_PASSWORD "TCM_PF2026"
 #ifndef PREFEEDER_SIDE_RIGHT
 #define OTA_HOSTNAME "prefeeder-L"
