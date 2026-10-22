@@ -212,7 +212,7 @@ RemoteUpdate remoteUpdate;
 
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 
-static constexpr uint32_t kTaskStack = 16384;
+static constexpr uint32_t kTaskStack = 20480;
 static constexpr uint32_t kHttpTimeoutMs = 15000;
 static constexpr size_t kMaxManifestBytes = 1024;
 
@@ -428,7 +428,7 @@ void RemoteUpdate::runCheck() {
   }
 }
 
-void RemoteUpdate::statusJson(JsonObject obj) {
+void RemoteUpdate::statusJson(JsonDocument& doc) {
   char state[sizeof(_state)];
   char message[sizeof(_message)];
   char latest[sizeof(_latest)];
@@ -443,14 +443,14 @@ void RemoteUpdate::statusJson(JsonObject obj) {
   portEXIT_CRITICAL(&s_mux);
 
   const uint32_t now = millis();
-  obj["version"] = _currentVersion;
-  obj["latest"] = latest;
-  obj["state"] = state;
-  obj["message"] = message;
-  obj["busy"] = static_cast<bool>(_busy);
-  obj["progress"] = static_cast<int>(_progress);
-  obj["lastCheckAgoS"] = checkedOnce ? static_cast<int32_t>((now - lastCheckMs) / 1000) : -1;
+  doc["version"] = _currentVersion;
+  doc["latest"] = latest;
+  doc["state"] = state;
+  doc["message"] = message;
+  doc["busy"] = static_cast<bool>(_busy);
+  doc["progress"] = static_cast<int>(_progress);
+  doc["lastCheckAgoS"] = checkedOnce ? static_cast<int32_t>((now - lastCheckMs) / 1000) : -1;
   const int32_t untilNext = static_cast<int32_t>(_nextCheckMs - now);
-  obj["nextCheckInS"] = (_busy || untilNext < 0) ? 0 : untilNext / 1000;
-  obj["manifest"] = _manifestUrl;
+  doc["nextCheckInS"] = (_busy || untilNext < 0) ? 0 : untilNext / 1000;
+  doc["manifest"] = _manifestUrl;
 }

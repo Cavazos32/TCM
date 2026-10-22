@@ -830,7 +830,7 @@ const char index_html[] PROGMEM = R"rawliteral(
 
     <div class="card" id="firmware-card">
       <h2>Firmware</h2>
-      <p class="meta compact" id="ota-version">Versión instalada: —</p>
+      <p class="meta compact" id="ota-version">Versión instalada: vFW_VERSION_UI</p>
       <p class="hint" id="ota-msg">—</p>
       <div class="btn-row">
         <button type="button" class="btn btn-primary" id="ota-btn">Buscar actualización</button>
@@ -1450,6 +1450,7 @@ const char index_html[] PROGMEM = R"rawliteral(
         msg.textContent = line;
       }
       if (btn) btn.disabled = !!o.busy;
+      scheduleOtaPoll(!!o.busy);
     }
     function refreshOta() {
       fetch('/api/ota/status', { cache: 'no-store' })
@@ -1459,6 +1460,11 @@ const char index_html[] PROGMEM = R"rawliteral(
           var msg = document.getElementById('ota-msg');
           if (msg) msg.textContent = e && e.message ? e.message : 'No se pudo leer estado OTA';
         });
+    }
+    var _otaPollTimer = null;
+    function scheduleOtaPoll(fast) {
+      if (_otaPollTimer) clearInterval(_otaPollTimer);
+      _otaPollTimer = setInterval(refreshOta, fast ? 2000 : 8000);
     }
     function checkOta() {
       var btn = document.getElementById('ota-btn');
@@ -1483,7 +1489,7 @@ const char index_html[] PROGMEM = R"rawliteral(
         btn.addEventListener('click', checkOta);
       }
       refreshOta();
-      setInterval(refreshOta, 8000);
+      scheduleOtaPoll(false);
     })();
     poll();
   </script>

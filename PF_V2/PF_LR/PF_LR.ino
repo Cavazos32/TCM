@@ -2677,9 +2677,14 @@ static void ensureArduinoOta()
 void handleOtaStatus()
 {
   StaticJsonDocument<512> doc;
-  remoteUpdate.statusJson(doc.as<JsonObject>());
+  remoteUpdate.statusJson(doc);
   String out;
   serializeJson(doc, out);
+  if (out.indexOf("\"version\"") < 0)
+  {
+    out = String("{\"version\":\"") + FW_VERSION
+        + "\",\"state\":\"idle\",\"message\":\"\",\"busy\":false,\"progress\":0}";
+  }
   server.sendHeader("Cache-Control", "no-store");
   server.send(200, "application/json", out);
 }
@@ -2706,6 +2711,7 @@ void handleRoot()
   html.replace("SERVO_PWM_UI_DEFAULT", String((unsigned)SERVO_PWM_ACTIVE_US));
   html.replace("MID_SERVO_DELTA_UI_DEFAULT", String((int)BUFFER_MID_SERVO_DELTA_DEFAULT_US));
   html.replace("HIGH_SERVO_DELTA_UI_DEFAULT", String((int)BUFFER_HIGH_SERVO_DELTA_DEFAULT_US));
+  html.replace("FW_VERSION_UI", FW_VERSION);
   server.sendHeader("Cache-Control", "no-store");
   server.send(200, "text/html", html);
 }

@@ -18,7 +18,8 @@ public:
   bool flashing() const { return _flashing; }
   bool busy() const { return _busy; }
 
-  void statusJson(JsonObject obj);
+  // Raíz del documento (StaticJsonDocument); no usar doc.as<JsonObject>() vacío en v6.
+  void statusJson(JsonDocument& doc);
 
   // Compara versiones "1.2.3" (acepta prefijo "v"). <0, 0, >0 como strcmp.
   static int compareVersions(const char* a, const char* b);
