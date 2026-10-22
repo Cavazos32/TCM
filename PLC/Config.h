@@ -18,6 +18,11 @@ constexpr uint16_t PLCA_TCP_PORT = 8766;
 constexpr uint8_t  PLCA_PROTO_VER = 1;
 constexpr unsigned long WIFI_CONNECT_TIMEOUT_MS = 30000;
 
+// --- Firmware / OTA (Arduino IDE, red local) ---
+#define FW_VERSION "1.0.0"
+#define OTA_PASSWORD "TCM_PF2026"
+#define OTA_HOSTNAME "plc"
+
 // --- Entradas sensores (errores → TX 0x1F–0x22) ---
 constexpr uint8_t PIN_CUTTER          = 26;  // 0x1F Cutter error
 constexpr uint8_t PIN_GRIPPER         = 27;  // 0x20 GripperE — falla gripper / aire baja·nula

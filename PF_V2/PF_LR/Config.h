@@ -4,7 +4,7 @@
 
 // ====================== LADO L / R ======================
 // Comentada = L | descomentada = R
-#define PREFEEDER_SIDE_RIGHT
+//#define PREFEEDER_SIDE_RIGHT
 
 #ifndef PREFEEDER_SIDE_RIGHT
 #define PREFEEDER_SIDE_TAG  "L"

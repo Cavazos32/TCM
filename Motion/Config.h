@@ -23,6 +23,11 @@ constexpr unsigned long WIFI_CONNECT_TIMEOUT_MS = 30000;
 // Intervalo mínimo entre WiFi.begin() de reintento (millis, no delay).
 constexpr unsigned long WIFI_RETRY_INTERVAL_MS = 5000;
 
+// --- Firmware / OTA (Arduino IDE, red local) ---
+#define FW_VERSION "1.0.0"
+#define OTA_PASSWORD "TCM_PF2026"
+#define OTA_HOSTNAME "motion"
+
 // --- Sensores Láser (Keyence LR-X) — MOT_ERR_LASER_* ---
 // R: GPIO32 (pull-up interno OK). L: GPIO34 input-only ESP32 — sin pull-up
 // interno; hace falta pull-up externo ~10k a 3.3V si el Keyence es NPN/OC.

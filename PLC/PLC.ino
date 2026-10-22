@@ -20,6 +20,7 @@
 //   06  Setup / Loop
 
 #include <WiFi.h>
+#include <ArduinoOTA.h>
 #include "Config.h"
 #include "PlcStates.h"
 
@@ -958,6 +959,55 @@ static bool tcpAcceptIncoming()
   return true;
 }
 
+static bool arduinoOtaStarted = false;
+static volatile bool arduinoOtaInProgress = false;
+
+static void plcOtaSafeStop()
+{
+  blowerStop();
+  valveIdleAll();
+}
+
+static void serviceArduinoOta(uint8_t passes = 4)
+{
+  if (!arduinoOtaStarted) return;
+  for (uint8_t i = 0; i < passes; i++)
+  {
+    ArduinoOTA.handle();
+    yield();
+  }
+}
+
+static void ensureArduinoOta()
+{
+  if (arduinoOtaStarted || WiFi.status() != WL_CONNECTED) return;
+  ArduinoOTA.setHostname(OTA_HOSTNAME);
+  ArduinoOTA.setPassword(OTA_PASSWORD);
+  ArduinoOTA.onStart([]()
+  {
+    arduinoOtaInProgress = true;
+    plcOtaSafeStop();
+    Serial.println("[OTA] inicio (red local)");
+  });
+  ArduinoOTA.onEnd([]()
+  {
+    arduinoOtaInProgress = false;
+    Serial.println("\n[OTA] listo (red local)");
+  });
+  ArduinoOTA.onProgress([](unsigned int prog, unsigned int total)
+  {
+    if (total) Serial.printf("[OTA] %u%%\r", (prog * 100U) / total);
+  });
+  ArduinoOTA.onError([](ota_error_t err)
+  {
+    arduinoOtaInProgress = false;
+    Serial.printf("[OTA] error %u\n", err);
+  });
+  ArduinoOTA.begin();
+  arduinoOtaStarted = true;
+  Serial.printf("[OTA] red local listo hostname=%s (IDE puerto de red)\n", OTA_HOSTNAME);
+}
+
 static void tcpEnsureServices()
 {
   if (tcpServicesUp || WiFi.status() != WL_CONNECTED) return;
@@ -969,6 +1019,7 @@ static void tcpEnsureServices()
   tcpServer.setNoDelay(true);
   tcpServicesUp = true;
   wifiReady = true;
+  ensureArduinoOta();
   Serial.printf("[TCP] Servicios On %s:%u\n", ip.toString().c_str(), PLCA_TCP_PORT);
 }
 
@@ -1018,6 +1069,7 @@ static void wifiRetry()
   WiFi.disconnect(true);
   delay(500);
   WiFi.mode(WIFI_STA);
+  WiFi.setHostname(OTA_HOSTNAME);
   WiFi.setSleep(false);
   WiFi.config(STA_IP, STA_GW, STA_MASK, STA_GW);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
@@ -1099,6 +1151,7 @@ void setup()
   wifiConnectStartedMs = millis();
   WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
+  WiFi.setHostname(OTA_HOSTNAME);
   WiFi.setSleep(false);
   WiFi.setAutoReconnect(true);
   delay(100);
@@ -1119,11 +1172,21 @@ void setup()
     Serial.println("WiFi pendiente — reintentos en loop");
   bootGraceStartMs = millis();
   Serial.printf("Sensor boot grace %lums desde ahora\n", BOOT_GRACE_MS);
+  Serial.printf("Firmware v%s · OTA red local hostname=%s\n", FW_VERSION, OTA_HOSTNAME);
 }
 
 void loop()
 {
+  if (arduinoOtaInProgress)
+  {
+    serviceArduinoOta(24);
+    serviceTcp();
+    yield();
+    return;
+  }
+
   serviceTcp();
+  serviceArduinoOta(4);
   blowerService();
 
   unsigned long now = millis();
