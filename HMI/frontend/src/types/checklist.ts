@@ -20,6 +20,7 @@ export interface ChecklistStepStatus {
   purgeIdle?: boolean;
   purgeStarted?: boolean;
   purgeDone?: boolean;
+  purgeFailed?: boolean;
   refillPrompt?: string;
   refillAwaitingConfirm?: boolean;
   purgeHandsWarning?: boolean;
@@ -29,6 +30,9 @@ export interface ChecklistStepStatus {
   measurements?: { l: number | null; r: number | null };
   motionBlocked?: boolean;
   asdaOk?: boolean;
+  asdaHomeAwaitConfirm?: boolean;
+  asdaHomeError?: boolean;
+  errorLatched?: boolean;
 }
 
 export interface ChecklistSession {
@@ -41,6 +45,8 @@ export interface ChecklistSession {
   purgeStarted?: boolean;
   purgeDone?: boolean;
   asdaOk?: boolean;
+  asdaHomeAwaitConfirm?: boolean;
+  asdaHomeError?: boolean;
   airTestVerified?: boolean;
   pieceTestStarted?: boolean;
   measurements?: { l: number | null; r: number | null };

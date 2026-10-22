@@ -3452,7 +3452,19 @@ class CycleRunner:
                 while self._pause.is_set():
                     if self._should_abort() or self._restart_piece:
                         return False
-                    time.sleep(0.05)
+                    # NG ya recibido antes de la pausa (p. ej. láser sin
+                    # material en la purga): cerrar ahora, igual que en el
+                    # chequeo tras el slice. Sin esto, la espera se quedaba
+                    # dormida en pausa, la purga nunca cerraba y la UI solo
+                    # mostraba «esperando» sin poder reintentar.
+                    ng_outcomes = self._host.wait_feed_length_ok_for(
+                        sides,
+                        0.05,
+                        abort_event=self._feed_abort_event(),  # type: ignore[arg-type]
+                    )
+                    ng_now = [s for s, v in ng_outcomes.items() if v == "ng"]
+                    if ng_now:
+                        return self._fail_feed_ng(ng_now, ng_outcomes)
                 if not self._ensure_pf_buffer_full_after_resume():
                     return False
                 remaining = timeout_s
@@ -3545,6 +3557,41 @@ class CycleRunner:
         if mode == "R":
             return ["R"]
         return ["L", "R"]
+
+    def _purge_tfeed_before_motion_feed(self) -> bool:
+        """Tfeed en todos los lados de feed antes del creep CAN en purga."""
+        if not self.get_config().pf_trigger_enabled:
+            self._host.cycle_log(
+                "Purga: pedido al alimentador omitido (deshabilitado)"
+            )
+            return True
+        if not self._use_prefeeder():
+            self._host.cycle_log(
+                "Purga: pedido al alimentador omitido (sin enlace)"
+            )
+            return True
+        sides = self._feed_side_list()
+        op = self._begin_op("pf_trigger_purge")
+        failed: list[str] = []
+        if "R" in sides and not self._host.cmd_pf_trigger_r():
+            failed.append("R")
+        if "L" in sides and not self._host.cmd_pf_trigger_l():
+            failed.append("L")
+        if failed:
+            self._end_op(op, ok=False)
+            self._host.cycle_log(
+                f"Purga: pedido al alimentador falló lados={''.join(failed)}"
+            )
+            self._raise_fault("pf_trigger")
+            return False
+        if not self._wait_pf_trigger_done(sides):
+            self._end_op(op, ok=False)
+            return False
+        sec = self._end_op(op, ok=True)
+        self._host.cycle_log(
+            f"Purga: alimentador listo lados={''.join(sides)} · {self._fmt_op(sec)}"
+        )
+        return True
 
     def _do_pf_trigger(self, rep: int, *, mark_piece: bool = True) -> bool:
         """Tfeed a lados de feedSides. True = OK / omitido; False = fault.
@@ -4272,10 +4319,20 @@ class CycleRunner:
 
         decision = self._wait_refill_operator_decision("await_feed")
         if decision == "retry":
+            sides_txt = "".join(self._feed_side_list())
+            laser_bits = []
+            for side in self._feed_side_list():
+                on = self._host.motion_laser_on(side)
+                laser_bits.append(
+                    f"{side}:{'material' if on else 'vacío'}"
+                )
             self._host.cycle_log(
                 f"Refill: alimentar hasta láser ON "
-                f"(timeout {REFILL_LASER_TIMEOUT_S:g} s · sin OM · lados independientes)"
+                f"(timeout {REFILL_LASER_TIMEOUT_S:g} s · lados={sides_txt} · "
+                f"referencia {', '.join(laser_bits)})"
             )
+            if not self._purge_tfeed_before_motion_feed():
+                return "fail"
             if not self._run_feed(skip_validate=True, feed_mm=None):
                 return "fail"
             with self._lock:

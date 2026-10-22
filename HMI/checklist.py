@@ -81,8 +81,17 @@ class ChecklistManager:
             }
 
     def mark_required_on_boot(self) -> None:
+        """Arranque de la HMI (encendido / reinicio del programa): revisión obligada
+        y sin sesión a medias guardada en disco."""
         with self._lock:
             self._required = True
+            self._session = None
+            self._worker_error = ""
+            self._worker_phase = ""
+            self._step_error = ""
+            self._air_test_active = False
+            self._air_test_verified = False
+            self._piece_test_started = False
         self._notify()
 
     # --- API snapshot ---
@@ -98,9 +107,17 @@ class ChecklistManager:
                 host._save_app_config()
 
         with self._lock:
+            idx = int(self._session.get("currentStepIndex", 0)) if self._session else 0
+            step_id = (
+                STEP_IDS[idx] if self._session and 0 <= idx < len(STEP_IDS) else ""
+            )
+            # El estado puede fijar marcas en la sesión (purga vista / hecha /
+            # fallida): calcularlo antes de copiarla para que la respuesta
+            # ya las traiga y la UI ofrezca «Reintentar» sin otro refresco.
+            status = self._step_status_with_motion(
+                host, step_id, self._session_copy_locked()
+            )
             session = self._session_copy_locked()
-            idx = int(session.get("currentStepIndex", 0)) if session else 0
-            step_id = STEP_IDS[idx] if session and 0 <= idx < len(STEP_IDS) else ""
             return {
                 "required": self._required or self._session_incomplete_locked(),
                 "lastCompletedAt": self._last_completed_at,
@@ -113,7 +130,7 @@ class ChecklistManager:
                 "airTestActive": self._air_test_active,
                 "airTestVerified": self._air_test_verified,
                 "pieceTestStarted": self._piece_test_started,
-                "stepStatus": self._step_status_with_motion(host, step_id, session),
+                "stepStatus": status,
             }
 
     def _step_status_with_motion(
@@ -170,6 +187,10 @@ class ChecklistManager:
         completed = list(self._session.get("completedSteps") or [])
         if "asda_roundtrip" not in completed:
             self._session.pop("asdaOk", None)
+            # Tras restaurar, el operador vuelve a llevar el eje a su
+            # posición inicial: una confirmación vieja no vale.
+            self._session.pop("asdaHomeAwaitConfirm", None)
+            self._session.pop("asdaHomeError", None)
         if "feeder_can_purge" not in completed:
             self._session.pop("stage2Ok", None)
             self._reset_purge_flags_locked()
@@ -253,6 +274,8 @@ class ChecklistManager:
         with self._lock:
             if self._worker_busy:
                 return {"ok": False, "error": "checklist_busy"}
+            if self._session and self._session_incomplete_locked():
+                return {"ok": True, "resumed": True}
             self._session = {
                 "employeeId": emp,
                 "startedAt": _utc_now_iso(),
@@ -273,18 +296,21 @@ class ChecklistManager:
         return {"ok": True}
 
     def close_session(self, host: Any = None) -> dict[str, Any]:
-        """Cerrar el modal sin perder el paso ni el estado reintentable.
+        """Cerrar el modal solo oculta la revisión: la sesión y el paso
+        actual se conservan para reabrir donde se quedó.
 
         Si hay un trabajo en curso (actuador / alimentador), se cancela y se
         espera a que deje de dar órdenes antes de soltar la pantalla: el
         operador va a manipular la máquina desde fuera y el checklist no
-        debe seguir moviéndola por detrás. El error NO se borra: al reabrir,
-        el paso aparece como fallido y con su botón de reintento.
+        debe seguir moviéndola por detrás.
 
         Si la prueba de piezas está corriendo, queda en pausa (lote vivo):
         cerrar la ventana no debe obligar a Detener ni a Reset para poder
         manipular la máquina; solo el arranque sigue bloqueado hasta
         terminar la revisión.
+
+        Reiniciar desde el primer paso solo al arrancar la HMI
+        (`mark_required_on_boot`).
         """
         worker = self._worker
         with self._lock:
@@ -322,11 +348,13 @@ class ChecklistManager:
             except Exception:  # noqa: BLE001
                 pass
         with self._lock:
-            if not self._worker_busy:
-                self._worker_phase = ""
-            self._sync_required_with_session_locked()
             still_busy = self._worker_busy
-        self._log("Checklist: sesión cerrada (progreso guardado)")
+            self._worker_error = ""
+            self._worker_phase = ""
+            self._air_test_active = False
+            self._sync_required_with_session_locked()
+            self._restore_runtime_flags_from_session_locked()
+        self._log("Checklist: ventana cerrada — sesión conservada")
         self._notify()
         return {"ok": True, "workerCancelling": still_busy}
 
@@ -406,9 +434,21 @@ class ChecklistManager:
         if step_id == "asda_roundtrip":
             asda_ok = bool((session or {}).get("asdaOk"))
             busy = self._worker_busy and self._worker_phase.startswith("asda")
+            latched = False
+            is_latched = getattr(host, "error_is_latched", None)
+            if callable(is_latched):
+                try:
+                    latched = bool(is_latched())
+                except Exception:  # noqa: BLE001
+                    latched = False
             return {
                 "ready": asda_ok and not busy and not self._worker_error,
                 "asdaOk": asda_ok,
+                "asdaHomeAwaitConfirm": bool(
+                    (session or {}).get("asdaHomeAwaitConfirm")
+                ),
+                "asdaHomeError": bool((session or {}).get("asdaHomeError")),
+                "errorLatched": latched,
                 "detail": self._worker_phase or self._worker_error,
             }
         if step_id == "feeder_can_purge":
@@ -434,6 +474,22 @@ class ChecklistManager:
             )
             if purge_done and self._session is not None:
                 self._session["purgeDone"] = True
+            # Purga que se vio en curso y ya terminó sin éxito (p. ej. al
+            # alimentar, el material no llegó al sensor y la máquina marcó
+            # el error en su barra): el paso queda fallido y reintentable
+            # aquí mismo, no «esperando» para siempre ni sin botón.
+            purge_failed = bool(
+                sess.get("purgeStarted")
+                and seen_busy
+                and purge_idle
+                and not purge_done
+                and not cyc.get("lastOk")
+            )
+            if purge_failed and self._session is not None:
+                self._session["purgeFailed"] = True
+                self._set_failed_step_locked("feeder_can_purge")
+            elif purge_done and self._session is not None:
+                self._session["purgeFailed"] = False
             return {
                 "ready": stage2_ok and purge_done and not busy and not self._worker_error,
                 "detail": self._worker_phase or self._worker_error,
@@ -441,6 +497,7 @@ class ChecklistManager:
                 "purgeIdle": purge_idle,
                 "purgeStarted": bool(sess.get("purgeStarted")),
                 "purgeDone": purge_done,
+                "purgeFailed": purge_failed,
                 "refillPrompt": str(cyc.get("refillPrompt") or ""),
                 "refillAwaitingConfirm": bool(cyc.get("refillAwaitingConfirm")),
                 "purgeHandsWarning": bool(cyc.get("purgeHandsWarning")),
@@ -492,6 +549,8 @@ class ChecklistManager:
             "confirm_step": lambda: self._action_confirm_step(host, str(kwargs.get("stepId", ""))),
             "air_test_on": lambda: self._action_air_test(host, True),
             "air_test_off": lambda: self._action_air_test(host, False),
+            "start_asda_home": lambda: self._start_worker(host, "asda_home"),
+            "confirm_asda_home": lambda: self._action_confirm_asda_home(host),
             "start_asda_roundtrip": lambda: self._start_worker(host, "asda_roundtrip"),
             "start_feeder_can": lambda: self._start_worker(host, "feeder_can_purge"),
             "start_purge": lambda: self._action_start_purge(host),
@@ -699,7 +758,9 @@ class ChecklistManager:
             if not self._session:
                 return {"ok": False, "error": "no_session"}
             idx = int(self._session.get("currentStepIndex", 0))
-            expected = "asda_roundtrip" if kind == "asda_roundtrip" else "feeder_can_purge"
+            expected = (
+                "feeder_can_purge" if kind == "feeder_can_purge" else "asda_roundtrip"
+            )
             if STEP_IDS[idx] != expected:
                 return {"ok": False, "error": "wrong_step"}
             self._worker_busy = True
@@ -708,12 +769,21 @@ class ChecklistManager:
             self._step_error = ""
             self._worker_cancel = threading.Event()
             self._clear_failed_step_locked(expected)
-            if kind == "asda_roundtrip" and self._session:
+            if kind in ("asda_home", "asda_roundtrip") and self._session:
                 self._session.pop("asdaOk", None)
+            if kind == "asda_home" and self._session:
+                self._session["asdaHomeAwaitConfirm"] = False
+                self._session["asdaHomeError"] = False
+            if kind == "asda_roundtrip" and self._session:
+                # La validación solo arranca tras la confirmación del
+                # operador; al arrancar, esa pregunta ya quedó resuelta.
+                self._session["asdaHomeAwaitConfirm"] = False
 
         def run() -> None:
             try:
-                if kind == "asda_roundtrip":
+                if kind == "asda_home":
+                    self._run_asda_home(host)
+                elif kind == "asda_roundtrip":
                     self._run_asda_roundtrip(host)
                 else:
                     self._run_feeder_purge(host)
@@ -766,24 +836,94 @@ class ChecklistManager:
             if host.wait_motion_idle_or_reached(min(0.25, remaining)):
                 return True
 
+    def _action_confirm_asda_home(self, host: Any) -> dict[str, Any]:
+        """El operador vio el eje en su posición inicial: validar recorrido.
+
+        Si el error de máquina sigue enclavado (p. ej. el que saltó al
+        buscar la posición estando ya en ella), no se arranca nada: el
+        operador primero lo restablece y después vuelve a confirmar aquí.
+        La pregunta queda guardada, así que puede cerrar esta ventana,
+        restablecer y reabrir sin repetir la búsqueda.
+        """
+        with self._lock:
+            if not self._session:
+                return {"ok": False, "error": "no_session"}
+            idx = int(self._session.get("currentStepIndex", 0))
+            if STEP_IDS[idx] != "asda_roundtrip":
+                return {"ok": False, "error": "wrong_step"}
+            if not self._session.get("asdaHomeAwaitConfirm"):
+                return {"ok": False, "error": "asda_home_pending"}
+        is_latched = getattr(host, "error_is_latched", None)
+        if callable(is_latched) and is_latched():
+            return {"ok": False, "error": "machine_error_latched"}
+        return self._start_worker(host, "asda_roundtrip")
+
+    def _wait_home_finished(self, host: Any, timeout_s: float) -> bool:
+        """Espera a que termine la búsqueda de posición inicial.
+
+        True = terminó bien. False = terminó con un error enclavado (caso
+        típico: el eje ya estaba en su posición y la búsqueda lo marca
+        como error). Ese False no es un fallo del paso: la máquina ya
+        paró y es el operador quien decide si todo quedó bien.
+        """
+        deadline = time.monotonic() + timeout_s
+        started = time.monotonic()
+        seen_busy = False
+        while True:
+            if self._worker_cancel is not None and self._worker_cancel.is_set():
+                raise _ChecklistCancelled()
+            if host.wait_motion_idle_or_reached(0.25):
+                return True
+            try:
+                if host.motion_busy():
+                    seen_busy = True
+            except Exception:  # noqa: BLE001
+                pass
+            is_latched = getattr(host, "error_is_latched", None)
+            if callable(is_latched) and is_latched():
+                # Solo vale como «terminó» si el movimiento llegó a
+                # arrancar, o si tras unos segundos la máquina sigue sin
+                # moverse (la orden fue rechazada con el error ya puesto).
+                if (seen_busy and not host.motion_busy()) or (
+                    time.monotonic() - started > 5.0 and not host.motion_busy()
+                ):
+                    return False
+            if time.monotonic() >= deadline:
+                raise RuntimeError("Timeout esperando posición inicial")
+
+    def _run_asda_home(self, host: Any) -> None:
+        if not host._client.connected:
+            raise RuntimeError("Sin enlace — actuador lineal no verificado")
+
+        self._set_phase("asda_home:servo_on")
+        if not host._manual_motion(lambda: host._client.cmd_on()):
+            raise RuntimeError("Servo ON falló")
+        time.sleep(0.3)
+
+        self._set_phase("asda_home:buscando")
+        host.clear_motion_reached_flag()
+        if not host._manual_motion(lambda: host._client.cmd_home("F")):
+            raise RuntimeError("Buscar posición inicial falló")
+        finished_ok = self._wait_home_finished(host, 120.0)
+
+        with self._lock:
+            if self._session:
+                self._session["asdaHomeAwaitConfirm"] = True
+                self._session["asdaHomeError"] = not finished_ok
+        self._log(
+            "Checklist: posición inicial terminada"
+            + ("" if finished_ok else " (con error enclavado)")
+            + " — esperando confirmación del operador"
+        )
+        self.clear_step_error()
+        self._set_phase("")
+
     def _run_asda_roundtrip(self, host: Any) -> None:
         from motion import motion_http_asda_position_mm
 
         if not host._client.connected:
             # Igual que el alimentador: sin enlace no hubo recorrido real.
             raise RuntimeError("Sin enlace — actuador lineal no verificado")
-
-        self._set_phase("asda:servo_on")
-        if not host._manual_motion(lambda: host._client.cmd_on()):
-            raise RuntimeError("Servo ON falló")
-        time.sleep(0.3)
-
-        self._set_phase("asda:home")
-        host.clear_motion_reached_flag()
-        if not host._manual_motion(lambda: host._client.cmd_home("F")):
-            raise RuntimeError("Buscar HOME falló")
-        if not self._wait_motion_or_cancel(host, 120.0):
-            raise RuntimeError("Timeout esperando HOME")
 
         cfg = host._cycle.get_config()
         travel = float(getattr(cfg, "deposit_max_travel_mm", 1500.0) or 1500.0)
@@ -825,6 +965,7 @@ class ChecklistManager:
         self._session["purgeStarted"] = False
         self._session["purgeSeenBusy"] = False
         self._session["purgeDone"] = done
+        self._session["purgeFailed"] = False
 
     def _run_feeder_purge(self, host: Any) -> None:
         if not host._client.connected:
@@ -832,7 +973,22 @@ class ChecklistManager:
             # fallido/reintentable, nunca listo ni con la purga cumplida.
             raise RuntimeError("Sin enlace — alimentador no preparado")
 
+        # Primero, la rutina de encendido del alimentador (la misma que
+        # corre su controlador al encender: bus + servo). Sin eso, la
+        # purga trabaja con un servo que nunca arrancó.
         self._set_phase("feeder:can_init")
+        if not host.cmd_motion_feed_can_init():
+            fault = host.stage2_fault() or "Arranque del alimentador falló"
+            raise RuntimeError(fault)
+        can_result = host.wait_feed_can_ready(90.0, abort_event=self._worker_cancel)
+        if can_result == "aborted":
+            raise _ChecklistCancelled()
+        if can_result != "ok":
+            fault = host.stage2_fault() or can_result
+            raise RuntimeError(f"Arranque del alimentador: {fault}")
+        self._log("Checklist: alimentador arrancado (servo listo)")
+
+        self._set_phase("feeder:stage2")
         host.arm_stage2()
         piece = abs(float(host._mm))
         if not host.cmd_motion_stage2_start(piece_mm=piece, sides="LR"):
@@ -865,6 +1021,7 @@ class ChecklistManager:
                     self._session["purgeStarted"] = True
                     self._session["purgeSeenBusy"] = False
                     self._session["purgeDone"] = False
+                    self._session["purgeFailed"] = False
                 self._clear_failed_step_locked("feeder_can_purge")
                 self._worker_error = ""
                 self._step_error = ""

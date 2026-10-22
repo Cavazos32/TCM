@@ -157,9 +157,13 @@
 #define FEED_LASER_CREEP_MM         1.5f   // trozo máximo; tope de sobrepaso
 #define FEED_LASER_CREEP_MM_S       25.0f  // vel seek / hunt (ciclo normal)
 // Purga HMI (skipValidate): creep hasta LR-X ON; sin OM; timeout por lado.
-// Solo purga HMI (skipValidate). Valor inicial; Jesús prueba y ajusta tras reflashear.
-#define FEED_PURGE_CREEP_MM_S       50.0f
+// Tramos más largos y más rápidos que el seek de ciclo; el halt al láser
+// acota el sobrepaso por trozo (FEED_PURGE_CREEP_MM).
+#define FEED_PURGE_CREEP_MM         5.0f
+#define FEED_PURGE_CREEP_MM_S       220.0f
 #define FEED_PURGE_LASER_TIMEOUT_MS 10000u
+// Purga: al menos un trozo FEED_PURGE_CREEP_MM por lado aunque LR-X ya esté ON.
+#define FEED_PURGE_MIN_CREEP_CHUNKS 1u
 
 #define FEED_VELOCITY_PP_DEFAULT    FEED_SERVO_BASE_PP_DEFAULT
 #define FEED_PREFS_NS               "motion_feed"

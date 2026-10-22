@@ -41,6 +41,9 @@ extern bool servoCanReady;
 void servoCanInitMutex();
 bool initCANBus(uint8_t maxRetries = CAN_INIT_MAX_RETRIES);
 bool setupServoFeeder();
+// Rutina de encendido (bus + servo CAN) y su pedido asíncrono desde HTTP.
+bool feedCanBootInit();
+bool feedCanInitRequest();
 void serviceCANRx();
 // true = movimiento(s) pedido(s) emitidos; false = SDO posición falló / no se movió
 bool canMoveRelativePP(int32_t stepsL, int32_t stepsR);

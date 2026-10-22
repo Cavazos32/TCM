@@ -62,6 +62,8 @@ const CHECKLIST_ERROR_KEYS: Record<string, string> = {
   wrong_step: 'checklist_err_wrong_step',
   machine_in_motion: 'checklist_err_machine_in_motion',
   asda_pending: 'checklist_err_asda_pending',
+  asda_home_pending: 'checklist_err_asda_home_pending',
+  machine_error_latched: 'checklist_err_machine_error_latched',
   worker_failed: 'checklist_err_worker',
 };
 
@@ -113,10 +115,13 @@ export const ChecklistModal: React.FC<ChecklistModalProps> = ({
   const expectedPieceMm = nominalPieceMm + CHECKLIST_PIECE_EXTRA_MM;
   const status = checklist.stepStatus;
   const motionBlocked = !!status.motionBlocked;
-  // Paso que falló o quedó interrumpido al cerrar: sobrevive en la sesión
-  // para que al reabrir ofrezca «Reintentar» en el mismo paso.
+  // Paso fallido: «Reintentar» en el mismo paso. La purga que terminó mal
+  // (status.purgeFailed) también cuenta, sin esperar a que la sesión lo
+  // refleje en el siguiente refresco.
   const stepFailed =
-    !!checklist.workerError || (!!stepId && session?.failedStep === stepId);
+    !!checklist.workerError ||
+    (!!stepId && session?.failedStep === stepId) ||
+    !!status.purgeFailed;
   const stepFault = !!(error || checklist.stepError || stepFailed);
   const stepReady =
     !!session && !!stepId && !!status.ready && !stepFault && !checklist.workerBusy;
@@ -161,7 +166,10 @@ export const ChecklistModal: React.FC<ChecklistModalProps> = ({
 
   const handleClose = async () => {
     // Cerrar siempre debe funcionar: el backend cancela el trabajo en
-    // curso y guarda el paso; si la llamada falla, se cierra igual.
+    // curso pero conserva la sesión; si la llamada falla, se cierra igual.
+    setEmployeeId('');
+    setLengthL('');
+    setLengthR('');
     try {
       await checklistCmd('close');
     } catch {
@@ -272,26 +280,47 @@ export const ChecklistModal: React.FC<ChecklistModalProps> = ({
             },
           ];
         }
+        // Posición inicial terminada: el operador dice si todo quedó
+        // bien (y ahí se hace el recorrido de prueba) o se repite.
+        if (status.asdaHomeAwaitConfirm) {
+          return [
+            {
+              id: 'asda-home-ok',
+              label: t('checklist_btn_home_ok'),
+              primary: true,
+              disabled: busy || motionBlocked || !!status.errorLatched,
+              onClick: () =>
+                run(() => checklistCmd('action', { name: 'confirm_asda_home' })),
+            },
+            {
+              id: 'asda-home-retry',
+              label: t('checklist_btn_home_retry'),
+              disabled: busy || motionBlocked,
+              onClick: () =>
+                run(() => checklistCmd('action', { name: 'start_asda_home' })),
+            },
+          ];
+        }
         if (stepFailed) {
           return [
             {
               id: 'asda-retry',
-              label: t('checklist_btn_retry'),
+              label: t('checklist_btn_home_retry'),
               primary: true,
               disabled: busy || motionBlocked,
               onClick: () =>
-                run(() => checklistCmd('action', { name: 'start_asda_roundtrip' })),
+                run(() => checklistCmd('action', { name: 'start_asda_home' })),
             },
           ];
         }
         return [
           {
-            id: 'asda-start',
-            label: t('checklist_btn_move_axis'),
+            id: 'asda-home',
+            label: t('checklist_btn_home_axis'),
             primary: true,
             disabled: busy || motionBlocked,
             onClick: () =>
-              run(() => checklistCmd('action', { name: 'start_asda_roundtrip' })),
+              run(() => checklistCmd('action', { name: 'start_asda_home' })),
           },
         ];
 
@@ -562,7 +591,14 @@ export const ChecklistModal: React.FC<ChecklistModalProps> = ({
                 <span>{t('checklist_working')}</span>
               </div>
             )}
-            {stepFailed && !status.asdaOk && (
+            {status.asdaHomeAwaitConfirm && !checklist.workerBusy && (
+              <p className="text-sm font-medium text-sky-800 dark:text-sky-200">
+                {status.asdaHomeError || status.errorLatched
+                  ? t('checklist_asda_home_error_hint')
+                  : t('checklist_asda_home_ask')}
+              </p>
+            )}
+            {stepFailed && !status.asdaOk && !status.asdaHomeAwaitConfirm && (
               <p className="text-sm font-medium text-red-700 dark:text-red-300">
                 {t('checklist_err_worker')}
               </p>
@@ -610,9 +646,11 @@ export const ChecklistModal: React.FC<ChecklistModalProps> = ({
                 {t('checklist_step_ok')}
               </p>
             )}
-            {stepFailed && !status.purgeDone && (
+            {stepFailed && !status.purgeDone && !error && !checklist.stepError && (
               <p className="text-sm font-medium text-red-700 dark:text-red-300">
-                {t('checklist_err_worker')}
+                {status.purgeFailed
+                  ? t('checklist_purge_feed_failed')
+                  : t('checklist_err_worker')}
               </p>
             )}
           </div>

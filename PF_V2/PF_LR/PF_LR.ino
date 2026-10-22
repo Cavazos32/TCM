@@ -172,6 +172,11 @@ uint16_t  servoActivePwmUs = SERVO_PWM_ACTIVE_US;  // editable UI/NVS (default p
 bool      servoRunning      = false;
 uint16_t  servoLastOutputUs = 0;
 static bool servoLedcAttached = false;
+// Stop/Brake RMT de los steppers puede soltar el mux LEDC de GPIO26: la caché
+// sigue diciendo "neutro" pero sin pulso real en el pin y el servo no se mueve.
+// Marcar dirty obliga a reacoplar el pin antes de dar la salida por buena.
+static volatile bool servoPinDirty = false;
+static uint32_t servoRemuxLastMs = 0;
 
 static ServoCreepPhase servoCreepPhase = SERVO_CREEP_OFF;
 static uint32_t        servoCreepPhaseUntilMs = 0;
@@ -302,12 +307,19 @@ static uint32_t servoUsToDuty(uint16_t us)
 
 static bool tensionReverseIsActive();
 
-static uint16_t servoMotionPwmUs()
+// Valor nominal de marcha: el configurado (default por lado 800/2000 µs).
+// Si lo editado quedó pegado al neutro, volver al nominal de fábrica.
+static uint16_t servoNominalPwmUs()
 {
   const int configuredDelta = (int)servoActivePwmUs - (int)SERVO_PWM_NEUTRAL_US;
-  uint16_t requestedUs = (configuredDelta > -40 && configuredDelta < 40)
+  return (configuredDelta > -40 && configuredDelta < 40)
       ? SERVO_PWM_ACTIVE_US
       : servoActivePwmUs;
+}
+
+static uint16_t servoMotionPwmUs()
+{
+  uint16_t requestedUs = servoNominalPwmUs();
   const bool highBoostRunning = highBoostUntilMs != 0
       && (int32_t)(millis() - highBoostUntilMs) < 0
       && !tensionReverseIsActive()
@@ -329,18 +341,47 @@ static uint16_t servoMotionPwmUs()
   return requestedUs;
 }
 
-static bool servoWriteUs(uint16_t us)
+// Reacopla el pin (detach → GPIO bajo → attach) y escribe. Sin este remux,
+// tras un Stop RMT el ledcWrite puede "aceptarse" sin pulso real en GPIO26.
+static bool servoRemuxWriteUs(uint16_t us)
 {
-  if (!servoLedcAttached)
+  static bool remuxAttempted = false;
+  const uint32_t now = millis();
+  if (remuxAttempted && (uint32_t)(now - servoRemuxLastMs) < 100u)
     return false;
+  remuxAttempted = true;
+  servoRemuxLastMs = now;
   us = constrain(us, SERVO_PWM_MIN_US, SERVO_PWM_MAX_US);
-  if (servoLastOutputUs == us)
-    return true;
-  const uint32_t duty = servoUsToDuty(us);
-  if (!ledcWrite(PIN_SERVO_PWM, duty))
+  ledcDetach(PIN_SERVO_PWM);
+  pinMode(PIN_SERVO_PWM, OUTPUT);
+  digitalWrite(PIN_SERVO_PWM, LOW);
+  servoLedcAttached = ledcAttachChannel(PIN_SERVO_PWM, 50, SERVO_LEDC_BITS, SERVO_LEDC_CHANNEL);
+  if (!servoLedcAttached || !ledcWrite(PIN_SERVO_PWM, servoUsToDuty(us)))
+  {
+    servoPinDirty = true;
     return false;
+  }
+  servoPinDirty = false;
   servoLastOutputUs = us;
   return true;
+}
+
+static bool servoWriteUs(uint16_t us)
+{
+  us = constrain(us, SERVO_PWM_MIN_US, SERVO_PWM_MAX_US);
+  if (!servoPinDirty && servoLedcAttached)
+  {
+    if (servoLastOutputUs == us)
+      return true;
+    if (ledcWrite(PIN_SERVO_PWM, servoUsToDuty(us)))
+    {
+      servoLastOutputUs = us;
+      return true;
+    }
+  }
+  // Pin soltado o LEDC caído: no fiarse de la caché, reacoplar y escribir.
+  servoPinDirty = true;
+  return servoRemuxWriteUs(us);
 }
 
 static void servoAssertNeutral(bool force)
@@ -365,6 +406,24 @@ static void servoAssertRun(bool force)
   }
   const uint16_t us = servoMotionPwmUs();
   if (!force && servoRunning && servoLastOutputUs == us)
+    return;
+  if (!servoWriteUs(us))
+    return;
+  servoRunning = true;
+}
+
+// Manual (Materialista / refill): marcha al valor nominal configurado, sin
+// impulsos Mid/High ni creep de automático. La parada es servoAssertNeutral:
+// neutro 1500 µs sostenido, no "dejar de escribir".
+static void servoAssertRunManual()
+{
+  if (!idleMode && bufferFullStopNow())
+  {
+    bufferFullApplyHoldStop();
+    return;
+  }
+  const uint16_t us = servoNominalPwmUs();
+  if (servoRunning && !servoPinDirty && servoLastOutputUs == us)
     return;
   if (!servoWriteUs(us))
     return;
@@ -513,7 +572,7 @@ static void syncServoToAutoState()
   {
     servoCreepReset();
     if (refillServoOn)
-      servoAssertRun(false);
+      servoAssertRunManual();
     else if (servoRunning || servoLastOutputUs != SERVO_PWM_NEUTRAL_US)
       servoStop();
     return;
@@ -532,7 +591,7 @@ static void serviceServoPwm()
   {
     servoCreepReset();
     if (refillServoOn)
-      servoAssertRun(true);
+      servoAssertRunManual();
     else
       servoAssertNeutral(false);
     return;
@@ -823,6 +882,7 @@ static void forceStopDereelerAndServo()
   {
     motor->Stop();
     lastStopMs = millis();
+    servoPinDirty = true;   // forzar remux + neutro tras RMT
     servoLastOutputUs = 0;  // forzar reescritura neutro tras RMT
     servoAssertNeutral(true);
   }
@@ -1072,6 +1132,7 @@ static void motorHardStop(uint8_t idx)
 {
   StepperRMT* m = motorByIndex(idx);
   m->Stop();
+  servoPinDirty = true;  // el Stop RMT puede soltar el mux LEDC del servo
   motorWaitStopped(idx);
   *commandedRpmByIndex(idx) = 0.0f;
   if (idx == 0)
@@ -1385,9 +1446,9 @@ static void applyRefillOutputs()
 {
   refillExpireChannels(millis());
 
-  // Servo antes que DeReeler en refill manual.
+  // Servo antes que DeReeler en refill manual: nominal, sin boost ni creep.
   if (refillServoOn)
-    servoAssertRun(true);
+    servoAssertRunManual();
   else
     servoAssertNeutral(true);
 
@@ -1403,13 +1464,16 @@ static void applyRefillOutputs()
   {
     tensionReverseUntilMs = 0;
     if (motor)
+    {
       motor->Stop();
+      servoPinDirty = true;  // reescribir el servo tras el Stop RMT (abajo)
+    }
     commandedRpm = 0.0f;
     dereelerDirCw();
   }
 
   if (refillServoOn)
-    servoAssertRun(true);
+    servoAssertRunManual();
   else
     servoAssertNeutral(true);
 
@@ -2879,10 +2943,12 @@ void handleMotor1() { handleMotorAt(0); }
 static bool applyMotor2ConfigFromHttp()
 {
   bool touched = false;
-  if (server.hasArg("rpm") || server.hasArg("m2_rpm"))
+  // En /api/config conviven rpm (DeReeler) y m2_rpm (Feeder): manda m2_rpm.
+  // rpm solo se acepta como alias en /api/motor2, donde no viene el del DeReeler.
+  if (server.hasArg("m2_rpm") || server.hasArg("rpm"))
   {
-    float v = server.hasArg("rpm")
-        ? server.arg("rpm").toFloat() : server.arg("m2_rpm").toFloat();
+    float v = server.hasArg("m2_rpm")
+        ? server.arg("m2_rpm").toFloat() : server.arg("rpm").toFloat();
     if (v < MOTOR_RPM_MIN) v = MOTOR_RPM_MIN;
     if (v > MOTOR_RPM_MAX) v = MOTOR_RPM_MAX;
     motor2RpmSetting = v;
@@ -3033,7 +3099,12 @@ static void persistConfigIfPeer()
 
 void handleConfig()
 {
-  const bool touched = applyAutoConfigFromHttp() || applyMotor2ConfigFromHttp();
+  // Sin cortocircuito: Guardar trae a la vez config DeReeler y Feeder (m2_rpm,
+  // trigger_feed_s). Con ||, si la primera tocaba algo la segunda nunca se aplicaba
+  // y el poll siguiente reponía en pantalla los valores viejos del Feeder.
+  const bool autoTouched = applyAutoConfigFromHttp();
+  const bool motor2Touched = applyMotor2ConfigFromHttp();
+  const bool touched = autoTouched || motor2Touched;
   if (touched)
   {
     saveSettings();

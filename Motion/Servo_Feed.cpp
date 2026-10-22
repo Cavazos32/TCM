@@ -15,6 +15,12 @@ static SemaphoreHandle_t canMutex = NULL;
 bool canInitialized = false;
 bool servoCanReady = false;
 
+// Arranque CAN/servo pedido por el operador (checklist): el handler HTTP
+// solo lo encola; lo ejecuta feedLoop() reutilizando la ruta de reintento
+// CAN ya existente, sin tocar TCP/WiFi ni el orden del loop().
+static volatile bool feedCanInitPending = false;
+static volatile bool feedCanInitBusy = false;
+
 static bool isServoOperationEnabled(uint16_t statusWord)
 {
   if (statusWord & SERVO_SW_FAULT_BIT) return false;
@@ -320,6 +326,35 @@ bool reconnectCANBus(bool fullServoSetup)
     return false;
   }
   if (fullServoSetup) setupServoFeeder();
+  return true;
+}
+
+// Misma rutina de arranque que corre setup() al encender el MCU:
+// bus CAN + carga/energizado del servo CAN, con sus reintentos.
+bool feedCanBootInit()
+{
+  feedCanInitBusy = true;
+  bool ok = false;
+  if (initCANBus(CAN_INIT_MAX_RETRIES))
+  {
+    for (uint8_t attempt = 1; attempt <= SERVO_SETUP_MAX_RETRIES; attempt++)
+    {
+      if (setupServoFeeder()) { ok = true; break; }
+      delay(500);
+      if (attempt < SERVO_SETUP_MAX_RETRIES) initCANBus(2);
+    }
+  }
+  feedCanInitBusy = false;
+  Serial.printf("FEED CAN INIT (pedido): can=%d servo=%d\n",
+                (int)canInitialized, (int)servoCanReady);
+  return ok && servoCanReady;
+}
+
+bool feedCanInitRequest()
+{
+  if (feedCanInitPending || feedCanInitBusy) return false;
+  if (feedPhaseIsActive()) return false;
+  feedCanInitPending = true;
   return true;
 }
 
@@ -689,6 +724,7 @@ struct FeedSideRt {
   uint32_t encWatchDeadlineMs = 0;
   bool velEncoderSeen = false;
   bool velTvelZeroSent = false;
+  uint8_t purgeCreepChunks = 0;  // skipValidate: trozos completados (mín. purga)
 };
 
 static FeedSideRt feedSides[2];
@@ -1179,9 +1215,14 @@ static void feedSideFinish(bool sideR, FeedValResult result, uint8_t errByte, co
 static float feedSideEffectiveCreepMmS(bool sideR)
 {
   FeedSideRt& s = feedSideAt(sideR);
-  // Purga: FEED_PURGE_CREEP_MM_S (50 mm/s). Ciclo normal: FEED_LASER_CREEP_MM_S (25 mm/s).
-  // feedMmSToPp satura a SERVO_MAX_PPS; halt evaluado en tick FSP_LASER_SEEK — validar sobrepaso en máquina.
+  // Purga: FEED_PURGE_CREEP_MM_S. Ciclo normal: FEED_LASER_CREEP_MM_S (25 mm/s).
   return s.skipValidate ? FEED_PURGE_CREEP_MM_S : FEED_LASER_CREEP_MM_S;
+}
+
+static float feedSideCreepChunkMm(bool sideR)
+{
+  const FeedSideRt& s = feedSideAt(sideR);
+  return s.skipValidate ? FEED_PURGE_CREEP_MM : FEED_LASER_CREEP_MM;
 }
 
 static uint32_t feedSideCreepPp(bool sideR)
@@ -1245,8 +1286,9 @@ static bool feedSideStartLaserSeek(bool sideR, uint32_t now, const char* why)
 {
   FeedSideRt& s = feedSideAt(sideR);
 
-  // Láser ya ON (GPIO crudo): no mandar seek — halt y OK.
-  if (feedLaserMaterialPresentRaw(sideR)) {
+  // Láser ya ON: en ciclo normal no seek. En purga (skipValidate) sigue creep
+  // (mín. FEED_PURGE_MIN_CREEP_CHUNKS) para que ambos lados avancen material.
+  if (feedLaserMaterialPresentRaw(sideR) && !s.skipValidate) {
     s.laserState = true;
     s.laserSeekDone = true;
     feedLaserHaltNow(sideR);
@@ -1299,13 +1341,7 @@ static void feedSideStartApproach(bool sideR)
     const uint32_t now = millis();
     s.huntLaser = true;
     s.overrideTargetMm = 0.0f;
-    if (feedLaserMaterialPresentRaw(sideR)) {
-      s.laserState = true;
-      s.laserSeekDone = true;
-      Serial.printf("FEED %c PURGE: laser already ON → OK\n", sideR ? 'R' : 'L');
-      feedSideFinish(sideR, FVR_OK, 0, "FEED_OK_PURGE_LASER");
-      return;
-    }
+    s.purgeCreepChunks = 0;
     feedSideStartLaserSeek(sideR, now, "purge");
     s.seekDeadlineMs = now + FEED_PURGE_LASER_TIMEOUT_MS;
     Serial.printf("FEED %c PURGE: creep until laser · timeout=%lums\n",
@@ -1665,7 +1701,10 @@ static void feedSideService(bool sideR, uint32_t now)
     case FSP_LASER_SEEK:
       {
         const uint8_t laserErr = sideR ? MOT_ERR_LASER_R : MOT_ERR_LASER_L;
-        if (feedLaserMaterialPresentRaw(sideR)) {
+        const bool purgeMinCreep =
+            s.skipValidate
+            && s.purgeCreepChunks < FEED_PURGE_MIN_CREEP_CHUNKS;
+        if (!purgeMinCreep && feedLaserMaterialPresentRaw(sideR)) {
           s.laserState = true;
           feedLaserHaltNow(sideR);
           Serial.printf("FEED %c LASER_SEEK hit → freeze\n", sideR ? 'R' : 'L');
@@ -1687,20 +1726,23 @@ static void feedSideService(bool sideR, uint32_t now)
         if (now < s.settleUntilMs)
           break;
         s.moveStartMs = 0;
-        if (feedLaserMaterialPresentRaw(sideR)) {
+        if (!purgeMinCreep && feedLaserMaterialPresentRaw(sideR)) {
           s.laserState = true;
           feedLaserHaltNow(sideR);
           s.settleUntilMs = now + FEED_HALT_SETTLE_MS;
           s.phase = FSP_LASER_SEEK_HALT;
           break;
         }
-        const int32_t steps = feedMmToCmdStepsSigned(FEED_LASER_CREEP_MM, sideR);
+        const float creepMm = feedSideCreepChunkMm(sideR);
+        const int32_t steps = feedMmToCmdStepsSigned(creepMm, sideR);
         if (steps <= 0) {
           feedSideFinish(sideR, FVR_INCONSISTENT, laserErr, "FEED_INCONSISTENT");
           break;
         }
         if (!feedSideIssueMoveOrRetry(sideR, steps, now, feedSideCreepPp(sideR)))
           break;
+        if (s.skipValidate)
+          s.purgeCreepChunks++;
       }
       break;
 
@@ -1985,13 +2027,22 @@ void feedLoop()
     lastTcpSeenMs = millis();
   const bool tcpHoldoff =
       lastTcpSeenMs != 0 && (int32_t)(millis() - lastTcpSeenMs) < 60000;
+  // Un arranque pedido por el operador no espera al hold-off de TCP:
+  // es explícito, con la máquina parada, y corre la rutina de encendido.
+  const bool canInitRequested = feedCanInitPending;
   if (!feedPhaseIsActive()
-      && !tcpHoldoff
       && !motionHostIsOccupied()
-      && (millis() - lastCanRetryMs) >= FEED_CAN_RETRY_MS)
+      && (canInitRequested
+          || (!tcpHoldoff
+              && (millis() - lastCanRetryMs) >= FEED_CAN_RETRY_MS)))
   {
     lastCanRetryMs = millis();
-    if (!canInitialized)
+    if (canInitRequested)
+    {
+      feedCanInitPending = false;
+      (void)feedCanBootInit();
+    }
+    else if (!canInitialized)
       reconnectCANBus(true);
     else if (!servoCanReady)
       setupServoFeeder();
@@ -2073,6 +2124,8 @@ String feedStatusJson()
   j += "\"canInitialized\":"; j += canInitialized ? "true" : "false";
   j += ",\"canBitrateKbps\":"; j += CAN_BITRATE_KBPS;
   j += ",\"servoCanReady\":"; j += servoCanReady ? "true" : "false";
+  j += ",\"canInitPending\":"; j += feedCanInitPending ? "true" : "false";
+  j += ",\"canInitBusy\":"; j += feedCanInitBusy ? "true" : "false";
   j += ",\"feedActive\":"; j += feedPhaseIsActive() ? "true" : "false";
   j += ",\"feedOk\":"; j += feedThisCycleSucceeded() ? "true" : "false";
   j += ",\"fault\":\""; j += String(feedFaultReason); j += "\"";
@@ -2479,6 +2532,21 @@ static void handleSetFeedCal()
 
 static void handleFeedStatus() { sendJson(200, feedStatusJson()); }
 
+static void handleFeedCanInit()
+{
+  // Handler corto: solo encola. La rutina (con sus esperas propias del
+  // servo) la corre feedLoop(), igual que el reintento automático CAN.
+  if (feedPhaseIsActive() || motionHostIsOccupied()) {
+    sendJson(409, "{\"ok\":false,\"error\":\"Alimentador ocupado\"}");
+    return;
+  }
+  if (!feedCanInitRequest()) {
+    sendJson(409, "{\"ok\":false,\"error\":\"Arranque ya en curso\"}");
+    return;
+  }
+  sendJson(202, "{\"ok\":true,\"queued\":true}");
+}
+
 void feedRegisterHttpRoutes(WebServer& srv)
 {
   (void)srv;
@@ -2495,4 +2563,5 @@ void feedRegisterHttpRoutes(WebServer& srv)
   server.on("/getFeedCal", HTTP_GET, handleGetFeedCal);
   server.on("/setFeedCal", HTTP_GET, handleSetFeedCal);
   server.on("/api/feed/status", HTTP_GET, handleFeedStatus);
+  server.on("/api/feed/can-init", HTTP_POST, handleFeedCanInit);
 }

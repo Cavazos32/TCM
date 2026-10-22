@@ -44,9 +44,10 @@ function AppMain() {
 
   // La revisión se abre sola al arrancar, pero si el operador la cierra
   // para manipular la máquina (ajustes, manuales, mantenimiento,
-  // Materialista), no debe reabrirse sola: solo vuelve si él la abre o
-  // si surge una nueva obligación de checklist. Lo único bloqueado con
-  // la revisión sin terminar es el arranque de producción.
+  // Materialista), no debe reabrirse sola: solo vuelve si él la abre.
+  // Cerrar la ventana conserva el paso en curso; solo reinicia al arrancar
+  // de nuevo la HMI. Lo único bloqueado con la revisión sin terminar es el
+  // arranque de producción.
   useEffect(() => {
     if (!view.checklistState.required) {
       setChecklistDismissed(false);

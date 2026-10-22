@@ -492,6 +492,9 @@ export const translations = {
     checklist_btn_air_on: 'Probar aire',
     checklist_btn_air_off: 'Apagar prueba de aire',
     checklist_btn_move_axis: 'Mover actuador lineal',
+    checklist_btn_home_axis: 'Llevar a posición inicial',
+    checklist_btn_home_ok: 'Todo bien, hacer recorrido',
+    checklist_btn_home_retry: 'Reintentar posición inicial',
     checklist_btn_prepare_feeder: 'Preparar alimentador',
     checklist_btn_purge: 'Hacer purga',
     checklist_btn_cut_test_pieces: 'Cortar piezas de prueba',
@@ -521,11 +524,17 @@ export const translations = {
       'Revisa a ojo que el material no quede ni muy flojo ni muy tenso en ambos lados del alimentador.',
     checklist_step_asda: 'Actuador lineal',
     checklist_step_asda_hint:
-      'El actuador lineal irá a posición inicial y hará un recorrido de prueba. No te acerques a la zona de movimiento.',
+      'Primero lleva el eje de corte a su posición inicial con el botón de abajo y espera a que termine. No te acerques a la zona de movimiento.',
+    checklist_asda_home_ask:
+      '¿El eje de corte quedó bien en su posición inicial? Si todo se ve bien, pulsa «Todo bien, hacer recorrido» y se hará el recorrido de prueba.',
+    checklist_asda_home_error_hint:
+      'La máquina mostró un error durante la búsqueda. Si el eje ya estaba en su posición inicial, esto puede pasar: cierra esta ventana, restablece el error en la pantalla principal y haz la revisión de nuevo desde el inicio.',
     checklist_step_feeder: 'Purga del alimentador',
     checklist_step_feeder_hint:
-      'Primero se prepara el alimentador. Después haz una purga y espera a que termine antes de continuar.',
+      'Primero se arranca el alimentador, igual que cuando enciende la máquina. Después haz una purga y espera a que termine antes de continuar.',
     checklist_purge_running_hint: 'Purga en curso. Espera a que termine.',
+    checklist_purge_feed_failed:
+      'La purga no terminó: puede que el material no haya llegado al sensor. Revisa que haya material en el alimentador y pulsa «Reintentar».',
     checklist_step_pieces: 'Piezas de prueba',
     checklist_step_pieces_hint:
       'Se cortarán dos piezas de prueba. Mide cada pieza y escribe la longitud tal como la mides.',
@@ -550,6 +559,10 @@ export const translations = {
     checklist_err_no_session: 'Vuelve a comenzar la revisión.',
     checklist_err_wrong_step: 'Este paso ya no aplica. Cierra y abre de nuevo la revisión.',
     checklist_err_asda_pending: 'Primero mueve el actuador lineal y espera a que termine.',
+    checklist_err_asda_home_pending:
+      'Primero lleva el eje a su posición inicial y confirma que quedó bien.',
+    checklist_err_machine_error_latched:
+      'Primero restablece el error en la pantalla principal y vuelve a esta revisión.',
     checklist_err_worker: 'Algo falló. Llama al técnico.',
     checklist_err_machine_in_motion: 'La máquina se está moviendo. Espera a que pare.',
 

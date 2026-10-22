@@ -141,6 +141,40 @@ def motion_http_set_feed_offset(
     return data
 
 
+def motion_http_feed_status(
+    host: str = DEFAULT_HOST,
+    port: int = MOTION_HTTP_PORT,
+    timeout: float = 3.0,
+) -> dict[str, Any]:
+    url = f"http://{host}:{port}/api/feed/status"
+    with urllib.request.urlopen(url, timeout=timeout) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("Respuesta feed/status invalida")
+    return data
+
+
+def motion_http_feed_can_init(
+    host: str = DEFAULT_HOST,
+    port: int = MOTION_HTTP_PORT,
+    timeout: float = 5.0,
+) -> dict[str, Any]:
+    """POST /api/feed/can-init — encola la rutina de encendido del servo
+    del alimentador (bus + carga del servo). Motion la ejecuta en su
+    ciclo; el resultado se lee en /api/feed/status (`servoCanReady`)."""
+    req = urllib.request.Request(
+        f"http://{host}:{port}/api/feed/can-init",
+        data=b"{}",
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("Respuesta feed/can-init invalida")
+    return data
+
+
 def motion_http_stage2_status(
     host: str = DEFAULT_HOST,
     port: int = MOTION_HTTP_PORT,

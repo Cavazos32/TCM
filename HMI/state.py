@@ -75,6 +75,8 @@ from motion import (
     TX_LENGTH_OK_R,
     motion_http_asda_position_mm,
     motion_http_asda_status,
+    motion_http_feed_can_init,
+    motion_http_feed_status,
     motion_http_stage2_start,
     motion_http_stage2_status,
     TX_REACHED,
@@ -467,6 +469,7 @@ class HmiState:
             return
         self._started = True
         self._checklist.mark_required_on_boot()
+        self._save_app_config()
         self._notify_thread.start()
         self._client.start_background()
         self._plc_client.start_background()
@@ -1068,6 +1071,88 @@ class HmiState:
 
     def stage2_fault(self) -> str:
         return self._stage2_fault
+
+    def cmd_motion_feed_can_init(self) -> bool:
+        """Pide a Motion su rutina de encendido del alimentador.
+
+        Es la misma secuencia que corre el MCU al encender: bus CAN +
+        carga/energizado del servo CAN. Solo se encola; Motion la ejecuta
+        y el resultado se espera con `wait_feed_can_ready`.
+        """
+        host = getattr(self._client, "_host", DEFAULT_HOST)
+        try:
+            data = motion_http_feed_can_init(host=str(host))
+        except Exception as exc:  # noqa: BLE001 — enlace HTTP Motion
+            # Firmware Motion sin la orden de arranque (404): el
+            # alimentador ya corrió esa misma rutina al encender. Si su
+            # servo ya quedó listo, no hay nada más que arrancar: el paso
+            # sigue con esa condición real, no con un fallo inventado.
+            if getattr(exc, "code", None) in (404, 405, 501):
+                try:
+                    st = motion_http_feed_status(host=str(host))
+                except Exception:  # noqa: BLE001
+                    st = {}
+                if st.get("servoCanReady"):
+                    self.cycle_log(
+                        "Arranque alimentador: Motion sin orden nueva; "
+                        "servo ya listo desde el encendido"
+                    )
+                    return True
+            self._stage2_fault = f"Arranque alimentador: {exc}"
+            return False
+        if not data.get("ok"):
+            self._stage2_fault = "Arranque del alimentador rechazado"
+            return False
+        return True
+
+    def wait_feed_can_ready(
+        self,
+        timeout_s: float,
+        *,
+        abort_event: threading.Event | None = None,
+    ) -> str:
+        """Espera a que el servo CAN quede listo tras el arranque pedido.
+
+        Returns: ok | ng | timeout | aborted. Mientras Motion ejecuta la
+        rutina su servidor puede tardar en responder: eso no es fallo,
+        se sigue esperando hasta el límite.
+        """
+        host = getattr(self._client, "_host", DEFAULT_HOST)
+        deadline = time.monotonic() + float(timeout_s)
+        saw_busy = False
+        last_busy_at = 0.0
+        while time.monotonic() < deadline:
+            if abort_event is not None and abort_event.is_set():
+                return "aborted"
+            try:
+                st = motion_http_feed_status(host=str(host))
+            except Exception:  # noqa: BLE001 — Motion ocupado arrancando
+                # Sin respuesta justo después de pedir el arranque: su
+                # ciclo está dentro de la rutina. Solo cuenta como
+                # «ocupado» a efectos de no dar un fallo prematuro.
+                saw_busy = True
+                last_busy_at = time.monotonic()
+                time.sleep(0.25)
+                continue
+            busy = bool(st.get("canInitPending") or st.get("canInitBusy"))
+            if busy:
+                saw_busy = True
+                last_busy_at = time.monotonic()
+            elif st.get("servoCanReady"):
+                # Listo y sin arranque en curso. No exigir haberlo visto
+                # ocupado: si el arranque terminó antes de la primera
+                # consulta exitosa (o el servo ya estaba listo), esta
+                # lectura ya es el resultado final y válido.
+                return "ok"
+            elif saw_busy and (time.monotonic() - last_busy_at) > 2.0:
+                # El arranque ya terminó y el servo no quedó listo.
+                self._stage2_fault = (
+                    str(st.get("fault") or "").strip()
+                    or "El servo del alimentador no arrancó"
+                )
+                return "ng"
+            time.sleep(0.25)
+        return "timeout"
 
     def _log_stage2_snapshot(self, st: dict[str, Any], result: str) -> None:
         self.cycle_log(
@@ -2045,10 +2130,7 @@ class HmiState:
         else:
             return {"ok": False, "error": f"Acción checklist desconocida: {action}"}
         if res.get("ok"):
-            # Al cerrar no se borra el error del paso: debe seguir visible y
-            # reintentable cuando el operador reabra el checklist.
-            if action != "close":
-                self._checklist.clear_step_error()
+            self._checklist.clear_step_error()
             self._save_app_config()
         elif res.get("error"):
             self._checklist.set_step_error(str(res["error"]))
