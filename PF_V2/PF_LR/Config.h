@@ -163,7 +163,7 @@ constexpr const char* PREFS_NS             = "prefeeder2";
 // ====================== FIRMWARE / OTA ======================
 // Como Home: panel → GitHub Releases (HTTPS). Release: make_release.py + tag vX.Y.Z.
 // Red local IDE: ArduinoOTA (OTA_PASSWORD). Requiere Wi‑Fi con internet hacia github.com.
-#define FW_VERSION "0.1.5"
+#define FW_VERSION "0.1.6"
 #define OTA_PASSWORD "TCM_PF2026"
 #ifndef PREFEEDER_SIDE_RIGHT
 #define OTA_HOSTNAME "prefeeder-L"

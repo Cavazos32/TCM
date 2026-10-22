@@ -333,7 +333,7 @@ bool RemoteUpdate::fetchManifest(String& version, String& url, String& md5, Stri
     if (code == HTTP_CODE_NOT_FOUND) {
       snprintf(msg, sizeof(msg), "Manifiesto no encontrado (404)");
     } else if (code == -1) {
-      snprintf(msg, sizeof(msg), "Sin enlace al servidor OTA (Master /ota/)");
+      snprintf(msg, sizeof(msg), "Sin enlace HTTPS (internet o firewall a GitHub)");
     } else {
       snprintf(msg, sizeof(msg), "Manifiesto HTTP %d", code);
     }
