@@ -1,0 +1,85 @@
+# Compila PF_LR (L+R) y publica assets OTA en GitHub Releases al pushear tag v*.*
+name: PF_V2 OTA Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Versión x.y.z (debe coincidir con FW_VERSION en PF_V2/PF_LR/Config.h)"
+        required: true
+        default: "0.1.1"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolver versión / tag
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            V="${{ github.event.inputs.version }}"
+          else
+            V="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "tag=v$V" >> "$GITHUB_OUTPUT"
+
+      - name: Comprobar FW_VERSION en Config.h
+        run: |
+          FW=$(grep -E '^\s*#define\s+FW_VERSION\s+"([^"]+)"' PF_V2/PF_LR/Config.h | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ "$FW" != "${{ steps.ver.outputs.version }}" ]; then
+            echo "FW_VERSION en Config.h es '$FW' pero el tag pide '${{ steps.ver.outputs.version }}'"
+            exit 1
+          fi
+
+      - uses: arduino/setup-arduino-cli@v1
+
+      - name: Instalar core ESP32 y ArduinoJson
+        run: |
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32
+          arduino-cli lib install "ArduinoJson@6.21.5"
+
+      - name: Compilar PF_LR (L)
+        run: |
+          arduino-cli compile --fqbn esp32:esp32:esp32 \
+            --libraries PF_V2/libraries \
+            --build-path build_L \
+            PF_V2/PF_LR
+
+      - name: Compilar PF_LR (R)
+        run: |
+          arduino-cli compile --fqbn esp32:esp32:esp32 \
+            --libraries PF_V2/libraries \
+            --build-property "compiler.cpp.extra_flags=-DPREFEEDER_SIDE_RIGHT" \
+            --build-path build_R \
+            PF_V2/PF_LR
+
+      - name: Generar manifiestos OTA
+        run: |
+          python3 PF_V2/tools/make_release.py build_L/PF_LR.ino.bin \
+            --product pf_lr_l --allow-secrets --version "${{ steps.ver.outputs.version }}" --out dist/l
+          python3 PF_V2/tools/make_release.py build_R/PF_LR.ino.bin \
+            --product pf_lr_r --allow-secrets --version "${{ steps.ver.outputs.version }}" --out dist/r
+
+      - name: Publicar GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: PF_V2 ${{ steps.ver.outputs.version }}
+          body: |
+            Firmware PreFeeder L/R (PF_V2). OTA: manifiestos `pf_lr_L_version.json` / `pf_lr_R_version.json`.
+          files: |
+            dist/l/PF_LR_L.bin
+            dist/l/pf_lr_L_version.json
+            dist/r/PF_LR_R.bin
+            dist/r/pf_lr_R_version.json
+          generate_release_notes: true
