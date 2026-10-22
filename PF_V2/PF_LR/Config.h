@@ -4,7 +4,7 @@
 
 // ====================== LADO L / R ======================
 // Comentada = L | descomentada = R
-// #define PREFEEDER_SIDE_RIGHT
+#define PREFEEDER_SIDE_RIGHT
 
 #ifndef PREFEEDER_SIDE_RIGHT
 #define PREFEEDER_SIDE_TAG  "L"
@@ -160,7 +160,7 @@ constexpr const char* PREFS_NS             = "prefeeder2";
 // ====================== FIRMWARE / OTA ======================
 // Release: PF_V2/tools/make_release.py → GitHub Release (bin + *_version.json).
 // Red local: Arduino IDE → puerto de red (OTA_PASSWORD).
-#define FW_VERSION "0.1.0"
+#define FW_VERSION "0.1.1"
 #define OTA_PASSWORD "TCM_PF2026"
 #ifndef PREFEEDER_SIDE_RIGHT
 #define OTA_HOSTNAME "prefeeder-L"

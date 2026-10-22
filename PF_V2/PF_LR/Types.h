@@ -36,3 +36,9 @@ enum AutoState : uint8_t {
   AUTO_BUFFER_FAULT,
   AUTO_OPERATOR_STOP
 };
+
+enum ServoCreepPhase : uint8_t {
+  SERVO_CREEP_OFF = 0,
+  SERVO_CREEP_RUN,
+  SERVO_CREEP_STOP
+};

@@ -326,7 +326,7 @@ bool RemoteUpdate::fetchManifest(String& version, String& url, String& md5, Stri
   const String body = http.getString();
   http.end();
 
-  JsonDocument doc;
+  StaticJsonDocument<512> doc;
   if (body.length() > kMaxManifestBytes || deserializeJson(doc, body)) {
     setStatus("error", "Manifiesto con JSON invalido");
     return false;

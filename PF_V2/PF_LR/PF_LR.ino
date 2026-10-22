@@ -7,7 +7,7 @@
 #include <ArduinoOTA.h>
 #include <Update.h>
 #include <ArduinoJson.h>
-#include "../RemoteUpdate/RemoteUpdate.h"
+#include "RemoteUpdate.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "Config.h"
@@ -176,11 +176,6 @@ bool      servoRunning      = false;
 uint16_t  servoLastOutputUs = 0;
 static bool servoLedcAttached = false;
 
-enum ServoCreepPhase : uint8_t {
-  SERVO_CREEP_OFF = 0,
-  SERVO_CREEP_RUN,
-  SERVO_CREEP_STOP
-};
 static ServoCreepPhase servoCreepPhase = SERVO_CREEP_OFF;
 static uint32_t        servoCreepPhaseUntilMs = 0;
 uint32_t  servoCreepRunMs = SERVO_CREEP_RUN_MS_DEFAULT;
@@ -307,6 +302,8 @@ static uint32_t servoUsToDuty(uint16_t us)
   us = constrain(us, SERVO_PWM_MIN_US, SERVO_PWM_MAX_US);
   return (uint32_t)us * ((1UL << SERVO_LEDC_BITS) - 1) / 20000UL;
 }
+
+static bool tensionReverseIsActive();
 
 static uint16_t servoMotionPwmUs()
 {
@@ -2679,8 +2676,8 @@ static void ensureArduinoOta()
 
 void handleOtaStatus()
 {
-  JsonDocument doc;
-  remoteUpdate.statusJson(doc.to<JsonObject>());
+  StaticJsonDocument<512> doc;
+  remoteUpdate.statusJson(doc.as<JsonObject>());
   String out;
   serializeJson(doc, out);
   server.sendHeader("Cache-Control", "no-store");
