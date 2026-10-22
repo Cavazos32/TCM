@@ -1,4 +1,5 @@
 #include "RemoteUpdate.h"
+#include "Config.h"
 
 #include <WiFi.h>
 #include <WiFiClient.h>
@@ -9,6 +10,11 @@
 
 
 #include <pgmspace.h>
+
+#if __has_include("esp_crt_bundle.h")
+#include "esp_crt_bundle.h"
+#define OTA_HAS_CRT_BUNDLE 1
+#endif
 
 namespace {
 static const char kGitHubRootCa[] PROGMEM =
@@ -218,8 +224,31 @@ static constexpr uint32_t kHttpTimeoutMs = 15000;
 static constexpr size_t kMaxManifestBytes = 1024;
 
 static void configureTls(NetworkClientSecure& client) {
+#if OTA_TLS_INSECURE
+  client.setInsecure();
+#elif defined(OTA_HAS_CRT_BUNDLE)
+  client.setCACertBundle(x509_crt_bundle_start, x509_crt_bundle_end - x509_crt_bundle_start);
+#else
   client.setCACert(kGitHubRootCa);
+#endif
   client.setTimeout(kHttpTimeoutMs / 1000);
+}
+
+static String urlHost(const String& url) {
+  const int p = url.indexOf("://");
+  if (p < 0) return "";
+  int start = p + 3;
+  const int slash = url.indexOf('/', start);
+  String h = slash < 0 ? url.substring(start) : url.substring(start, slash);
+  const int colon = h.indexOf(':');
+  if (colon >= 0) h.remove(colon);
+  return h;
+}
+
+static bool resolveHostName(const String& host, IPAddress& ip) {
+  if (host.isEmpty()) return false;
+  if (ip.fromString(host)) return true;
+  return WiFi.hostByName(host.c_str(), ip) == 1;
 }
 
 static bool urlIsHttpOrHttps(const String& url) {
@@ -246,7 +275,11 @@ static bool httpGetBody(const String& url, String& body, int& outCode) {
   }
 
   outCode = http.GET();
-  if (outCode == HTTP_CODE_OK) body = http.getString();
+  if (outCode == HTTP_CODE_OK) {
+    body = http.getString();
+  } else if (outCode == -1) {
+    Serial.printf("OTA HTTP GET fallo: %s\n", http.errorToString(outCode).c_str());
+  }
   http.end();
   return outCode == HTTP_CODE_OK;
 }
@@ -326,6 +359,15 @@ bool RemoteUpdate::fetchManifest(String& version, String& url, String& md5, Stri
     return false;
   }
 
+  const String host = urlHost(_manifestUrl);
+  IPAddress ip;
+  if (!resolveHostName(host, ip)) {
+    Serial.printf("OTA DNS fallo: no resuelve '%s'\n", host.c_str());
+    setStatus("error", "DNS: no resuelve GitHub (revisa DNS del router)");
+    return false;
+  }
+  Serial.printf("OTA DNS %s -> %s\n", host.c_str(), ip.toString().c_str());
+
   String body;
   int code = -1;
   if (!httpGetBody(_manifestUrl, body, code)) {
@@ -333,7 +375,7 @@ bool RemoteUpdate::fetchManifest(String& version, String& url, String& md5, Stri
     if (code == HTTP_CODE_NOT_FOUND) {
       snprintf(msg, sizeof(msg), "Manifiesto no encontrado (404)");
     } else if (code == -1) {
-      snprintf(msg, sizeof(msg), "Sin enlace HTTPS (internet o firewall a GitHub)");
+      snprintf(msg, sizeof(msg), "HTTPS fallo (TLS o puerto 443 bloqueado)");
     } else {
       snprintf(msg, sizeof(msg), "Manifiesto HTTP %d", code);
     }
