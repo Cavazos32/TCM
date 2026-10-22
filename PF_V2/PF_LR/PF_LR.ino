@@ -5,9 +5,6 @@
 #include <Preferences.h>
 #include <StepperRMT.h>
 #include <ArduinoOTA.h>
-#include <Update.h>
-#include <ArduinoJson.h>
-#include "RemoteUpdate.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "Config.h"
@@ -2692,36 +2689,6 @@ static void ensureArduinoOta()
   Serial.printf("[OTA] red local listo hostname=%s (IDE → puerto de red)\n", OTA_HOSTNAME);
 }
 
-void handleOtaStatus()
-{
-  StaticJsonDocument<512> doc;
-  remoteUpdate.statusJson(doc);
-  String out;
-  serializeJson(doc, out);
-  if (out.indexOf("\"version\"") < 0)
-  {
-    out = String("{\"version\":\"") + FW_VERSION
-        + "\",\"state\":\"idle\",\"message\":\"\",\"busy\":false,\"progress\":0}";
-  }
-  server.sendHeader("Cache-Control", "no-store");
-  server.send(200, "application/json", out);
-}
-
-void handleOtaCheck()
-{
-  if (WiFi.status() != WL_CONNECTED)
-  {
-    server.send(503, "application/json", "{\"error\":\"sin WiFi\"}");
-    return;
-  }
-  if (!remoteUpdate.requestCheck())
-  {
-    server.send(409, "application/json", "{\"error\":\"revision en curso\"}");
-    return;
-  }
-  server.send(202, "application/json", "{\"ok\":true}");
-}
-
 // ====================== WEB UI ======================
 void handleRoot()
 {
@@ -2729,7 +2696,6 @@ void handleRoot()
   html.replace("SERVO_PWM_UI_DEFAULT", String((unsigned)SERVO_PWM_ACTIVE_US));
   html.replace("MID_SERVO_DELTA_UI_DEFAULT", String((int)BUFFER_MID_SERVO_DELTA_DEFAULT_US));
   html.replace("HIGH_SERVO_DELTA_UI_DEFAULT", String((int)BUFFER_HIGH_SERVO_DELTA_DEFAULT_US));
-  html.replace("FW_VERSION_UI", FW_VERSION);
   server.sendHeader("Cache-Control", "no-store");
   server.send(200, "text/html", html);
 }
@@ -3860,7 +3826,7 @@ static void peerRetryWifi()
   delay(500);
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
-  WiFi.config(STA_IP, STA_GW, STA_MASK, STA_DNS1, STA_DNS2);
+  WiFi.config(STA_IP, STA_GW, STA_MASK, STA_GW);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   Serial.println("[PEER] Reintentando STA...");
 }
@@ -3998,7 +3964,7 @@ void setupWiFi()
   WiFi.setAutoReconnect(true);
   delay(100);
 
-  if (!WiFi.config(STA_IP, STA_GW, STA_MASK, STA_DNS1, STA_DNS2))
+  if (!WiFi.config(STA_IP, STA_GW, STA_MASK, STA_GW))
     Serial.println("WiFi.config() fallo.");
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   Serial.printf("Buscando router \"%s\"...\n", WIFI_SSID);
@@ -4071,9 +4037,6 @@ void setup()
   server.on("/api/auto", handleAuto);
   server.on("/api/config", handleConfig);
   server.on("/api/refill", handleRefill);
-  server.on("/api/ota/status", handleOtaStatus);
-  server.on("/api/ota/check", HTTP_GET, handleOtaCheck);
-  server.on("/api/ota/check", HTTP_POST, handleOtaCheck);
   server.on("/ping", []() {
     server.sendHeader("Cache-Control", "no-store");
     server.send(200, "text/plain", "pong");
@@ -4125,8 +4088,7 @@ void setup()
     Serial.printf("Boot: Auto ON (%s) · sensores congelados hasta Iniciar/In process\n",
                   idleMode ? "Materialista" : "Idle");
 
-  remoteUpdate.begin(FW_VERSION, OTA_MANIFEST_URL, OTA_CHECK_INTERVAL_MS, OTA_BOOT_DELAY_MS, OTA_RETRY_MS);
-  Serial.printf("Firmware v%s · manifiesto OTA: %s\n", FW_VERSION, OTA_MANIFEST_URL);
+  Serial.printf("Firmware v%s · OTA red local hostname=%s\n", FW_VERSION, OTA_HOSTNAME);
 }
 
 void loop()
@@ -4140,8 +4102,6 @@ void loop()
 
   serviceHttp(12);
   serviceArduinoOta(4);
-  if (!arduinoOtaInProgress) remoteUpdate.loop();
-  if (remoteUpdate.flashing()) pfOtaStopMotion();
 
   updateBufferFullFilter();
   updateBufferMidBoost();

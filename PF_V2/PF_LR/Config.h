@@ -78,9 +78,6 @@ static const char* const WIFI_SSID = "R&D_TCM";
 static const char* const WIFI_PASS = "TCM2026!r&d";
 static const IPAddress STA_GW(10, 10, 32, 72);
 static const IPAddress STA_MASK(255, 255, 255, 0);
-// DNS: mismo criterio que un PC en la LAN (router primero). 8.8.8.8 solo como respaldo.
-static const IPAddress STA_DNS1(10, 10, 32, 72);
-static const IPAddress STA_DNS2(8, 8, 8, 8);
 static const IPAddress TCM_IP(10, 10, 32, 100);
 constexpr uint16_t PEER_PORT = 8765;
 constexpr uint32_t PEER_STATUS_MS = 2000;
@@ -160,20 +157,11 @@ constexpr uint32_t REFILL_PULSE_MS_MAX     = 10000;
 constexpr uint8_t  TRIGGER_ID_HIST         = 8;
 constexpr const char* PREFS_NS             = "prefeeder2";
 
-// ====================== FIRMWARE / OTA ======================
-// Como Home: panel → GitHub Releases (HTTPS). Release: make_release.py + tag vX.Y.Z.
-// Red local IDE: ArduinoOTA (OTA_PASSWORD). Requiere Wi‑Fi con internet hacia github.com.
-#define FW_VERSION "0.1.7"
+// ====================== FIRMWARE / OTA (Arduino IDE, red local) ======================
+#define FW_VERSION "0.1.8"
 #define OTA_PASSWORD "TCM_PF2026"
 #ifndef PREFEEDER_SIDE_RIGHT
 #define OTA_HOSTNAME "prefeeder-L"
-#define OTA_MANIFEST_URL "https://github.com/Cavazos32/TCM/releases/latest/download/pf_lr_L_version.json"
 #else
 #define OTA_HOSTNAME "prefeeder-R"
-#define OTA_MANIFEST_URL "https://github.com/Cavazos32/TCM/releases/latest/download/pf_lr_R_version.json"
 #endif
-#define OTA_CHECK_INTERVAL_MS (6UL * 60UL * 60UL * 1000UL)
-#define OTA_BOOT_DELAY_MS (30UL * 1000UL)
-#define OTA_RETRY_MS (15UL * 60UL * 1000UL)
-// 1 = prueba en banco sin verificar certificado HTTPS (no dejar en producción).
-#define OTA_TLS_INSECURE 0

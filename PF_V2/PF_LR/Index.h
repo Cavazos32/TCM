@@ -828,16 +828,6 @@ const char index_html[] PROGMEM = R"rawliteral(
       </div>
     </div>
 
-    <div class="card" id="firmware-card">
-      <h2>Firmware</h2>
-      <p class="meta compact" id="ota-version">Versión instalada: vFW_VERSION_UI</p>
-      <p class="hint" id="ota-msg">—</p>
-      <div class="btn-row">
-        <button type="button" class="btn btn-primary" id="ota-btn">Buscar actualización</button>
-      </div>
-      <p class="hint" style="margin-top:10px">Requiere Wi‑Fi con internet (GitHub Releases). Publica release en el repo y pulsa Buscar actualización.</p>
-    </div>
-
     <p class="footer">Estado automático cada ~600 ms · pulsa Guardar para escribir en flash</p>
   </div>
 
@@ -1433,63 +1423,6 @@ const char index_html[] PROGMEM = R"rawliteral(
           })
           .catch(function() {});
       });
-    })();
-    function applyOtaStatus(o) {
-      if (!o) return;
-      var ver = document.getElementById('ota-version');
-      var msg = document.getElementById('ota-msg');
-      var btn = document.getElementById('ota-btn');
-      if (ver) {
-        var t = 'Versión instalada: v' + (o.version || '?');
-        if (o.latest) t += ' · publicada v' + o.latest;
-        ver.textContent = t;
-      }
-      if (msg) {
-        var line = o.message || o.state || '—';
-        if (o.state === 'downloading' && o.progress != null) line += ' ' + o.progress + '%';
-        msg.textContent = line;
-      }
-      if (btn) btn.disabled = !!o.busy;
-      scheduleOtaPoll(!!o.busy);
-    }
-    function refreshOta() {
-      fetch('/api/ota/status', { cache: 'no-store' })
-        .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-        .then(applyOtaStatus)
-        .catch(function(e) {
-          var msg = document.getElementById('ota-msg');
-          if (msg) msg.textContent = e && e.message ? e.message : 'No se pudo leer estado OTA';
-        });
-    }
-    var _otaPollTimer = null;
-    function scheduleOtaPoll(fast) {
-      if (_otaPollTimer) clearInterval(_otaPollTimer);
-      _otaPollTimer = setInterval(refreshOta, fast ? 2000 : 8000);
-    }
-    function checkOta() {
-      var btn = document.getElementById('ota-btn');
-      if (btn) btn.disabled = true;
-      fetch('/api/ota/check', { method: 'POST' })
-        .then(function(r) {
-          if (r.status === 409) throw new Error('Ya hay una revisión en curso');
-          if (!r.ok && r.status !== 202) throw new Error('HTTP ' + r.status);
-          var msg = document.getElementById('ota-msg');
-          if (msg) msg.textContent = 'Buscando versión nueva…';
-        })
-        .catch(function(e) {
-          var msg = document.getElementById('ota-msg');
-          if (msg) msg.textContent = e && e.message ? e.message : 'Error';
-        })
-        .finally(function() { setTimeout(refreshOta, 1500); });
-    }
-    (function bindOta() {
-      var btn = document.getElementById('ota-btn');
-      if (btn && !btn._otaBound) {
-        btn._otaBound = true;
-        btn.addEventListener('click', checkOta);
-      }
-      refreshOta();
-      scheduleOtaPoll(false);
     })();
     poll();
   </script>
