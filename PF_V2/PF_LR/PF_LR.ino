@@ -4,6 +4,10 @@
 #include <WebServer.h>
 #include <Preferences.h>
 #include <StepperRMT.h>
+#include <ArduinoOTA.h>
+#include <Update.h>
+#include <ArduinoJson.h>
+#include "../RemoteUpdate/RemoteUpdate.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "Config.h"
@@ -125,13 +129,6 @@ static uint32_t      bufferFullHighAccumMs  = 0;
 static uint32_t      bufferFullLowAccumMs   = 0;
 static uint32_t      bufferFullFilterLastMs = 0;
 
-// Diagnóstico: latencia BUFFER_FULL RAW → force stop → PWM 1500 (solo flanco).
-static bool     bufferFullRawPrev = false;
-static uint32_t bufferFullDetectedMs = 0;
-static uint32_t servoForceStopMs = 0;
-static bool     waitingServoStopMeasurement = false;
-static bool     servoForceStopLogged = false;
-
 // Sensor de media altura: flanco filtrado y un solo impulso por cruce.
 static bool     bufferMidStable       = false;
 static bool     bufferMidLastRaw      = false;
@@ -177,15 +174,18 @@ static float motor2TfeedResumeSec = 0.0f;
 uint16_t  servoActivePwmUs = SERVO_PWM_ACTIVE_US;  // editable UI/NVS (default por lado)
 bool      servoRunning      = false;
 uint16_t  servoLastOutputUs = 0;
-// RMT Stop/Brake puede soltar el pin LEDC del servo (marcar dirty → remux).
-static volatile bool servoPinDirty = false;
-// No permitir marcha hasta que el controlador acepte el neutro pendiente.
-static bool servoStopPending = false;
+static bool servoLedcAttached = false;
 
-static void servoMarkPinDirty()
-{
-  servoPinDirty = true;
-}
+enum ServoCreepPhase : uint8_t {
+  SERVO_CREEP_OFF = 0,
+  SERVO_CREEP_RUN,
+  SERVO_CREEP_STOP
+};
+static ServoCreepPhase servoCreepPhase = SERVO_CREEP_OFF;
+static uint32_t        servoCreepPhaseUntilMs = 0;
+uint32_t  servoCreepRunMs = SERVO_CREEP_RUN_MS_DEFAULT;
+uint32_t  servoCreepStopMs = SERVO_CREEP_STOP_MS_DEFAULT;
+bool      servoCreepDereelerSync = true;
 
 // Refill manual (pulso); volatile: loop + motor2FeederTask.
 volatile uint32_t refillPulseMs = REFILL_PULSE_MS_DEFAULT;
@@ -195,6 +195,17 @@ volatile bool refillFeederOn   = false;
 volatile uint32_t refillDereelerPulseUntilMs = 0;
 volatile uint32_t refillServoPulseUntilMs    = 0;
 volatile uint32_t refillFeederPulseUntilMs   = 0;
+
+static void applyServoCreepConfig(uint32_t runMs, uint32_t stopMs, bool dereelerSync)
+{
+  if (runMs < SERVO_CREEP_RUN_MS_MIN) runMs = SERVO_CREEP_RUN_MS_MIN;
+  if (runMs > SERVO_CREEP_RUN_MS_MAX) runMs = SERVO_CREEP_RUN_MS_MAX;
+  if (stopMs < SERVO_CREEP_STOP_MS_MIN) stopMs = SERVO_CREEP_STOP_MS_MIN;
+  if (stopMs > SERVO_CREEP_STOP_MS_MAX) stopMs = SERVO_CREEP_STOP_MS_MAX;
+  servoCreepRunMs = runMs;
+  servoCreepStopMs = stopMs;
+  servoCreepDereelerSync = dereelerSync;
+}
 
 static void saveSettings()
 {
@@ -216,6 +227,9 @@ static void saveSettings()
   prefs.putFloat("high_sec", bufferHighBoostSec);
   prefs.putInt("high_sdelta", (int32_t)bufferHighServoDeltaUs);
   prefs.putUInt("servo_pwm", (uint32_t)servoActivePwmUs);
+  prefs.putUInt("creep_run", servoCreepRunMs);
+  prefs.putUInt("creep_stop", servoCreepStopMs);
+  prefs.putBool("creep_dsync", servoCreepDereelerSync);
   prefs.putUInt("refill_ms", refillPulseMs);
   prefs.end();
 }
@@ -245,6 +259,9 @@ static void loadSettings()
   bufferHighBoostSec = prefs.getFloat("high_sec", BUFFER_HIGH_BOOST_SEC_DEFAULT);
   bufferHighServoDeltaUs = (int16_t)prefs.getInt("high_sdelta", BUFFER_HIGH_SERVO_DELTA_DEFAULT_US);
   servoActivePwmUs = (uint16_t)prefs.getUInt("servo_pwm", (uint32_t)SERVO_PWM_ACTIVE_US);
+  servoCreepRunMs = prefs.getUInt("creep_run", SERVO_CREEP_RUN_MS_DEFAULT);
+  servoCreepStopMs = prefs.getUInt("creep_stop", SERVO_CREEP_STOP_MS_DEFAULT);
+  servoCreepDereelerSync = prefs.getBool("creep_dsync", true);
   refillPulseMs = prefs.getUInt("refill_ms", REFILL_PULSE_MS_DEFAULT);
   if (refillPulseMs < REFILL_PULSE_MS_MIN) refillPulseMs = REFILL_PULSE_MS_MIN;
   if (refillPulseMs > REFILL_PULSE_MS_MAX) refillPulseMs = REFILL_PULSE_MS_MAX;
@@ -282,6 +299,7 @@ static void loadSettings()
                                      BUFFER_HIGH_SERVO_DELTA_MIN_US,
                                      BUFFER_HIGH_SERVO_DELTA_MAX_US);
   servoActivePwmUs = constrain(servoActivePwmUs, SERVO_PWM_MIN_US, SERVO_PWM_MAX_US);
+  applyServoCreepConfig(servoCreepRunMs, servoCreepStopMs, servoCreepDereelerSync);
 }
 
 static uint32_t servoUsToDuty(uint16_t us)
@@ -317,96 +335,27 @@ static uint16_t servoMotionPwmUs()
   return requestedUs;
 }
 
-static void servoTimingOnPwmNeutralWritten();
-
-// Remux completo tras RMT: Detach → GPIO bajo → Attach. Sin el pinMode
-// intermedio ledcAttachChannel puede quedar sin pulso real en GPIO26.
-static bool servoRemuxWriteUs(uint16_t us)
+static bool servoWriteUs(uint16_t us)
 {
-  static bool retryPending = false;
-  static uint32_t lastAttemptMs = 0;
-  const uint32_t now = millis();
-  if (retryPending && (uint32_t)(now - lastAttemptMs) < SERVO_STOP_REASSERT_MS)
+  if (!servoLedcAttached)
     return false;
-  lastAttemptMs = now;
   us = constrain(us, SERVO_PWM_MIN_US, SERVO_PWM_MAX_US);
+  if (servoLastOutputUs == us)
+    return true;
   const uint32_t duty = servoUsToDuty(us);
-  servoPinDirty = false;
-
-  ledcDetach(PIN_SERVO_PWM);
-  pinMode(PIN_SERVO_PWM, OUTPUT);
-  digitalWrite(PIN_SERVO_PWM, LOW);
-  const bool attached = ledcAttachChannel(PIN_SERVO_PWM, 50, SERVO_LEDC_BITS, SERVO_LEDC_CHANNEL);
-  if (!attached || !ledcWrite(PIN_SERVO_PWM, duty) || servoPinDirty)
-  {
-    servoPinDirty = true;
-    retryPending = true;
+  if (!ledcWrite(PIN_SERVO_PWM, duty))
     return false;
-  }
-  retryPending = false;
   servoLastOutputUs = us;
   return true;
 }
 
-static bool servoWriteUsForced(uint16_t us)
-{
-  us = constrain(us, SERVO_PWM_MIN_US, SERVO_PWM_MAX_US);
-  const uint32_t duty = servoUsToDuty(us);
-  const bool remux = servoPinDirty;
-
-  // Remux tras RMT; sin dirty no reescribir el mismo duty (glitch RC).
-  if (!remux && ledcRead(PIN_SERVO_PWM) == duty)
-  {
-    servoLastOutputUs = us;
-    return true;
-  }
-  if (!remux && ledcWrite(PIN_SERVO_PWM, duty))
-  {
-    servoLastOutputUs = us;
-    return true;
-  }
-
-  servoPinDirty = true;
-  return servoRemuxWriteUs(us);
-}
-
-// Neutro continuo. Force adelanta la escritura, nunca fuerza Detach si el pin está sano.
-static void servoHardStopNeutral(bool force)
-{
-  static uint32_t lastHardMs = 0;
-  const uint32_t now = millis();
-  const bool dirty = servoPinDirty;
-  const bool wasRunning = servoRunning
-      || servoLastOutputUs != SERVO_PWM_NEUTRAL_US;
-
-  if (!force && !dirty && !servoStopPending && !wasRunning
-      && (uint32_t)(now - lastHardMs) < SERVO_STOP_REASSERT_MS)
-  {
-    // Diagnóstico: ya neutro; no inventar latencia de parada.
-    if (waitingServoStopMeasurement)
-    {
-      Serial.printf("[%s][SERVO_TIMING] PWM already neutral (no rewrite) @ %lu ms | +%lu ms from BUFFER_FULL\n",
-                    PREFEEDER_SIDE_TAG,
-                    (unsigned long)now,
-                    (unsigned long)(now - bufferFullDetectedMs));
-      waitingServoStopMeasurement = false;
-      servoForceStopLogged = false;
-    }
-    return;
-  }
-
-  servoStopPending = true;
-  if (!servoWriteUsForced(SERVO_PWM_NEUTRAL_US))
-    return;
-  servoStopPending = false;
-  servoRunning = false;
-  lastHardMs = now;
-  servoTimingOnPwmNeutralWritten();
-}
-
 static void servoAssertNeutral(bool force)
 {
-  servoHardStopNeutral(force);
+  (void)force;
+  if (!force && !servoRunning && servoLastOutputUs == SERVO_PWM_NEUTRAL_US)
+    return;
+  if (servoWriteUs(SERVO_PWM_NEUTRAL_US))
+    servoRunning = false;
 }
 
 static bool bufferFullStopNow();
@@ -414,34 +363,23 @@ static void bufferFullApplyHoldStop();
 
 static void servoAssertRun(bool force)
 {
+  (void)force;
   if (!idleMode && bufferFullStopNow())
   {
     bufferFullApplyHoldStop();
     return;
   }
-  if (servoStopPending)
-  {
-    servoHardStopNeutral(true);
-    return;
-  }
-
-  static uint32_t lastRunMs = 0;
   const uint16_t us = servoMotionPwmUs();
-  if (!force && !servoPinDirty && servoRunning && servoLastOutputUs == us
-      && (uint32_t)(millis() - lastRunMs) < SERVO_STOP_REASSERT_MS)
+  if (!force && servoRunning && servoLastOutputUs == us)
     return;
-  if (!servoWriteUsForced(us))
-  {
-    servoStopPending = true;
+  if (!servoWriteUs(us))
     return;
-  }
   servoRunning = true;
-  lastRunMs = millis();
 }
 
 static void servoStop()
 {
-  if (!servoStopPending && !servoPinDirty && !servoRunning && servoLastOutputUs == SERVO_PWM_NEUTRAL_US)
+  if (!servoRunning && servoLastOutputUs == SERVO_PWM_NEUTRAL_US)
     return;
   servoAssertNeutral(true);
 }
@@ -484,10 +422,102 @@ static bool servoShouldRunAuto()
       && (autoState == AUTO_SERVO_LEAD || autoState == AUTO_CW || autoState == AUTO_CCW);
 }
 
+static bool tensionReverseIsActive();
+static bool motorRun(float signedRpm);
+static void motorRunAutoDereeler();
+static void motorRunAutoDereelerReverse();
+
+static void servoCreepReset()
+{
+  servoCreepPhase = SERVO_CREEP_OFF;
+  servoCreepPhaseUntilMs = 0;
+}
+
+static bool servoCreepDereelerMayRun()
+{
+  return autoState == AUTO_CW || autoState == AUTO_CCW;
+}
+
+static void servoCreepApplyDereelerForPhase(ServoCreepPhase phase)
+{
+  if (!servoCreepDereelerSync || !servoCreepDereelerMayRun())
+    return;
+  if (phase == SERVO_CREEP_RUN)
+  {
+    if (autoState == AUTO_CCW && tensionReverseIsActive())
+      motorRunAutoDereelerReverse();
+    else if (!tensionReverseIsActive())
+      motorRunAutoDereeler();
+  }
+  else if (fabsf(commandedRpm) > 0.01f)
+    motorRun(0.0f);
+}
+
+static const char* servoCreepPhaseName()
+{
+  switch (servoCreepPhase)
+  {
+    case SERVO_CREEP_RUN:  return "run";
+    case SERVO_CREEP_STOP: return "stop";
+    default:               return "off";
+  }
+}
+
+static void serviceServoCreep()
+{
+  const uint32_t now = millis();
+
+  if (bufferFullStopNow())
+  {
+    servoCreepReset();
+    bufferFullApplyHoldStop();
+    return;
+  }
+
+  if (servoCreepPhase == SERVO_CREEP_OFF)
+  {
+    servoCreepPhase = SERVO_CREEP_RUN;
+    servoCreepPhaseUntilMs = now + servoCreepRunMs;
+    servoAssertRun(true);
+    servoCreepApplyDereelerForPhase(SERVO_CREEP_RUN);
+    return;
+  }
+
+  if ((int32_t)(now - servoCreepPhaseUntilMs) >= 0)
+  {
+    if (servoCreepPhase == SERVO_CREEP_RUN)
+    {
+      servoCreepPhase = SERVO_CREEP_STOP;
+      servoCreepPhaseUntilMs = now + servoCreepStopMs;
+      servoAssertNeutral(true);
+      servoCreepApplyDereelerForPhase(SERVO_CREEP_STOP);
+    }
+    else
+    {
+      servoCreepPhase = SERVO_CREEP_RUN;
+      servoCreepPhaseUntilMs = now + servoCreepRunMs;
+      servoAssertRun(true);
+      servoCreepApplyDereelerForPhase(SERVO_CREEP_RUN);
+    }
+    return;
+  }
+
+  if (servoCreepPhase == SERVO_CREEP_RUN)
+  {
+    servoAssertRun(false);
+    if (servoCreepDereelerSync && servoCreepDereelerMayRun()
+        && fabsf(commandedRpm) < 0.01f)
+      servoCreepApplyDereelerForPhase(SERVO_CREEP_RUN);
+  }
+  else
+    servoAssertNeutral(false);
+}
+
 static void syncServoToAutoState()
 {
   if (idleMode && systemFault == FAULT_NONE)
   {
+    servoCreepReset();
     if (refillServoOn)
       servoAssertRun(false);
     else if (servoRunning || servoLastOutputUs != SERVO_PWM_NEUTRAL_US)
@@ -496,8 +526,9 @@ static void syncServoToAutoState()
   }
 
   if (servoShouldRunAuto())
-    servoAssertRun(false);
-  else if (servoRunning || servoLastOutputUs != SERVO_PWM_NEUTRAL_US)
+    return;
+  servoCreepReset();
+  if (servoRunning || servoLastOutputUs != SERVO_PWM_NEUTRAL_US)
     servoStop();
 }
 
@@ -505,6 +536,7 @@ static void serviceServoPwm()
 {
   if (idleMode)
   {
+    servoCreepReset();
     if (refillServoOn)
       servoAssertRun(true);
     else
@@ -513,21 +545,25 @@ static void serviceServoPwm()
   }
   if (bufferFullStopNow())
   {
-    // Mantener 1500 us sin interrumpir LEDC en cada vuelta de Full activo.
+    servoCreepReset();
     bufferFullApplyHoldStop();
     return;
   }
   if (servoShouldRunAuto())
-    servoAssertRun(true);
+    serviceServoCreep();
   else
+  {
+    servoCreepReset();
     servoAssertNeutral(false);
+  }
 }
 
 static void setupRotationServo()
 {
-  servoPinDirty = true;
+  servoLedcAttached = ledcAttachChannel(PIN_SERVO_PWM, 50, SERVO_LEDC_BITS, SERVO_LEDC_CHANNEL);
   servoLastOutputUs = 0;
-  servoHardStopNeutral(true);
+  servoRunning = false;
+  servoWriteUs(SERVO_PWM_NEUTRAL_US);
 }
 
 static bool bufferFullRaw()
@@ -719,66 +755,6 @@ static void updateBufferHighBoost()
   }
 }
 
-// Flanco LOW→HIGH del sensor RAW (no filtrado). Solo log en el flanco.
-static void servoTimingOnBufferFullRawEdge()
-{
-  const bool raw = bufferFullRaw();
-  if (raw && !bufferFullRawPrev)
-  {
-    const uint32_t now = millis();
-    bufferFullDetectedMs = now;
-    const bool alreadyStopped = !servoRunning
-        && servoLastOutputUs == SERVO_PWM_NEUTRAL_US;
-    if (alreadyStopped)
-    {
-      waitingServoStopMeasurement = false;
-      servoForceStopLogged = false;
-      Serial.printf("[%s][SERVO_TIMING] BUFFER_FULL RAW HIGH @ %lu ms | servo=%u us | running=0 | already stopped (no timing)\n",
-                    PREFEEDER_SIDE_TAG,
-                    (unsigned long)now,
-                    (unsigned)servoLastOutputUs);
-    }
-    else
-    {
-      waitingServoStopMeasurement = true;
-      servoForceStopLogged = false;
-      Serial.printf("[%s][SERVO_TIMING] BUFFER_FULL RAW HIGH @ %lu ms | servo=%u us | running=%d\n",
-                    PREFEEDER_SIDE_TAG,
-                    (unsigned long)now,
-                    (unsigned)servoLastOutputUs,
-                    (int)servoRunning);
-    }
-  }
-  bufferFullRawPrev = raw;
-}
-
-// Solo callers de Buffer Full (no otros forceStop).
-static void servoTimingOnForceStopFromBufferFull()
-{
-  if (!waitingServoStopMeasurement || servoForceStopLogged)
-    return;
-  servoForceStopLogged = true;
-  servoForceStopMs = millis();
-  Serial.printf("[%s][SERVO_TIMING] FORCE STOP @ %lu ms | +%lu ms from BUFFER_FULL\n",
-                PREFEEDER_SIDE_TAG,
-                (unsigned long)servoForceStopMs,
-                (unsigned long)(servoForceStopMs - bufferFullDetectedMs));
-}
-
-static void servoTimingOnPwmNeutralWritten()
-{
-  if (!waitingServoStopMeasurement)
-    return;
-  const uint32_t now = millis();
-  Serial.printf("[%s][SERVO_TIMING] PWM STOP %u us @ %lu ms | +%lu ms from BUFFER_FULL\n",
-                PREFEEDER_SIDE_TAG,
-                (unsigned)SERVO_PWM_NEUTRAL_US,
-                (unsigned long)now,
-                (unsigned long)(now - bufferFullDetectedMs));
-  waitingServoStopMeasurement = false;
-  servoForceStopLogged = false;
-}
-
 static bool bufferFullActive()
 {
   return bufferFullStable;
@@ -839,21 +815,22 @@ static void updateBufferFullFilter()
   }
 }
 
-// Corta DeReeler+servo; reintenta Stop RMT cada 250 ms; remux LEDC tras Stop.
+// Corta DeReeler + servo; reintenta Stop RMT cada 250 ms si sigue girando.
 static void forceStopDereelerAndServo()
 {
   static uint32_t lastStopMs = 0;
   const bool commanded = motor && fabsf(commandedRpm) > 0.01f;
   const bool stillSpinning = motor && fabsf(motor->currentRPM()) > 1.0f;
 
-  servoHardStopNeutral(false);
+  servoCreepReset();
+  servoAssertNeutral(true);
 
   if (commanded || (stillSpinning && (uint32_t)(millis() - lastStopMs) >= 250u))
   {
     motor->Stop();
     lastStopMs = millis();
-    servoMarkPinDirty();
-    servoHardStopNeutral(true);
+    servoLastOutputUs = 0;  // forzar reescritura neutro tras RMT
+    servoAssertNeutral(true);
   }
   commandedRpm = 0.0f;
   midBoostUntilMs = 0;
@@ -872,7 +849,6 @@ static void bufferFullApplyHoldStop()
   // Una lectura HIGH posterior al filtro también exige una nueva ventana OFF.
   if (bufferFullRaw())
     bufferFullLowAccumMs = 0;
-  servoTimingOnForceStopFromBufferFull();
   forceStopDereelerAndServo();
 
   if (!idleMode && autoEnabled && systemFault == FAULT_NONE
@@ -1102,7 +1078,6 @@ static void motorHardStop(uint8_t idx)
 {
   StepperRMT* m = motorByIndex(idx);
   m->Stop();
-  servoMarkPinDirty();
   motorWaitStopped(idx);
   *commandedRpmByIndex(idx) = 0.0f;
   if (idx == 0)
@@ -1141,7 +1116,6 @@ static bool motorStartSigned(uint8_t idx, float uiSignedRpm)
   }
 
   *commandedRpmByIndex(idx) = uiSignedRpm;
-  servoMarkPinDirty();
   if (servoShouldRunAuto() || (idleMode && refillServoOn))
     servoAssertRun(true);
   else
@@ -1184,7 +1158,6 @@ static bool motorRun(uint8_t idx, float signedRpm)
     if (m->setSpeed(uiSignedToDriveRpm(target, idx), MOTOR_ACCEL))
     {
       *commandedRpmByIndex(idx) = target;
-      servoMarkPinDirty();
       if (servoShouldRunAuto() || (idleMode && refillServoOn))
         servoAssertRun(true);
       else
@@ -1293,11 +1266,6 @@ static void serviceTensionReverse()
 // Vacío no es EXXX: se sigue alimentando. Solo falla enclavada para el auto.
 static void beginAutoCwWithServoLead()
 {
-  if (servoStopPending)
-  {
-    servoHardStopNeutral(false);
-    return;
-  }
   // Protección local para el arranque automático que escribe PWM directamente.
   if (!idleMode && bufferFullStopNow())
   {
@@ -1308,8 +1276,7 @@ static void beginAutoCwWithServoLead()
 
   servoLeadStartMs = millis();
   autoState = AUTO_SERVO_LEAD;
-  // Arranque inmediato del RC (Forced: no depender de cache si forceStop dejó neutro).
-  servoAssertRun(true);
+  servoCreepReset();
   DBG_PRINTLN("AUTO: Buffer Full inactivo -> servo lead");
 }
 
@@ -1424,7 +1391,7 @@ static void applyRefillOutputs()
 {
   refillExpireChannels(millis());
 
-  // RC primero: Stop/setSpeed del DeReeler suelta LEDC; el 1500 posterior se pierde.
+  // Servo antes que DeReeler en refill manual.
   if (refillServoOn)
     servoAssertRun(true);
   else
@@ -1445,7 +1412,6 @@ static void applyRefillOutputs()
       motor->Stop();
     commandedRpm = 0.0f;
     dereelerDirCw();
-    servoMarkPinDirty();
   }
 
   if (refillServoOn)
@@ -1872,33 +1838,28 @@ static void serviceAuto()
       break;
 
     case AUTO_SERVO_LEAD:
-      servoAssertRun(true);
-      if (servoStopPending || !servoRunning)
-      {
-        servoLeadStartMs = millis();
-        break;
-      }
       if ((uint32_t)(millis() - servoLeadStartMs) >= DEREELER_START_DELAY_MS)
       {
-        motorRunAutoDereeler();
         autoState = AUTO_CW;
-        servoAssertRun(true);
+        if (!servoCreepDereelerSync)
+          motorRunAutoDereeler();
         DBG_PRINTF("AUTO: servo lead %lums -> DeReeler CW\n", (unsigned long)DEREELER_START_DELAY_MS);
       }
       break;
 
     case AUTO_CW:
-      if (!tensionReverseIsActive())
+      if (!servoCreepDereelerSync && !tensionReverseIsActive())
         motorRunAutoDereeler();
-      servoAssertRun(true);
       break;
 
     case AUTO_CCW:
-      servoAssertRun(true);
-      if (tensionReverseIsActive())
-        motorRunAutoDereelerReverse();
-      else
-        motorRunAutoDereeler();
+      if (!servoCreepDereelerSync)
+      {
+        if (tensionReverseIsActive())
+          motorRunAutoDereelerReverse();
+        else
+          motorRunAutoDereeler();
+      }
       break;
 
     default:
@@ -2322,7 +2283,6 @@ static bool motor2StartSignedTask(float uiSignedRpm)
   }
 
   commandedRpm2 = target;
-  servoMarkPinDirty();
   DBG_PRINTF("Motor2 arranque UI=%.1f → setSpeed(%.1f)\n", target, driveRpm);
   return true;
 }
@@ -2337,7 +2297,6 @@ static bool motor2ApplySpeedTask(float signedRpm)
     if (motor2->setSpeed(driveRpm, MOTOR2_ACCEL))
     {
       commandedRpm2 = target;
-      servoMarkPinDirty();
       return true;
     }
   }
@@ -2605,6 +2564,14 @@ static void appendAutoObject(String& json)
   jsonAppendUInt(json, SERVO_PWM_NEUTRAL_US);
   json += ",\"servo_running\":";
   json += servoRunning ? "true" : "false";
+  json += ",\"creep_phase\":\"";
+  json += servoCreepPhaseName();
+  json += "\",\"creep_run_ms\":";
+  jsonAppendUInt(json, servoCreepRunMs);
+  json += ",\"creep_stop_ms\":";
+  jsonAppendUInt(json, servoCreepStopMs);
+  json += ",\"creep_dereeler_sync\":";
+  json += servoCreepDereelerSync ? "true" : "false";
   json += ",\"servo_pin\":";
   jsonAppendUInt(json, PIN_SERVO_PWM);
   json += ",\"mid_boost_active\":";
@@ -2680,6 +2647,59 @@ static void appendErrorObject(String& json)
   json += ",\"side\":\"";
   json += PREFEEDER_SIDE_TAG;
   json += "\"}";
+}
+
+// ====================== OTA (red local + GitHub Release) ======================
+static bool arduinoOtaStarted = false;
+
+static void pfOtaStopMotion()
+{
+  motor2AbortRequested = true;
+  stopAllMotors();
+}
+
+static void ensureArduinoOta()
+{
+  if (arduinoOtaStarted || WiFi.status() != WL_CONNECTED) return;
+  ArduinoOTA.setHostname(OTA_HOSTNAME);
+  ArduinoOTA.setPassword(OTA_PASSWORD);
+  ArduinoOTA.onStart([]() {
+    pfOtaStopMotion();
+    Serial.println("[OTA] inicio (red local)");
+  });
+  ArduinoOTA.onEnd([]() { Serial.println("\n[OTA] listo (red local)"); });
+  ArduinoOTA.onProgress([](unsigned int prog, unsigned int total) {
+    if (total) Serial.printf("[OTA] %u%%\r", (prog * 100U) / total);
+  });
+  ArduinoOTA.onError([](ota_error_t err) { Serial.printf("[OTA] error %u\n", err); });
+  ArduinoOTA.begin();
+  arduinoOtaStarted = true;
+  Serial.printf("[OTA] red local listo hostname=%s (IDE → puerto de red)\n", OTA_HOSTNAME);
+}
+
+void handleOtaStatus()
+{
+  JsonDocument doc;
+  remoteUpdate.statusJson(doc.to<JsonObject>());
+  String out;
+  serializeJson(doc, out);
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "application/json", out);
+}
+
+void handleOtaCheck()
+{
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    server.send(503, "application/json", "{\"error\":\"sin WiFi\"}");
+    return;
+  }
+  if (!remoteUpdate.requestCheck())
+  {
+    server.send(409, "application/json", "{\"error\":\"revision en curso\"}");
+    return;
+  }
+  server.send(202, "application/json", "{\"ok\":true}");
 }
 
 // ====================== WEB UI ======================
@@ -2869,47 +2889,46 @@ static void handleMotorAt(uint8_t idx)
 
 void handleMotor1() { handleMotorAt(0); }
 
-void handleMotor2()
+static bool applyMotor2ConfigFromHttp()
 {
-  if (server.hasArg("rpm"))
+  bool touched = false;
+  if (server.hasArg("rpm") || server.hasArg("m2_rpm"))
   {
-    float v = server.arg("rpm").toFloat();
+    float v = server.hasArg("rpm")
+        ? server.arg("rpm").toFloat() : server.arg("m2_rpm").toFloat();
     if (v < MOTOR_RPM_MIN) v = MOTOR_RPM_MIN;
     if (v > MOTOR_RPM_MAX) v = MOTOR_RPM_MAX;
     motor2RpmSetting = v;
+    touched = true;
   }
   if (server.hasArg("trigger_feed_s"))
   {
-    float v = server.arg("trigger_feed_s").toFloat();
-    applyTriggerFeedSec(v);
+    applyTriggerFeedSec(server.arg("trigger_feed_s").toFloat());
+    touched = true;
   }
   if (server.hasArg("lidar_cm"))
+  {
     applyLidarTargetCm(server.arg("lidar_cm").toFloat());
+    touched = true;
+  }
   if (server.hasArg("lidar_max_s"))
+  {
     applyLidarFeedSec(server.arg("lidar_max_s").toFloat());
-
-  saveSettings();
-  // Avisar al TCM de inmediato para que el espejo / BASE no pisen lo ajustado en .50/.51.
-  if (peerLinkOk)
-    peerPushNow(true);
-
-  String json = "{\"ok\":true,";
-  appendMotorObject(json, 1, "motor2");
-  json += ",";
-  appendTrigger2Object(json);
-  json += "}";
-  server.send(200, "application/json", json);
+    touched = true;
+  }
+  return touched;
 }
 
-void handleAuto()
+static bool applyAutoConfigFromHttp()
 {
-  // Parametros configurables (se aplican aunque ya este corriendo)
+  bool touched = false;
   if (server.hasArg("rpm"))
   {
     float v = server.arg("rpm").toFloat();
     if (v < MOTOR_RPM_MIN) v = MOTOR_RPM_MIN;
     if (v > MOTOR_RPM_MAX) v = MOTOR_RPM_MAX;
     autoRpm = v;
+    touched = true;
   }
   if (server.hasArg("reverse"))
   {
@@ -2917,6 +2936,7 @@ void handleAuto()
     if (v < AUTO_REVERSE_MIN) v = AUTO_REVERSE_MIN;
     if (v > AUTO_REVERSE_MAX) v = AUTO_REVERSE_MAX;
     autoReverseSec = v;
+    touched = true;
   }
   if (server.hasArg("tension_reverse_rpm"))
   {
@@ -2924,6 +2944,7 @@ void handleAuto()
     if (v < TENSION_REVERSE_RPM_MIN) v = TENSION_REVERSE_RPM_MIN;
     if (v > TENSION_REVERSE_RPM_MAX) v = TENSION_REVERSE_RPM_MAX;
     tensionReverseRpm = v;
+    touched = true;
   }
   if (server.hasArg("tension_fault") || server.hasArg("tension_fault_s"))
   {
@@ -2933,6 +2954,7 @@ void handleAuto()
     if (v < TENSION_FAULT_SEC_MIN) v = TENSION_FAULT_SEC_MIN;
     if (v > TENSION_FAULT_SEC_MAX) v = TENSION_FAULT_SEC_MAX;
     tensionFaultSec = v;
+    touched = true;
   }
   if (server.hasArg("tension_cooldown"))
   {
@@ -2940,51 +2962,143 @@ void handleAuto()
     if (v < TENSION_COOLDOWN_MIN) v = TENSION_COOLDOWN_MIN;
     if (v > TENSION_COOLDOWN_MAX) v = TENSION_COOLDOWN_MAX;
     tensionCooldownSec = v;
+    touched = true;
   }
   if (server.hasArg("servo_pwm") || server.hasArg("servo_pwm_us"))
   {
     const String& raw = server.hasArg("servo_pwm")
       ? server.arg("servo_pwm") : server.arg("servo_pwm_us");
     applyServoActivePwmUs((uint16_t)raw.toInt());
+    touched = true;
+  }
+  if (server.hasArg("creep_run_ms"))
+  {
+    applyServoCreepConfig((uint32_t)server.arg("creep_run_ms").toInt(),
+                          servoCreepStopMs,
+                          servoCreepDereelerSync);
+    touched = true;
+  }
+  if (server.hasArg("creep_stop_ms"))
+  {
+    applyServoCreepConfig(servoCreepRunMs,
+                          (uint32_t)server.arg("creep_stop_ms").toInt(),
+                          servoCreepDereelerSync);
+    touched = true;
+  }
+  if (server.hasArg("creep_dereeler_sync"))
+  {
+    const String& v = server.arg("creep_dereeler_sync");
+    applyServoCreepConfig(servoCreepRunMs, servoCreepStopMs,
+                          v == "1" || v == "true" || v == "on");
+    touched = true;
   }
   if (server.hasArg("mid_boost_rpm"))
   {
     bufferMidBoostRpm = constrain(server.arg("mid_boost_rpm").toFloat(),
                                   MOTOR_RPM_MIN, MOTOR_RPM_MAX);
+    touched = true;
   }
   if (server.hasArg("mid_boost_s"))
   {
     bufferMidBoostSec = constrain(server.arg("mid_boost_s").toFloat(),
                                   BUFFER_MID_BOOST_SEC_MIN, BUFFER_MID_BOOST_SEC_MAX);
+    touched = true;
   }
   if (server.hasArg("mid_servo_delta_us"))
   {
     bufferMidServoDeltaUs = (int16_t)constrain(server.arg("mid_servo_delta_us").toInt(),
                                                (int)BUFFER_MID_SERVO_DELTA_MIN_US,
                                                (int)BUFFER_MID_SERVO_DELTA_MAX_US);
+    touched = true;
   }
   if (server.hasArg("high_boost_rpm"))
   {
     bufferHighBoostRpm = constrain(server.arg("high_boost_rpm").toFloat(),
                                    MOTOR_RPM_MIN, MOTOR_RPM_MAX);
+    touched = true;
   }
   if (server.hasArg("high_boost_s"))
   {
     bufferHighBoostSec = constrain(server.arg("high_boost_s").toFloat(),
                                    BUFFER_HIGH_BOOST_SEC_MIN, BUFFER_HIGH_BOOST_SEC_MAX);
+    touched = true;
   }
   if (server.hasArg("high_servo_delta_us"))
   {
     bufferHighServoDeltaUs = (int16_t)constrain(server.arg("high_servo_delta_us").toInt(),
                                                 (int)BUFFER_HIGH_SERVO_DELTA_MIN_US,
                                                 (int)BUFFER_HIGH_SERVO_DELTA_MAX_US);
+    touched = true;
   }
+  if (server.hasArg("refill_pulse_s"))
+  {
+    applyRefillPulseSec(server.arg("refill_pulse_s").toFloat());
+    touched = true;
+  }
+  return touched;
+}
+
+static void persistConfigIfPeer()
+{
+  if (peerLinkOk)
+    peerPushNow(true);
+}
+
+void handleConfig()
+{
+  const bool touched = applyAutoConfigFromHttp() || applyMotor2ConfigFromHttp();
+  if (touched)
+  {
+    saveSettings();
+    persistConfigIfPeer();
+  }
+
+  String json = "{\"ok\":true,\"saved\":";
+  json += touched ? "true" : "false";
+  json += ",";
+  appendAutoObject(json);
+  json += ",";
+  appendMotorObject(json, 0, "motor");
+  json += ",";
+  appendMotorObject(json, 1, "motor2");
+  json += ",";
+  appendTrigger2Object(json);
+  json += ",";
+  appendRefillObject(json);
+  json += "}";
+  server.send(200, "application/json", json);
+}
+
+void handleMotor2()
+{
+  const bool touched = applyMotor2ConfigFromHttp();
+  if (touched)
+  {
+    saveSettings();
+    persistConfigIfPeer();
+  }
+
+  String json = "{\"ok\":true,\"saved\":";
+  json += touched ? "true" : "false";
+  json += ",";
+  appendMotorObject(json, 1, "motor2");
+  json += ",";
+  appendTrigger2Object(json);
+  json += "}";
+  server.send(200, "application/json", json);
+}
+
+void handleAuto()
+{
+  const bool configTouched = applyAutoConfigFromHttp();
+  bool persistAutoEn = false;
 
   if (server.hasArg("reset"))
     autoReset();
 
   if (server.hasArg("enable"))
   {
+    persistAutoEn = true;
     if (server.arg("enable") == "1")
       autoEnable();  // siempre rearmar a inicio
     else
@@ -2997,15 +3111,15 @@ void handleAuto()
     // HTML local /api/auto?idle_mode= ya no activa el modo.
   }
 
-  if (server.hasArg("refill_pulse_s"))
-    applyRefillPulseSec(server.arg("refill_pulse_s").toFloat());
+  if (configTouched || persistAutoEn)
+  {
+    saveSettings();
+    persistConfigIfPeer();
+  }
 
-  saveSettings();
-  // Avisar al TCM de inmediato para que el espejo / BASE no pisen lo ajustado en .50/.51.
-  if (peerLinkOk)
-    peerPushNow(true);
-
-  String json = "{\"ok\":true,";
+  String json = "{\"ok\":true,\"saved\":";
+  json += (configTouched || persistAutoEn) ? "true" : "false";
+  json += ",";
   appendAutoObject(json);
   json += ",";
   appendMotorObject(json, 0, "motor");
@@ -3712,6 +3826,7 @@ static void peerEnsureServices()
   peerServer.setNoDelay(true);
   server.begin();
   peerServicesUp = true;
+  ensureArduinoOta();
   Serial.printf("[PEER] Servicios On http://%s TCP:%u\n", ip.toString().c_str(), PEER_PORT);
 }
 
@@ -3907,7 +4022,6 @@ void setup()
   bufferFullFilterReset();
   bufferMidFilterReset();
   bufferHighFilterReset();
-  bufferFullRawPrev = bufferFullRaw();
 
   Serial.begin(115200);
 #if PF_LIDAR_HOLGURA
@@ -3933,7 +4047,11 @@ void setup()
   server.on("/api/motor1", handleMotor1);
   server.on("/api/motor2", handleMotor2);
   server.on("/api/auto", handleAuto);
+  server.on("/api/config", handleConfig);
   server.on("/api/refill", handleRefill);
+  server.on("/api/ota/status", handleOtaStatus);
+  server.on("/api/ota/check", HTTP_GET, handleOtaCheck);
+  server.on("/api/ota/check", HTTP_POST, handleOtaCheck);
   server.on("/ping", []() {
     server.sendHeader("Cache-Control", "no-store");
     server.send(200, "text/plain", "pong");
@@ -3984,13 +4102,18 @@ void setup()
   else
     Serial.printf("Boot: Auto ON (%s) · sensores congelados hasta Iniciar/In process\n",
                   idleMode ? "Materialista" : "Idle");
+
+  remoteUpdate.begin(FW_VERSION, OTA_MANIFEST_URL, OTA_CHECK_INTERVAL_MS, OTA_BOOT_DELAY_MS, OTA_RETRY_MS);
+  Serial.printf("Firmware v%s · manifiesto OTA: %s\n", FW_VERSION, OTA_MANIFEST_URL);
 }
 
 void loop()
 {
   serviceHttp(12);
+  if (arduinoOtaStarted) ArduinoOTA.handle();
+  remoteUpdate.loop();
+  if (remoteUpdate.flashing()) pfOtaStopMotion();
 
-  servoTimingOnBufferFullRawEdge();
   updateBufferFullFilter();
   updateBufferMidBoost();
   updateBufferHighBoost();

@@ -1,2 +1,8 @@
 # Python venv (raiz TCM)
 .venv/
+
+# Assets OTA generados (make_release.py)
+PF_V2/release/
+
+# Proyecto personal temporal (no parte de TCM)
+Home/

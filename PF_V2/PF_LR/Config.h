@@ -64,7 +64,12 @@ constexpr uint16_t SERVO_PWM_NEUTRAL_US     = 1500;
 constexpr uint8_t  SERVO_LEDC_BITS        = 14;
 constexpr uint8_t  SERVO_LEDC_CHANNEL     = 7;
 constexpr uint32_t DEREELER_START_DELAY_MS = 100;
-constexpr uint32_t SERVO_STOP_REASSERT_MS = 20;
+constexpr uint32_t SERVO_CREEP_RUN_MS_DEFAULT  = 200;
+constexpr uint32_t SERVO_CREEP_STOP_MS_DEFAULT = 50;
+constexpr uint32_t SERVO_CREEP_RUN_MS_MIN      = 50;
+constexpr uint32_t SERVO_CREEP_RUN_MS_MAX      = 2000;
+constexpr uint32_t SERVO_CREEP_STOP_MS_MIN     = 20;
+constexpr uint32_t SERVO_CREEP_STOP_MS_MAX     = 500;
 
 // ====================== RED / WiFi ======================
 // L: http://10.10.32.101 | R: http://10.10.32.102 | Master: http://10.10.32.100
@@ -107,12 +112,12 @@ constexpr float TENSION_REVERSE_RPM_MAX     = MOTOR_RPM_MAX;
 
 // ====================== BUFFER ======================
 constexpr float BUFFER_REFILL_FAULT_SEC = 10.0f;
-constexpr uint32_t BUFFER_FULL_ON_FILTER_MS  = 80;
-constexpr uint32_t BUFFER_FULL_OFF_FILTER_MS = 200;
-constexpr uint32_t BUFFER_FULL_GLITCH_MS     = 40;
-constexpr uint32_t BUFFER_MID_FILTER_MS      = 80;
-constexpr uint32_t BUFFER_HIGH_FILTER_MS     = 80;
-constexpr uint32_t TENSION_REVERSE_FILTER_MS = 80;
+constexpr uint32_t BUFFER_FULL_ON_FILTER_MS  = 50;
+constexpr uint32_t BUFFER_FULL_OFF_FILTER_MS = 100;
+constexpr uint32_t BUFFER_FULL_GLITCH_MS     = 50;
+constexpr uint32_t BUFFER_MID_FILTER_MS      = 50;
+constexpr uint32_t BUFFER_HIGH_FILTER_MS     = 50;
+constexpr uint32_t TENSION_REVERSE_FILTER_MS = 50;
 
 // Impulso de llenado al cruzar el sensor de media altura.
 constexpr float BUFFER_MID_BOOST_RPM_DEFAULT       = 120.0f;
@@ -151,3 +156,19 @@ constexpr uint32_t REFILL_PULSE_MS_MIN     = 200;
 constexpr uint32_t REFILL_PULSE_MS_MAX     = 10000;
 constexpr uint8_t  TRIGGER_ID_HIST         = 8;
 constexpr const char* PREFS_NS             = "prefeeder2";
+
+// ====================== FIRMWARE / OTA ======================
+// Release: PF_V2/tools/make_release.py → GitHub Release (bin + *_version.json).
+// Red local: Arduino IDE → puerto de red (OTA_PASSWORD).
+#define FW_VERSION "0.1.0"
+#define OTA_PASSWORD "TCM_PF2026"
+#ifndef PREFEEDER_SIDE_RIGHT
+#define OTA_HOSTNAME "prefeeder-L"
+#define OTA_MANIFEST_URL "https://github.com/Cavazos32/TCM/releases/latest/download/pf_lr_L_version.json"
+#else
+#define OTA_HOSTNAME "prefeeder-R"
+#define OTA_MANIFEST_URL "https://github.com/Cavazos32/TCM/releases/latest/download/pf_lr_R_version.json"
+#endif
+#define OTA_CHECK_INTERVAL_MS (6UL * 60UL * 60UL * 1000UL)
+#define OTA_BOOT_DELAY_MS (30UL * 1000UL)
+#define OTA_RETRY_MS (15UL * 60UL * 1000UL)

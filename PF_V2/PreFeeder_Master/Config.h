@@ -16,3 +16,12 @@ static const IPAddress PF_MASTER_STA_MASK(255, 255, 255, 0);
 constexpr uint16_t PF_MASTER_TCP_PORT = 8768;
 constexpr uint8_t  PF_MASTER_PROTO_VER = 1;
 constexpr unsigned long PF_MASTER_WIFI_CONNECT_TIMEOUT_MS = 30000;
+
+// OTA por release (make_release.py --product pf_master); integración firmware pendiente.
+#define FW_VERSION "0.1.0"
+#define OTA_PASSWORD "TCM_PF2026"
+#define OTA_HOSTNAME "prefeeder-master"
+#define OTA_MANIFEST_URL "https://github.com/Cavazos32/TCM/releases/latest/download/pf_master_version.json"
+#define OTA_CHECK_INTERVAL_MS (6UL * 60UL * 60UL * 1000UL)
+#define OTA_BOOT_DELAY_MS (30UL * 1000UL)
+#define OTA_RETRY_MS (15UL * 60UL * 1000UL)

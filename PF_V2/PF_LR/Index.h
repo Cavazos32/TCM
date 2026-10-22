@@ -521,6 +521,15 @@ const char index_html[] PROGMEM = R"rawliteral(
     .motor-state strong { color: var(--text-primary); font-weight: 600; }
     .hint { font-size: 0.6875rem; color: var(--text-secondary); }
     .save-all-wrap { margin-top: 4px; margin-bottom: 8px; }
+    .save-feedback {
+      margin: 10px 0 0;
+      padding: 10px 12px;
+      border-radius: 8px;
+      font-size: 0.95rem;
+      min-height: 1.2em;
+    }
+    .save-feedback.ok { background: rgba(46, 125, 50, 0.15); color: #1b5e20; }
+    .save-feedback.err { background: rgba(198, 40, 40, 0.12); color: #b71c1c; }
     .save-all-wrap .btn {
       width: 100%;
       flex: none;
@@ -557,8 +566,9 @@ const char index_html[] PROGMEM = R"rawliteral(
         <p class="info-section-title">DeReeler + Servo</p>
         <ol class="info-flow">
           <li>Buffer Full GPIO 19 → para DeReeler/servo; rearranque tras OFF ~200 ms</li>
-          <li>Vacío estable → servo · DeReeler CW tras <span class="info-param">100</span> ms · <span class="info-param" data-info-key="autoRpm">60 RPM</span></li>
-          <li>Servo GPIO 15 · PWM <span class="info-param" data-info-key="servoPwm">800 µs</span> (neutro 1500)</li>
+          <li>Vacío estable → servo en pulsos (<span class="info-param" data-info-key="creepRun">200</span> ms ON / <span class="info-param" data-info-key="creepStop">50</span> ms OFF) hasta Buffer Full</li>
+          <li>DeReeler CW tras <span class="info-param">100</span> ms de lead · <span class="info-param" data-info-key="autoRpm">60 RPM</span> (pausa con servo si sync ON)</li>
+          <li>Servo GPIO 26 · PWM <span class="info-param" data-info-key="servoPwm">800 µs</span> (neutro 1500)</li>
           <li>Tensión GPIO 23 → inversión · <span class="info-param" data-info-key="tensionReverseRpm">30 RPM</span> × <span class="info-param" data-info-key="autoRev">2.0 s</span></li>
           <li class="info-step-note">Fallas enclavadas hasta Reset + Iniciar (TCP al Master)</li>
           <li>Buffer Max / Cilindro / Tensión &gt; <span class="info-param" data-info-key="tensionFault">10 s</span> → para todo</li>
@@ -795,23 +805,56 @@ const char index_html[] PROGMEM = R"rawliteral(
         <p class="field-desc">500–2500 · neutro 1500 = parado. &lt;1500 y &gt;1500 = sentidos opuestos. Este PreFeeder guarda su propio valor.</p>
         <input type="number" id="servo-pwm" min="500" max="2500" step="10" value="SERVO_PWM_UI_DEFAULT">
       </div>
+      <div class="form-group">
+        <label for="creep-run-ms">Relleno servo · marcha (ms)</label>
+        <p class="field-desc">Pulso PWM activo en cada ciclo de relleno (50–2000). Hasta Buffer Full.</p>
+        <input type="number" id="creep-run-ms" min="50" max="2000" step="10" value="200">
+      </div>
+      <div class="form-group">
+        <label for="creep-stop-ms">Relleno servo · pausa (ms)</label>
+        <p class="field-desc">Neutro 1500 µs entre pulsos (20–500). Ayuda a que el sensor Full detecte.</p>
+        <input type="number" id="creep-stop-ms" min="20" max="500" step="5" value="50">
+      </div>
+      <div class="form-group">
+        <label><input type="checkbox" id="creep-dereeler-sync" checked> Pausar DeReeler en la pausa del servo</label>
+        <p class="field-desc">Si está marcado, tambor y servo comparten ON/OFF del creep.</p>
+      </div>
     </div>
 
     <div class="card">
       <div class="save-all-wrap">
         <button type="button" class="btn btn-primary" onclick="saveAllCfg()">Guardar configuración</button>
+        <p id="save-feedback" class="save-feedback" aria-live="polite"></p>
       </div>
     </div>
 
-    <p class="footer">Actualización automática cada 100 ms</p>
+    <div class="card" id="firmware-card">
+      <h2>Firmware</h2>
+      <p class="meta compact" id="ota-version">Versión instalada: —</p>
+      <p class="hint" id="ota-msg">—</p>
+      <div class="btn-row">
+        <button type="button" class="btn btn-primary" id="ota-btn">Buscar actualización</button>
+      </div>
+      <p class="hint" style="margin-top:10px">Requiere Wi‑Fi con internet. Tras una versión nueva en GitHub, el módulo descarga, verifica e reinicia.</p>
+    </div>
+
+    <p class="footer">Estado automático cada ~600 ms · pulsa Guardar para escribir en flash</p>
   </div>
 
   <script>
     function setStatus(ok, text) {
+      if (window._saveFeedbackUntil && Date.now() < window._saveFeedbackUntil) return;
       var dot = document.getElementById('status-dot');
       var txt = document.getElementById('status-text');
       dot.className = 'status-dot' + (ok ? '' : ' error');
       if (text) txt.textContent = text;
+    }
+    function setSaveFeedback(ok, text) {
+      var el = document.getElementById('save-feedback');
+      if (!el) return;
+      el.textContent = text || '';
+      el.className = 'save-feedback' + (text ? (ok ? ' ok' : ' err') : '');
+      window._saveFeedbackUntil = text ? (Date.now() + 8000) : 0;
     }
     var routineInfoKeys = {
       autoRpm: { id: 'auto-rpm', suffix: ' RPM' },
@@ -820,6 +863,8 @@ const char index_html[] PROGMEM = R"rawliteral(
       tensionCooldown: { id: 'tension-cooldown', suffix: ' s' },
       tensionFault: { id: 'tension-fault-s', suffix: ' s' },
       servoPwm: { id: 'servo-pwm', suffix: ' µs' },
+      creepRun: { id: 'creep-run-ms', suffix: ' ms' },
+      creepStop: { id: 'creep-stop-ms', suffix: ' ms' },
       midBoostRpm: { id: 'mid-boost-rpm', suffix: ' RPM' },
       midBoostSec: { id: 'mid-boost-sec', suffix: ' s' },
       midServoDelta: { id: 'mid-servo-delta', suffix: ' µs' },
@@ -867,6 +912,7 @@ const char index_html[] PROGMEM = R"rawliteral(
     var cfgFieldIds = [
       'auto-rpm', 'auto-rev', 'rpm2', 'trigger-feed-sec',
       'tension-reverse-rpm', 'tension-fault-s', 'tension-cooldown', 'servo-pwm',
+      'creep-run-ms', 'creep-stop-ms',
       'mid-boost-rpm', 'mid-boost-sec', 'mid-servo-delta',
       'high-boost-rpm', 'high-boost-sec', 'high-servo-delta', 'refill-pulse-s',
       'lidar-dist-cm', 'lidar-feed-sec'
@@ -880,6 +926,16 @@ const char index_html[] PROGMEM = R"rawliteral(
         el.addEventListener('input', markCfgDirty);
         el.addEventListener('change', markCfgDirty);
       });
+      var creepSync = document.getElementById('creep-dereeler-sync');
+      if (creepSync && !creepSync._cfgDirtyBound) {
+        creepSync._cfgDirtyBound = true;
+        creepSync.addEventListener('change', markCfgDirty);
+      }
+    }
+    function syncCreepDereelerSync(on) {
+      var cb = document.getElementById('creep-dereeler-sync');
+      if (!cb || cfgDirty || on === undefined) return;
+      cb.checked = !!on;
     }
     function syncCfg(id, v) {
       var el = document.getElementById(id);
@@ -893,10 +949,12 @@ const char index_html[] PROGMEM = R"rawliteral(
       trigLed.className = 'led' + (trigActive ? ' on' : ' off');
       trigBadge.className = 'badge' + (trigActive ? ' on' : ' off');
       trigBadge.textContent = trigActive ? 'Trigger TCP' : 'Inactivo';
-      syncCfg('rpm2', t.rpm_boost);
-      syncCfg('trigger-feed-sec', t.trigger_feed_s);
-      if (t.lidar_cm !== undefined) syncCfg('lidar-dist-cm', t.lidar_cm);
-      if (t.lidar_max_s !== undefined) syncCfg('lidar-feed-sec', t.lidar_max_s);
+      if (!cfgDirty) {
+        syncCfg('rpm2', t.rpm_boost);
+        syncCfg('trigger-feed-sec', t.trigger_feed_s);
+        if (t.lidar_cm !== undefined) syncCfg('lidar-dist-cm', t.lidar_cm);
+        if (t.lidar_max_s !== undefined) syncCfg('lidar-feed-sec', t.lidar_max_s);
+      }
       var lidarLed = document.getElementById('lidar-led');
       var lidarBadge = document.getElementById('lidar-badge');
       if (lidarLed && lidarBadge) {
@@ -945,56 +1003,60 @@ const char index_html[] PROGMEM = R"rawliteral(
       if (isNaN(highServoDelta)) highServoDelta = 0;
       if (highServoDelta < -1000) highServoDelta = -1000;
       if (highServoDelta > 1000) highServoDelta = 1000;
+      var creepRun = parseInt(document.getElementById('creep-run-ms').value, 10);
+      if (isNaN(creepRun) || creepRun < 50) creepRun = 50;
+      if (creepRun > 2000) creepRun = 2000;
+      var creepStop = parseInt(document.getElementById('creep-stop-ms').value, 10);
+      if (isNaN(creepStop) || creepStop < 20) creepStop = 20;
+      if (creepStop > 500) creepStop = 500;
+      var creepSyncEl = document.getElementById('creep-dereeler-sync');
+      var creepSync = creepSyncEl && creepSyncEl.checked ? '1' : '0';
       var rpm2 = parseFloat(document.getElementById('rpm2').value);
       if (isNaN(rpm2) || rpm2 < 1) rpm2 = 60;
       var tfeed = parseFloat(document.getElementById('trigger-feed-sec').value);
       if (isNaN(tfeed) || tfeed < 0.1) tfeed = 2.0;
       if (tfeed > 60) tfeed = 60;
-      // var lidarCm = parseFloat(document.getElementById('lidar-dist-cm').value);
-      // if (isNaN(lidarCm) || lidarCm < 1) lidarCm = 30;
-      // if (lidarCm > 1200) lidarCm = 1200;
-      // var lidarMax = parseFloat(document.getElementById('lidar-feed-sec').value);
-      // if (isNaN(lidarMax) || lidarMax < 0.1) lidarMax = 3.0;
-      // if (lidarMax > 30) lidarMax = 30;
-      var autoUrl = '/api/auto?rpm=' + encodeURIComponent(rpm)
+      var pulseS = parseFloat(document.getElementById('refill-pulse-s').value);
+      if (isNaN(pulseS) || pulseS < 0.2) pulseS = 1.0;
+      if (pulseS > 10) pulseS = 10;
+      var url = '/api/config?rpm=' + encodeURIComponent(rpm)
         + '&reverse=' + encodeURIComponent(rev)
         + '&tension_reverse_rpm=' + encodeURIComponent(revRpm)
         + '&tension_fault_s=' + encodeURIComponent(faultS)
         + '&tension_cooldown=' + encodeURIComponent(cd)
         + '&servo_pwm=' + encodeURIComponent(servoPwm)
+        + '&creep_run_ms=' + encodeURIComponent(creepRun)
+        + '&creep_stop_ms=' + encodeURIComponent(creepStop)
+        + '&creep_dereeler_sync=' + creepSync
         + '&mid_boost_rpm=' + encodeURIComponent(midBoostRpm)
         + '&mid_boost_s=' + encodeURIComponent(midBoostS)
         + '&mid_servo_delta_us=' + encodeURIComponent(midServoDelta)
         + '&high_boost_rpm=' + encodeURIComponent(highBoostRpm)
         + '&high_boost_s=' + encodeURIComponent(highBoostS)
-        + '&high_servo_delta_us=' + encodeURIComponent(highServoDelta);
-      var pulseS = parseFloat(document.getElementById('refill-pulse-s').value);
-      if (isNaN(pulseS) || pulseS < 0.2) pulseS = 1.0;
-      if (pulseS > 10) pulseS = 10;
-      var m2Url = '/api/motor2?rpm=' + encodeURIComponent(rpm2)
-        + '&trigger_feed_s=' + encodeURIComponent(tfeed);
-      // + '&lidar_cm=' + encodeURIComponent(lidarCm)
-      // + '&lidar_max_s=' + encodeURIComponent(lidarMax);
-      var refillUrl = '/api/refill?pulse_s=' + encodeURIComponent(pulseS);
-      fetch(autoUrl)
-        .then(function(r) { return r.json(); })
+        + '&high_servo_delta_us=' + encodeURIComponent(highServoDelta)
+        + '&m2_rpm=' + encodeURIComponent(rpm2)
+        + '&trigger_feed_s=' + encodeURIComponent(tfeed)
+        + '&refill_pulse_s=' + encodeURIComponent(pulseS);
+      setSaveFeedback(true, 'Guardando…');
+      fetch(url)
+        .then(function(r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        })
         .then(function(data) {
+          if (!data.ok) throw new Error('Respuesta no OK');
           if (data.auto) applyAuto(data.auto, data.error, data);
-          return fetch(m2Url);
-        })
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
           if (data.trigger2) applyTrigger2(data.trigger2);
-          return fetch(refillUrl);
-        })
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
           if (data.refill) applyRefill(data.refill, document.getElementById('idle-mode-btn').classList.contains('on'));
           cfgDirty = false;
-          setStatus(true, 'Configuración guardada');
+          if (data.saved) {
+            setSaveFeedback(true, 'Configuración guardada en este PreFeeder (memoria flash).');
+          } else {
+            setSaveFeedback(false, 'No se recibieron cambios; revisa los valores.');
+          }
         })
-        .catch(function() {
-          setStatus(false, 'Error de conexión');
+        .catch(function(e) {
+          setSaveFeedback(false, 'No se pudo guardar: ' + (e && e.message ? e.message : 'error de red'));
         });
     }
     function setToggleBtn(id, on, label, extraClass) {
@@ -1117,12 +1179,15 @@ const char index_html[] PROGMEM = R"rawliteral(
       } else if (!a.enabled) {
         txt = 'Detenido · falta Iniciar';
       } else if (a.state === 'cw') {
-        if (a.high_boost_active) txt = 'Girando CW · HIGH PULSE';
-        else txt = a.mid_boost_active ? 'Girando CW · MEDIUM PULSE' : 'Girando CW';
+        if (a.creep_phase === 'stop') txt = 'Relleno · pausa creep';
+        else if (a.high_boost_active) txt = 'Relleno · HIGH PULSE';
+        else if (a.mid_boost_active) txt = 'Relleno · MEDIUM PULSE';
+        else if (a.creep_phase === 'run') txt = 'Relleno · creep ON';
+        else txt = 'Girando CW';
       } else if (a.state === 'ccw') {
-        txt = 'Inversión tensión (CCW)';
+        txt = a.creep_phase === 'stop' ? 'Inversión · pausa creep' : 'Inversión tensión (CCW)';
       } else if (a.state === 'servo_lead') {
-        txt = 'Servo ON · DeReeler en 100 ms';
+        txt = a.creep_phase === 'run' ? 'Lead · creep ON' : 'Lead · DeReeler en 100 ms';
       } else if (a.state === 'home_hold') {
         txt = inProc ? 'Buffer Full · espera' : 'Listo · sensores congelados';
       } else if (a.state === 'endstop_fault') { ok = false; txt = 'Buffer Max'; }
@@ -1149,6 +1214,9 @@ const char index_html[] PROGMEM = R"rawliteral(
         if (revRpmVal !== undefined) syncCfg('tension-reverse-rpm', revRpmVal);
         if (a.tension_fault_s !== undefined) syncCfg('tension-fault-s', a.tension_fault_s);
         if (a.servo_pwm_us !== undefined) syncCfg('servo-pwm', a.servo_pwm_us);
+        if (a.creep_run_ms !== undefined) syncCfg('creep-run-ms', a.creep_run_ms);
+        if (a.creep_stop_ms !== undefined) syncCfg('creep-stop-ms', a.creep_stop_ms);
+        syncCreepDereelerSync(a.creep_dereeler_sync);
         if (a.mid_boost_rpm !== undefined) syncCfg('mid-boost-rpm', a.mid_boost_rpm);
         if (a.mid_boost_s !== undefined) syncCfg('mid-boost-sec', a.mid_boost_s);
         if (a.mid_servo_delta_us !== undefined) syncCfg('mid-servo-delta', a.mid_servo_delta_us);
@@ -1365,6 +1433,57 @@ const char index_html[] PROGMEM = R"rawliteral(
           })
           .catch(function() {});
       });
+    })();
+    function applyOtaStatus(o) {
+      if (!o) return;
+      var ver = document.getElementById('ota-version');
+      var msg = document.getElementById('ota-msg');
+      var btn = document.getElementById('ota-btn');
+      if (ver) {
+        var t = 'Versión instalada: v' + (o.version || '?');
+        if (o.latest) t += ' · publicada v' + o.latest;
+        ver.textContent = t;
+      }
+      if (msg) {
+        var line = o.message || o.state || '—';
+        if (o.state === 'downloading' && o.progress != null) line += ' ' + o.progress + '%';
+        msg.textContent = line;
+      }
+      if (btn) btn.disabled = !!o.busy;
+    }
+    function refreshOta() {
+      fetch('/api/ota/status', { cache: 'no-store' })
+        .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+        .then(applyOtaStatus)
+        .catch(function(e) {
+          var msg = document.getElementById('ota-msg');
+          if (msg) msg.textContent = e && e.message ? e.message : 'No se pudo leer estado OTA';
+        });
+    }
+    function checkOta() {
+      var btn = document.getElementById('ota-btn');
+      if (btn) btn.disabled = true;
+      fetch('/api/ota/check', { method: 'POST' })
+        .then(function(r) {
+          if (r.status === 409) throw new Error('Ya hay una revisión en curso');
+          if (!r.ok && r.status !== 202) throw new Error('HTTP ' + r.status);
+          var msg = document.getElementById('ota-msg');
+          if (msg) msg.textContent = 'Buscando versión nueva…';
+        })
+        .catch(function(e) {
+          var msg = document.getElementById('ota-msg');
+          if (msg) msg.textContent = e && e.message ? e.message : 'Error';
+        })
+        .finally(function() { setTimeout(refreshOta, 1500); });
+    }
+    (function bindOta() {
+      var btn = document.getElementById('ota-btn');
+      if (btn && !btn._otaBound) {
+        btn._otaBound = true;
+        btn.addEventListener('click', checkOta);
+      }
+      refreshOta();
+      setInterval(refreshOta, 8000);
     })();
     poll();
   </script>
