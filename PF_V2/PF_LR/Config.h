@@ -161,18 +161,16 @@ constexpr uint8_t  TRIGGER_ID_HIST         = 8;
 constexpr const char* PREFS_NS             = "prefeeder2";
 
 // ====================== FIRMWARE / OTA ======================
-// Panel web → Buscar actualización: manifiesto en PreFeeder Master (LAN, sin GitHub).
-// Generar assets: make_release.py --lan-base http://10.10.32.100/ota → sync_ota_to_master.py
-// Red local IDE: ArduinoOTA (OTA_PASSWORD).
-#define FW_VERSION "0.1.4"
+// Como Home: panel → GitHub Releases (HTTPS). Release: make_release.py + tag vX.Y.Z.
+// Red local IDE: ArduinoOTA (OTA_PASSWORD). Requiere Wi‑Fi con internet hacia github.com.
+#define FW_VERSION "0.1.5"
 #define OTA_PASSWORD "TCM_PF2026"
-#define OTA_LAN_BASE "http://10.10.32.100/ota"
 #ifndef PREFEEDER_SIDE_RIGHT
 #define OTA_HOSTNAME "prefeeder-L"
-#define OTA_MANIFEST_URL OTA_LAN_BASE "/pf_lr_L_version.json"
+#define OTA_MANIFEST_URL "https://github.com/Cavazos32/TCM/releases/latest/download/pf_lr_L_version.json"
 #else
 #define OTA_HOSTNAME "prefeeder-R"
-#define OTA_MANIFEST_URL OTA_LAN_BASE "/pf_lr_R_version.json"
+#define OTA_MANIFEST_URL "https://github.com/Cavazos32/TCM/releases/latest/download/pf_lr_R_version.json"
 #endif
 #define OTA_CHECK_INTERVAL_MS (6UL * 60UL * 60UL * 1000UL)
 #define OTA_BOOT_DELAY_MS (30UL * 1000UL)

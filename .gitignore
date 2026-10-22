@@ -3,7 +3,6 @@
 
 # Assets OTA generados (make_release.py)
 PF_V2/release/
-PF_V2/PreFeeder_Master/data/ota/*.bin
 
 # Proyecto personal temporal (no parte de TCM)
 Home/

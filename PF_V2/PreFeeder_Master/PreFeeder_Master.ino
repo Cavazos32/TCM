@@ -8,7 +8,6 @@
 #include "Config.h"
 #include "master_cmds.h"
 #include "master_html.h"
-#include "OtaServe.h"
 
 static const char* WIFI_SSID = PF_MASTER_WIFI_SSID;
 static const char* WIFI_PASS = PF_MASTER_WIFI_PASS;
@@ -1418,7 +1417,6 @@ void setup()
   Serial.println();
   Serial.println("[MASTER] PreFeeder Master boot");
   setupWiFiBegin();
-  otaServeInit();
   server.on("/", handleRoot);
   server.on("/ui/l", handleUiL);
   server.on("/ui/r", handleUiR);
@@ -1429,7 +1427,6 @@ void setup()
   server.on("/api/auto", handleApiAuto);
   server.on("/api/status", handleApiStatus);
   server.on("/api/cmd", handleApiCmd);
-  otaServeRegister(server);
   server.begin();
   Serial.printf("[MASTER] HTTP :80 listo — http://%s/ping\n", STA_IP.toString().c_str());
   Serial.printf("[MASTER] TCP HMI :%u — arranca al tener WiFi (hello al aceptar)\n",
