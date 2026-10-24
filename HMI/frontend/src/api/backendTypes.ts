@@ -14,15 +14,6 @@ export interface BackendModel {
 }
 
 export interface BackendCycleConfig {
-  holderOnMs: number;
-  holderOpenMs: number;
-  grippersOnMs: number;
-  gripperReleaseMs: number;
-  cutterPulseMs: number;
-  cutterPostMs: number;
-  linearDoneMs: number;
-  asentarMs: number;
-  dwellAtDestMs: number;
   depositBatchSize: number;
   depositExtraMm: number;
   depositStackGapMm?: number;
@@ -30,10 +21,6 @@ export interface BackendCycleConfig {
   gripperClearanceMm?: number;
   cutOffsetMm?: number;
   wipBlowerInicioOffsetMm?: number;
-  motionWaitTimeoutS: number;
-  feedWaitTimeoutS: number;
-  pfReadyTimeoutS: number;
-  pieceWatchTimeoutS?: number;
   feedSides?: 'L' | 'R' | 'LR' | string;
   pfTriggerEnabled?: boolean;
   refillMm?: number;
@@ -45,12 +32,11 @@ export interface BackendFlowStep {
   key: string;
   label: string;
   kind: 'action' | 'wait' | 'parallel';
-  delayKey?: string;
+  delayMs?: number;
   parallelRole?: 'start' | 'join';
   /** Si true, Step by Step pausa tras este paso (checkpoint físico). */
   sbsPause?: boolean;
   note?: string;
-  delayEditable?: boolean;
 }
 
 export interface BackendCycleSnapshot {
@@ -151,6 +137,10 @@ export interface BackendPreFeeder {
   last_state_byte: number | null;
   errors: Record<string, BackendPfError>;
   fault_active?: Record<string, boolean>;
+  /** Buffer Full en lados del ciclo y sin EXXX. */
+  bufferReady?: boolean;
+  /** Iniciar alimentador: preparación en curso. */
+  manualPrepBusy?: boolean;
   sides?: {
     L?: BackendPfSide;
     R?: BackendPfSide;

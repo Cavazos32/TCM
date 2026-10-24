@@ -422,7 +422,9 @@ export function mapPreFeederState(snap: BackendSnapshot): PreFeederState {
   const statusText = cleanVisibleStatusText(rawStatus);
   const running =
     rawStatus.toLowerCase().includes('ocupado') ||
-    rawStatus.toLowerCase().includes('busy');
+    rawStatus.toLowerCase().includes('busy') ||
+    rawStatus.toLowerCase().includes('preparando buffer') ||
+    !!pf.manualPrepBusy;
 
   return {
     connection: {
@@ -433,6 +435,8 @@ export function mapPreFeederState(snap: BackendSnapshot): PreFeederState {
     isRunning: !!running,
     statusText,
     hasError: pf.status?.kind === 'error' && !!statusText,
+    bufferReady: !!pf.bufferReady,
+    manualPrepBusy: !!pf.manualPrepBusy,
     idleMode: !!(pf.sides?.L?.idleMode || pf.sides?.R?.idleMode),
     sensorsL: buildSensors(snap, 'L'),
     sensorsR: buildSensors(snap, 'R'),

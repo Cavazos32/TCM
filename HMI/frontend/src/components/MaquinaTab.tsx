@@ -304,6 +304,15 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
 
   const pfConnected = preFeederState.connection.connected;
   const pfHasError = !!preFeederState.hasError && pfConnected;
+  const pfStartReady = !!preFeederState.bufferReady;
+  const pfPrepBusy = !!preFeederState.manualPrepBusy || preFeederState.isRunning;
+  const pfStartDisabled =
+    !onPfStart ||
+    !pfConnected ||
+    pfHasError ||
+    pfStartReady ||
+    pfPrepBusy ||
+    machineState.cycleActive;
   const recoveryStage =
     machineState.refillActive && machineState.refillPrompt
       ? machineState.refillPrompt
@@ -527,8 +536,8 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
   const centerFieldInput =
     'w-full rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-3 text-lg font-medium text-slate-900 dark:text-slate-100 shadow-2xs focus:outline-none focus:ring-1 sm:text-xl';
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="grid min-h-0 flex-1 grid-cols-12 gap-2.5 items-stretch">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+      <div className="grid min-h-0 flex-1 grid-cols-12 gap-2.5 items-stretch overflow-y-auto overflow-x-hidden">
         {/* PROCESO + PARÁMETROS + MANTENIMIENTO — columna izquierda */}
         <div className="col-span-12 flex min-h-0 flex-col justify-start gap-2.5 lg:col-span-2">
           <section className={`flex shrink-0 flex-col p-3 ${panelCls}`}>
@@ -1301,9 +1310,16 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
                 id="btn-main-pf-start"
                 type="button"
                 onClick={onPfStart}
-                disabled={!onPfStart || !pfConnected}
+                disabled={pfStartDisabled}
+                title={
+                  pfStartReady
+                    ? t('pf_buffer_ready_hint')
+                    : pfInMaterialist
+                      ? t('pf_recover_hint_jog')
+                      : undefined
+                }
                 className={`${btnBase} ${btnText} disabled:opacity-40 ${
-                  preFeederState.isRunning ? btnOn : btnAuxIdle
+                  pfPrepBusy ? btnOn : btnAuxIdle
                 }`}
               >
                 <Play className={`${iconBtn} fill-current`} />
@@ -1349,7 +1365,14 @@ export const MaquinaTab: React.FC<MaquinaTabProps> = ({
       </div>
 
       {showLogs && (
-        <LogTerminal title={t('logs_title')} logs={logs} onClear={onClearLogs} filterModule="ALL" />
+        <div className="shrink-0 border-t border-slate-200 bg-slate-50/90 px-2 pb-2 pt-1 dark:border-slate-800 dark:bg-slate-950/90 [&_.mt-4]:mt-0">
+          <LogTerminal
+            title={t('logs_title')}
+            logs={logs}
+            onClear={onClearLogs}
+            filterModule="ALL"
+          />
+        </div>
       )}
     </div>
   );

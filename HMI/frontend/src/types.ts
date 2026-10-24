@@ -13,15 +13,6 @@ export type HmiModuleKey = 'motion' | 'plc' | 'prefeeder' | 'andon';
 export const REFILL_LONG_FEED_MM = 100;
 
 export interface CycleConfig {
-  holderOnMs: number;
-  holderOpenMs: number;
-  grippersOnMs: number;
-  gripperReleaseMs: number;
-  cutterPulseMs: number;
-  cutterPostMs: number;
-  linearDoneMs: number;
-  asentarMs: number;
-  dwellAtDestMs: number;
   depositBatchSize: number;
   depositExtraMm: number;
   /** Gap entre batches: depósito(n) = depósito(n−1) + |L| + gap. */
@@ -33,11 +24,6 @@ export interface CycleConfig {
   cutOffsetMm?: number;
   /** Offset blower desde cada punta hacia el centro (fin=start−off, inicio=+off). */
   wipBlowerInicioOffsetMm?: number;
-  motionWaitTimeoutS: number;
-  feedWaitTimeoutS: number;
-  pfReadyTimeoutS: number;
-  /** Watchdog de pieza (s). Si no cierra (Pause excluida) → E008/E009. Feed post-HOME de la siguiente excluido. */
-  pieceWatchTimeoutS?: number;
   /** Feed / Stage2 OM: 'L' | 'R' | 'LR' */
   feedSides: 'L' | 'R' | 'LR';
   /** Tfeed tras el corte (paso 18). false = omitir. */
@@ -54,15 +40,15 @@ export interface CycleStep {
   id: number;
   title: string;
   type: CycleStepType;
-  delayKey?: keyof CycleConfig;
-  defaultDurationMs?: number;
+  /** Clave del paso en cycle.py FLOW_STEPS (solo lectura). */
+  stepKey?: string;
+  /** Ms de espera (viene del backend / cycle.py). */
+  delayMs?: number;
   description?: string;
   note?: string;
   badge?: string;
   /** Checkpoint físico en paso a paso (exige Next). Ausente/false = auto. */
   sbsPause?: boolean;
-  /** False = delay fijo (no editable en UI). Default true si hay delayKey. */
-  delayEditable?: boolean;
 }
 
 export interface LogEntry {
@@ -211,6 +197,8 @@ export interface PreFeederState {
   isRunning: boolean;
   statusText?: string;
   hasError?: boolean;
+  bufferReady?: boolean;
+  manualPrepBusy?: boolean;
   /** Materialista real del PreFeeder (idleMode L|R del HTML local). */
   idleMode?: boolean;
   sensorsL: PreFeederSensor[];

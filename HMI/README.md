@@ -112,7 +112,7 @@ Abrir: **http://localhost:3000** (proxy `/api` → `:5050`).
 ## Funciones de la UI
 
 - **Máquina**: Start/Stop/Resume, modelo, progreso de lote, log
-- **Cycle**: secuencia 27 pasos, delays, presets, guardar en `config/cycle_config.json`
+- **Cycle**: secuencia del ciclo (esperas en `cycle.py`); depósito/alimentación en `config/cycle_config.json`
 - **Motion**: ASDA B3, encoder, feeder, offsets
 - **PLC**: válvulas, reset, all off
 - **PreFeeder**: start/stop/reset/materialist, sensores L/R

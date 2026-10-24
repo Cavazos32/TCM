@@ -693,9 +693,10 @@ struct FeedSideRt {
   bool laserState = false;
   uint8_t correctionCount = 0;
   bool laserSeekDone = false;  // seek gated: solo una vez
-  bool huntLaser = false;      // láser OFF al start → creep, sin approach rápido
-  // Halt en approach solo en flanco OFF→ON (prefetch: láser ya ON, no parar en 0).
+  bool huntLaser = false;      // creep a láser (se reevalúa en HALT_SETTLE)
+  // Ciclo: parar en OFF→ON, no en ON residual al arrancar el approach.
   bool haltOnLaserRise = false;
+  bool laserOffSeenForHalt = false;
   bool offsetApplied = false;  // ciclo: offL/offR ya mandado tras FEED_OK
   FeedValResult result = FVR_NONE;
   uint16_t errByte = 0;
@@ -1092,6 +1093,7 @@ static void feedSideClearDiag(FeedSideRt& s)
   s.laserSeekDone = false;
   s.huntLaser = false;
   s.haltOnLaserRise = false;
+  s.laserOffSeenForHalt = false;
   s.offsetApplied = false;
   s.lastLaserPollMs = 0;
   s.seekDeadlineMs = 0;
@@ -1286,9 +1288,8 @@ static bool feedSideStartLaserSeek(bool sideR, uint32_t now, const char* why)
 {
   FeedSideRt& s = feedSideAt(sideR);
 
-  // Láser ya ON: en ciclo normal no seek. En purga (skipValidate) sigue creep
-  // (mín. FEED_PURGE_MIN_CREEP_CHUNKS) para que ambos lados avancen material.
-  if (feedLaserMaterialPresentRaw(sideR) && !s.skipValidate) {
+  // Purga: láser ya ON → halt inmediato. Ciclo: siempre creep (OFF→ON en tramo).
+  if (feedLaserMaterialPresentRaw(sideR) && s.skipValidate) {
     s.laserState = true;
     s.laserSeekDone = true;
     feedLaserHaltNow(sideR);
@@ -1310,6 +1311,7 @@ static bool feedSideStartLaserSeek(bool sideR, uint32_t now, const char* why)
                 (unsigned long)creepMs);
   feedCanPrimeHaltDecelSide(sideR);
   s.laserSeekDone = true;
+  s.laserOffSeenForHalt = !feedLaserMaterialPresentRaw(sideR);
   s.seekDeadlineMs = now + creepMs;
   s.lastLaserPollMs = 0;
   s.moveStartMs = 0;
@@ -1542,11 +1544,13 @@ static void feedSideService(bool sideR, uint32_t now)
     case FSP_HALT_SETTLE:
       if (now < s.settleUntilMs) break;
       {
-        // halt → settle → reset OM. Hunt (láser OFF): creep, no approach rápido.
+        // halt → settle → reset OM. Láser OFF ahora → creep (no snapshot al cmd).
         feedOmResetSide(sideR, false);
-        if (s.huntLaser) {
+        const bool laserNow = feedLaserMaterialPresentRaw(sideR);
+        if (!s.skipValidate && !laserNow) {
           Serial.printf("FEED %c gen=%lu hunt laser (creep, no approach)\n",
                         sideR ? 'R' : 'L', (unsigned long)s.gen);
+          s.huntLaser = true;
           feedSideStartLaserSeek(sideR, now, "hunt");
           break;
         }
@@ -1554,8 +1558,8 @@ static void feedSideService(bool sideR, uint32_t now)
         Serial.printf("FEED %c gen=%lu APPROACH %.1fmm (%.0f%% of %.1f) steps=%ld\n",
                       sideR ? 'R' : 'L', (unsigned long)s.gen, (double)s.approachMm,
                       (double)feedApproachPct, (double)s.targetMm, (long)steps);
-        // Láser ya ON (prefetch): no armar halt — hay que completar el tramo.
-        s.haltOnLaserRise = !s.skipValidate && !feedLaserMaterialPresentRaw(sideR);
+        s.haltOnLaserRise = !s.skipValidate;
+        s.laserOffSeenForHalt = !laserNow;
         feedCanPrimeHaltDecelSide(sideR);
         if (!feedSideIssueMoveOrRetry(sideR, steps, now))
           break;
@@ -1566,17 +1570,21 @@ static void feedSideService(bool sideR, uint32_t now)
     case FSP_WAIT_SERVO:
     case FSP_WAIT_SERVO_CORR:
       // Flanco OFF→ON en approach o corrección: halt, no pasar la referencia láser.
-      if (!s.skipValidate && s.haltOnLaserRise && feedLaserMaterialPresentRaw(sideR)) {
-        s.laserState = true;
-        s.haltOnLaserRise = false;
-        feedLaserHaltNow(sideR);
-        Serial.printf("FEED %c %s laser ON → halt (referencia)\n",
-                      sideR ? 'R' : 'L',
-                      (s.phase == FSP_WAIT_SERVO_CORR) ? "CORR" : "APPROACH");
-        s.phase = FSP_SETTLE_FINAL;
-        s.settleUntilMs = now + FEED_OM_HALT_SETTLE_MS;
-        s.omReadMiss = 0;
-        break;
+      if (!s.skipValidate && s.haltOnLaserRise) {
+        if (!feedLaserMaterialPresentRaw(sideR)) {
+          s.laserOffSeenForHalt = true;
+        } else if (s.laserOffSeenForHalt) {
+          s.laserState = true;
+          s.haltOnLaserRise = false;
+          feedLaserHaltNow(sideR);
+          Serial.printf("FEED %c %s laser ON → halt (referencia)\n",
+                        sideR ? 'R' : 'L',
+                        (s.phase == FSP_WAIT_SERVO_CORR) ? "CORR" : "APPROACH");
+          s.phase = FSP_SETTLE_FINAL;
+          s.settleUntilMs = now + FEED_OM_HALT_SETTLE_MS;
+          s.omReadMiss = 0;
+          break;
+        }
       }
       if (feedSidePollServoDone(sideR, now)) {
         s.phase = (s.phase == FSP_WAIT_SERVO) ? FSP_SETTLE : FSP_SETTLE_FINAL;
@@ -1704,7 +1712,9 @@ static void feedSideService(bool sideR, uint32_t now)
         const bool purgeMinCreep =
             s.skipValidate
             && s.purgeCreepChunks < FEED_PURGE_MIN_CREEP_CHUNKS;
-        if (!purgeMinCreep && feedLaserMaterialPresentRaw(sideR)) {
+        if (!feedLaserMaterialPresentRaw(sideR)) {
+          s.laserOffSeenForHalt = true;
+        } else if (!purgeMinCreep && (s.skipValidate || s.laserOffSeenForHalt)) {
           s.laserState = true;
           feedLaserHaltNow(sideR);
           Serial.printf("FEED %c LASER_SEEK hit → freeze\n", sideR ? 'R' : 'L');
@@ -1726,7 +1736,9 @@ static void feedSideService(bool sideR, uint32_t now)
         if (now < s.settleUntilMs)
           break;
         s.moveStartMs = 0;
-        if (!purgeMinCreep && feedLaserMaterialPresentRaw(sideR)) {
+        if (!feedLaserMaterialPresentRaw(sideR)) {
+          s.laserOffSeenForHalt = true;
+        } else if (!purgeMinCreep && (s.skipValidate || s.laserOffSeenForHalt)) {
           s.laserState = true;
           feedLaserHaltNow(sideR);
           s.settleUntilMs = now + FEED_HALT_SETTLE_MS;
@@ -2001,7 +2013,12 @@ static void feedPollLaserHaltSide(bool sideR, uint32_t now)
       && s.haltOnLaserRise;
   const bool seek = (s.phase == FSP_LASER_SEEK);
   if (!watch && !seek) return;
-  if (!feedLaserMaterialPresentRaw(sideR)) return;
+  if (!feedLaserMaterialPresentRaw(sideR)) {
+    s.laserOffSeenForHalt = true;
+    return;
+  }
+  if (watch && !s.laserOffSeenForHalt) return;
+  if (seek && !s.skipValidate && !s.laserOffSeenForHalt) return;
   s.laserState = true;
   s.haltOnLaserRise = false;
   feedLaserHaltNow(sideR);

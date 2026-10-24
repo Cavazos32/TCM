@@ -1,8 +1,20 @@
 {
   "andonBuzzerMute": true,
   "debugPassword": "tcm2026",
-  "maintenanceCycleCount": 179,
-  "checklistRequired": false,
-  "checklistLastCompletedAt": "2026-10-22T19:21:37Z",
-  "checklistSession": null
+  "maintenanceCycleCount": 249,
+  "checklistRequired": true,
+  "checklistLastCompletedAt": "2026-10-23T17:51:45Z",
+  "checklistSession": {
+    "employeeId": "10432",
+    "startedAt": "2026-10-24T14:24:39Z",
+    "currentStepIndex": 1,
+    "completedSteps": [
+      "cycle_counter"
+    ],
+    "measurements": {
+      "l": null,
+      "r": null
+    },
+    "failedStep": ""
+  }
 }

@@ -446,6 +446,8 @@ class HmiState:
         self._pf_refill_lock = threading.Lock()
         # Tras OFF anticipado: no reponer ON desde status/Master hasta que el esclavo confirme OFF.
         self._pf_refill_ignore_on_until: dict[str, float] = {}
+        self._pf_manual_prep_busy = False
+        self._pf_manual_prep_thread: threading.Thread | None = None
 
         self._error_policy = ErrorPolicy()
         self._cycle = CycleRunner(self)
@@ -631,6 +633,9 @@ class HmiState:
                     **self._pf,
                     "connected": self.pf_connected(),
                     "errors": {k: dict(v) for k, v in self._pf["errors"].items()},
+                    "bufferReady": self.pf_buffers_full_for_production()
+                    and self.pf_is_ready(),
+                    "manualPrepBusy": self._pf_manual_prep_busy,
                 },
                 "logs": {
                     "main": _log_out(self._main_log),
@@ -953,6 +958,126 @@ class HmiState:
     def pf_request_status(self) -> bool:
         """Sondea Master (byte Idle): responde con status L/R + holgura."""
         return self._manual_pf(self._pf_client.cmd_status)
+
+    def pf_feed_sides(self) -> list[str]:
+        mode = CycleConfig.normalize_feed_sides(self._cycle.get_config().feed_sides)
+        if mode == "LR":
+            return ["L", "R"]
+        return [mode]
+
+    def pf_buffers_full_for_production(self) -> bool:
+        """Buffer Full en los lados que usa el ciclo (feedSides)."""
+        if not self.pf_connected():
+            return False
+        for side in self.pf_feed_sides():
+            if self.pf_buffer_full(side) is not True:
+                return False
+        return True
+
+    def _pf_wait_buffers_full_blocking(self, timeout_s: float, *, reason: str) -> bool:
+        sides = self.pf_feed_sides()
+        seq0 = self.pf_status_seq()
+        self.pf_request_status()
+        deadline = time.monotonic() + max(0.0, float(timeout_s))
+        while time.monotonic() < deadline:
+            if self.pf_has_fault():
+                return False
+            fresh = self.pf_status_seq() > seq0
+            all_ok = fresh
+            for side in sides:
+                if self.pf_buffer_full(side) is not True:
+                    all_ok = False
+            if all_ok:
+                return True
+            self.pf_request_status()
+            time.sleep(0.1)
+        _append_log(
+            self._pf_log,
+            f"{reason}: timeout {timeout_s:.0f}s sin Buffer Full",
+        )
+        return False
+
+    def _pf_manual_prep_worker(self) -> None:
+        from cycle import PF_READY_TIMEOUT_S
+
+        timeout_s = float(PF_READY_TIMEOUT_S)
+        ok = False
+        try:
+            ok = self._pf_wait_buffers_full_blocking(
+                timeout_s, reason="Iniciar alimentador"
+            )
+        finally:
+            with self._lock:
+                self._pf_manual_prep_busy = False
+        self.cmd_pf_in_process(False)
+        fault = self.pf_has_fault()
+        detail = self.pf_fault_detail() if fault else ""
+        with self._lock:
+            if ok:
+                text = "Buffer listo."
+                kind = "ok"
+                _append_log(self._pf_log, "Iniciar alimentador: buffer listo")
+            elif fault:
+                text = detail or "Error en alimentador"
+                kind = "error"
+            else:
+                text = "No se preparó el buffer a tiempo"
+                kind = "error"
+            self._pf["status"] = {"text": text, "kind": kind}
+        self._notify()
+
+    def _cmd_pf_operator_start(self) -> dict:
+        """Iniciar alimentador (Máquina): Start + en proceso hasta Buffer Full."""
+        if not self.pf_connected():
+            return {"ok": False, "error": "Sin enlace PreFeeder"}
+        if self._cycle.is_active():
+            return {
+                "ok": False,
+                "error": "Hay un lote en curso — usa Iniciar de proceso",
+            }
+        if self.pf_is_materialist():
+            return {
+                "ok": False,
+                "error": "Apaga carga de material antes de iniciar el alimentador",
+            }
+        if self.pf_has_fault():
+            return {
+                "ok": False,
+                "error": "Reinicia el alimentador antes de iniciar",
+            }
+        with self._lock:
+            if self._pf_manual_prep_busy:
+                return {"ok": True}
+        if self.pf_buffers_full_for_production() and self.pf_is_ready():
+            with self._lock:
+                self._pf["status"] = {
+                    "text": "Buffer listo.",
+                    "kind": "ok",
+                }
+            self._notify()
+            return {"ok": True}
+        if not self._manual_pf(self._pf_client.cmd_start):
+            with self._lock:
+                err = str(
+                    (self._pf.get("status") or {}).get("text")
+                    or "PreFeeder no aceptó Start"
+                )
+            return {"ok": False, "error": err}
+        if not self.cmd_pf_in_process(True):
+            return {"ok": False, "error": "PreFeeder no aceptó en proceso"}
+        with self._lock:
+            self._pf_manual_prep_busy = True
+            text = "PreFeeder ocupado — preparando buffer"
+            _append_log(self._pf_log, "Iniciar alimentador: Start (0x2A) + en proceso")
+            self._pf["status"] = {"text": text, "kind": "info"}
+        self._notify()
+        self._pf_manual_prep_thread = threading.Thread(
+            target=self._pf_manual_prep_worker,
+            daemon=True,
+            name="pf-manual-prep",
+        )
+        self._pf_manual_prep_thread.start()
+        return {"ok": True}
 
     def pf_is_materialist(self) -> bool:
         with self._lock:
@@ -1585,14 +1710,8 @@ class HmiState:
     def cycle_is_active(self) -> bool:
         return self._cycle.is_active()
 
-    def feed_wait_timeout_s(self) -> float:
-        return float(self._cycle.get_config().feed_wait_timeout_s)
-
-    def cutter_pulse_ms(self) -> int:
-        return int(self._cycle.get_config().cutter_pulse_ms)
-
     def cmd_pf_start(self) -> bool:
-        return self._pf_client.cmd_start()
+        return self._manual_pf(self._pf_client.cmd_start)
 
     def cmd_pf_stop(self) -> bool:
         return self._pf_client.cmd_stop()
@@ -1666,6 +1785,9 @@ class HmiState:
             off = self.cmd_cycle_materialist(False)
             if not off.get("ok"):
                 return off
+        if self.pf_connected():
+            if not self._manual_pf(self._pf_client.cmd_start):
+                return {"ok": False, "error": "PreFeeder no aceptó Start"}
         res = self._cycle.request_start(mm, use_qty, rpm)
         if not res.get("ok"):
             err = str(res.get("error") or "Start rechazado")
@@ -1675,9 +1797,6 @@ class HmiState:
                     _append_log(self._main_log, f"Start rechazado: {err}")
                 self._notify()
             return res
-        if self.pf_connected():
-            if not self._manual_pf(lambda: self._pf_client.cmd_start()):
-                return {"ok": False, "error": "PreFeeder no aceptó Start"}
         return res
 
     def cmd_stop(self) -> dict:
@@ -2630,8 +2749,9 @@ class HmiState:
                 str(kwargs.get("channel", "")),
                 self._pf_refill_on_arg(kwargs.get("on"), default=False),
             )
+        if action == "start":
+            return self._cmd_pf_operator_start()
         handlers = {
-            "start": self._pf_client.cmd_start,
             "stop": self._pf_client.cmd_stop,
             "reset": self._pf_client.cmd_reset,
             "trigger_r": self._pf_client.cmd_trigger_r,
@@ -2655,12 +2775,6 @@ class HmiState:
                 self._pf_clear_fault_cache()
                 self._pf["status"] = {"text": "Reset enviado L+R (0x02C)", "kind": "ok"}
 
-            self._notify()
-        if action == "start":
-            with self._lock:
-                text = "Start enviado L+R (0x02A)"
-                _append_log(self._pf_log, text)
-                self._pf["status"] = {"text": text, "kind": "ok"}
             self._notify()
         if action == "stop":
             with self._lock:

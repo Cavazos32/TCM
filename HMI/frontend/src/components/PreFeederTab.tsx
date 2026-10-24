@@ -165,8 +165,19 @@ export const PreFeederTab: React.FC<PreFeederTabProps> = ({
           id="btn-start-prefeeder"
           type="button"
           onClick={onStart}
-          disabled={preFeederState.isRunning}
-          className={preFeederState.isRunning ? `${hmiModuleBtnSecondary} opacity-40` : hmiModuleBtnDark}
+          disabled={
+            preFeederState.isRunning ||
+            !!preFeederState.bufferReady ||
+            !!preFeederState.hasError
+          }
+          title={
+            preFeederState.bufferReady ? t('pf_buffer_ready_hint') : undefined
+          }
+          className={
+            preFeederState.isRunning || preFeederState.manualPrepBusy
+              ? `${hmiModuleBtnSecondary} opacity-40`
+              : hmiModuleBtnDark
+          }
         >
           <Play className={`${hmiModuleIconBtn} fill-current`} />
           <span>{t('btn_start')}</span>

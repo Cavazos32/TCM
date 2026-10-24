@@ -1,6 +1,0 @@
-StepperRMT	KEYWORD1
-setDefault	KEYWORD2
-setMicrostep	KEYWORD2
-setSpeed	KEYWORD2
-Stop	KEYWORD2
-Brake	KEYWORD2

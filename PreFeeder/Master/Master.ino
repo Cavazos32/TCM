@@ -1,11 +1,11 @@
 // PreFeeder Master — orquesta L/R: lee estados, agrega errores, despacha comandos.
 // Globales (control manual) → L+R | Volátiles (trigger, settings) → un lado (side=L|R).
-// HMI TCM: TCP JSON+newline (opcodes en ../PfStates.h).
+// HMI TCM: TCP JSON+newline (opcodes en ../protocol.h).
 #include <WiFi.h>
 #include <WebServer.h>
-#include "../PF_LR/Status_Mode.h"
-#include "../PfStates.h"
-#include "Config.h"
+#include "../protocol.h"
+#include "pf_status_mode.h"
+#include "config.h"
 #include "master_cmds.h"
 #include "master_html.h"
 
