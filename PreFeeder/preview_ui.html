@@ -29,6 +29,7 @@ body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:v
 .pills{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:10px}
 .pill{text-align:center;font-size:.68rem;font-weight:600;padding:6px 4px;border-radius:6px;border:1px solid var(--border);color:var(--muted);background:var(--panel)}
 .pill.on{background:rgba(63,185,80,.22);color:var(--ok);border-color:rgba(63,185,80,.5)}
+#bench-card.on{border-color:rgba(88,166,255,.55);box-shadow:0 0 0 1px rgba(88,166,255,.25)}
 .btn-row{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:8px}
 button,.btn{padding:10px 8px;border-radius:8px;border:none;font-weight:600;font-size:.8rem;cursor:pointer;font-family:inherit}
 .btn-go{background:var(--ok);color:#0d1117}
@@ -37,7 +38,11 @@ button,.btn{padding:10px 8px;border-radius:8px;border:none;font-weight:600;font-
 .btn-save{background:rgba(88,166,255,.2);color:var(--blue);border:1px solid rgba(88,166,255,.4);width:100%;margin-top:10px;transition:background .15s,color .15s,border-color .15s}
 .btn-save.saved{background:rgba(63,185,80,.28);color:#aff5b4;border-color:rgba(63,185,80,.55)}
 .btn-save.err{background:rgba(248,81,73,.22);color:#ffa198;border-color:rgba(248,81,73,.45)}
-.btn-refill{background:var(--panel);color:var(--text);border:1px solid var(--border)}
+.btn-refill{background:var(--panel);color:var(--text);border:1px solid var(--border);transition:background .12s,border-color .12s,box-shadow .12s}
+.btn-refill.on{background:rgba(226,164,29,.35);color:#ffe8b3;border-color:rgba(226,164,29,.65);box-shadow:0 0 10px rgba(226,164,29,.35)}
+.btn-refill.flash{background:rgba(88,166,255,.35);border-color:rgba(88,166,255,.6)}
+.refill-bar.locked{opacity:.45;pointer-events:none}
+.refill-bar.locked .note{color:var(--warn)}
 .grid{display:grid;gap:12px}
 @media(min-width:760px){.grid.cols-2{grid-template-columns:1fr 1fr;align-items:start}}
 .col-stack{display:flex;flex-direction:column;gap:12px;min-width:0}
@@ -76,7 +81,6 @@ input[type=number]{width:100%;padding:8px 10px;border-radius:6px;border:1px soli
 <span class="pill" id="pill-feeder">Feeder</span>
 <span class="pill" id="pill-buffer">Buffer</span>
 <span class="pill" id="pill-trigger">Trigger</span>
-<span class="pill" id="pill-lidar">Lidar</span>
 </div>
 <div class="btn-row">
 <button type="button" class="btn-go" id="start">Iniciar</button>
@@ -85,9 +89,20 @@ input[type=number]{width:100%;padding:8px 10px;border-radius:6px;border:1px soli
 </div>
 </section>
 
-<section class="card refill-bar">
+<section class="card" id="bench-card">
+<h2>Prueba en banco · simular En proceso</h2>
+<p class="note">Arma holgura, buffer y alimentación como en lote (sin HMI). No usar si el Master/HMI ya controla el lado.</p>
+<div class="btn-row">
+<button type="button" class="btn-go" id="bench_on">Activar simulación</button>
+<button type="button" class="btn-stop" id="bench_off">Desactivar</button>
+<button type="button" class="btn-save" id="bench_trig" title="Prueba Tfeed local">Pulsar Tfeed</button>
+</div>
+<p class="meta">Simulación En proceso: <strong id="bench-label">—</strong></p>
+</section>
+
+<section class="card refill-bar" id="refill-bar">
 <h2>Materialista · refill manual</h2>
-<p class="note">Solo con modo Materialista activo (TCM/HMI). Sin ciclo automático por sensores.</p>
+<p class="note">Solo con modo Materialista activo (TCM/HMI). Mantén pulsado cada botón para mover; al soltar, para. El pulso (s) es solo para toques cortos desde la HMI.</p>
 <div class="refill-grid">
 <div class="refill-pulse f2">
 <div><label>Pulso (s)</label><input id="refill_s" type="number" min="0.2" max="10" step="0.1"></div>
@@ -114,6 +129,7 @@ input[type=number]{width:100%;padding:8px 10px;border-radius:6px;border:1px soli
 <div class="srow"><div class="led warn" id="led-tension"></div><span class="stitle">GPIO 23 · Tensión</span><span class="badge" id="bdg-tension">OFF</span></div>
 <div class="srow"><div class="led err" id="led-cyl"></div><span class="stitle">GPIO 25 · Cilindro</span><span class="badge" id="bdg-cyl">OFF</span></div>
 <div class="srow"><div class="led err" id="led-hose"></div><span class="stitle">GPIO 27 · Manguera</span><span class="badge" id="bdg-hose">OFF</span></div>
+<div class="srow"><div class="led" id="led-holg"></div><span class="stitle">GPIO 22 · Holgura</span><span class="badge" id="bdg-holg">OFF</span></div>
 </div>
 </section>
 
@@ -132,18 +148,18 @@ input[type=number]{width:100%;padding:8px 10px;border-radius:6px;border:1px soli
 
 <div class="col-stack">
 <section class="card">
-<h2>Feeder · Tfeed y holgura</h2>
-<p class="note">Trigger TCP + mínimo Tfeed; holgura TFmini. Independiente del GPIO 19.</p>
+<h2>Feeder · holgura y Tfeed</h2>
+<p class="note">GPIO 22 OFF → alimenta hasta flanco ON; asentamiento tras flanco; luego n s de feeder (sin mirar el sensor). Tras alimentar, OFF sostenido &gt; N s → fallo. Tfeed TCP solo si está permitido y holgura ON al pulso.</p>
 <div class="f2">
 <div><label>RPM Feeder</label><input id="m2" type="number" min="1" max="600"></div>
 <div><label>Tfeed (s)</label><input id="trig" type="number" min="0.1" max="60" step="0.1"></div>
 </div>
-<label><input type="checkbox" id="lidar_en"> Holgura por Lidar (TFmini)</label>
-<div class="f2" id="lidar-fields">
-<div><label>Activación holgura (cm)</label><input id="lidar_cm" type="number" min="1" max="1200" title="OFF si menor; ON si mayor o igual (tope fijo 150 cm)"></div>
-<div><label>Tiempo máx. extra (s)</label><input id="lidar_s" type="number" min="0.1" max="30" step="0.1"></div>
+<div class="f2">
+<div><label>Asentamiento tras flanco (ms)</label><input id="holg_set" type="number" min="10" max="500" step="10"></div>
+<div><label>Tras flanco ON (s)</label><input id="holg_on" type="number" min="0.1" max="120" step="0.1"></div>
 </div>
-<p class="meta">Lectura: <strong id="lidar-live">—</strong> · Holgura: <strong id="lidar-mode">—</strong></p>
+<div><label>Fallo OFF tras ciclo (s)</label><input id="holg_off" type="number" min="0.5" max="300" step="0.5"></div>
+<label><input type="checkbox" id="tfeed_en"> Permitir Tfeed por trigger (como HMI)</label>
 <button type="button" class="btn-save" id="saveFeed">Guardar Feeder</button>
 </section>
 <section class="card">
@@ -175,7 +191,7 @@ input[type=number]{width:100%;padding:8px 10px;border-radius:6px;border:1px soli
 </div>
 <script>
 function q(id){return document.getElementById(id)}
-var FAULTS={0:"",1:"Buffer max",2:"Tensión",3:"Cilindro",4:"Manguera",5:"Timeout buffer",6:"Operador"};
+var FAULTS={0:"",1:"Buffer max",2:"Tensión",3:"Cilindro",4:"Manguera",5:"Timeout buffer",6:"Holgura",7:"Operador"};
 function setLed(el,bdg,on,warn,err){
   el.className="led"+(warn?" warn":"")+(err?" err":"")+(on?" on":"");
   bdg.className="badge"+(warn?" warn":"")+(err?" err":"")+(on?" on":"");
@@ -229,7 +245,8 @@ function sync(j,opt){
     setInp('mid_rpm',a.mid_boost_rpm);setInp('mid_s',a.mid_boost_s);setInp('mid_dus',a.mid_servo_delta_us);
     setInp('hi_rpm',a.high_boost_rpm);setInp('hi_s',a.high_boost_s);setInp('hi_dus',a.high_servo_delta_us);
     setInp('m2',t.m2_rpm);setInp('trig',t.trigger_feed_s);
-    setChk('lidar_en',t.lidar_holgura);setInp('lidar_cm',t.lidar_cm);setInp('lidar_s',t.lidar_max_s);
+    setInp('holg_set',t.holgura_settle_ms);setInp('holg_on',t.holgura_on_s);setInp('holg_off',t.holgura_off_fault_s);
+    setChk('tfeed_en',t.hmi_tfeed_enabled!==false);
     setInp('refill_s',r.pulse_s);
   }
   var fault=j.fault|0,peer=j.peer||{};
@@ -243,26 +260,32 @@ function sync(j,opt){
   setLed(q('led-tension'),q('bdg-tension'),!!s.tension,true);
   setLed(q('led-cyl'),q('bdg-cyl'),!!s.cylinder,false,true);
   setLed(q('led-hose'),q('bdg-hose'),!!s.hose,false,true);
-  var lidarHolg=!!t.lidar_holgura;
-  q('lidar-live').textContent=t.lidar_valid?(t.lidar_dist_cm+" cm"): "sin señal";
-  var lidarAct=!!t.lidar_activated;
-  q('lidar-mode').textContent=!lidarHolg?"solo Tfeed":(!t.lidar_valid?"sin señal":(lidarAct?"ACTIVO":"OK"));
-  var lf=q('lidar-fields');if(lf)lf.style.opacity=lidarHolg?'1':'0.45';
+  setLed(q('led-holg'),q('bdg-holg'),!!s.holgura);
   function pill(id,on){var e=q(id);if(!e)return;e.className='pill'+(on?' on':'');}
   pill('pill-feeder',!!act.feeder);
   pill('pill-buffer',!!act.buffer);
   pill('pill-trigger',!!t.trigger_active);
-  pill('pill-lidar',lidarHolg&&lidarAct);
   if(Date.now()>=_bannerFlashUntil){
     if(fault)setStatusBanner("Falla: "+(FAULTS[fault]||("código "+fault)),'err');
     else if(a.enabled&&j.inProcess&&!j.idleMode)setStatusBanner('Producción armada','ok');
     else if(a.enabled)setStatusBanner('Auto ON · esperando in process','ok');
     else setStatusBanner('Detenido','');
   }
-  var mode=j.idleMode?"Materialista":(j.inProcess?"En proceso":"Idle");
+  var mode=j.benchInProcess?"Banco · En proceso":(j.idleMode?"Materialista":(j.inProcess?"En proceso":"Idle"));
   q('mode-label').textContent=mode;
+  var bc=q('bench-card'),bl=q('bench-label');
+  if(bl)bl.textContent=j.benchInProcess?"ACTIVA":"OFF";
+  if(bc)bc.classList.toggle('on',!!j.benchInProcess);
   q('auto-label').textContent=a.enabled?"ON":"OFF";
   q('peer-label').textContent=peer.link?"Enlace":"Sin enlace";
+  var rb=q('refill-bar'),mr=j.manualRefill||{};
+  if(rb)rb.classList.toggle('locked',!j.idleMode);
+  function refOn(k){return !!mr[k];}
+  document.querySelectorAll('[data-ref]').forEach(function(b){
+    var k=b.getAttribute('data-ref')||'';
+    b.classList.toggle('on',refOn(k));
+    b.disabled=!j.idleMode;
+  });
 }
 function cfg(u,btn){
   fetch(u,{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('http');return r.json();})
@@ -274,12 +297,51 @@ q('saveDer').onclick=function(){cfg('/api/config?rpm='+enc(q('rpm').value)+'&mid
 q('saveServo').onclick=function(){cfg('/api/config?servo_pwm_us='+enc(q('servo').value),this)};
 q('saveTension').onclick=function(){cfg('/api/config?reverse='+enc(q('reverse').value)+'&tension_reverse_rpm='+enc(q('t_rev').value)+'&tension_cooldown='+enc(q('t_cd').value)+'&tension_fault_s='+enc(q('t_fault').value),this)};
 q('saveSys').onclick=function(){cfg('/api/config?buffer_refill_fault_s='+enc(q('buf_to').value),this)};
-q('saveFeed').onclick=function(){cfg('/api/config?m2_rpm='+enc(q('m2').value)+'&trigger_feed_s='+enc(q('trig').value)+'&lidar_holgura='+(q('lidar_en').checked?'1':'0')+'&lidar_cm='+enc(q('lidar_cm').value)+'&lidar_max_s='+enc(q('lidar_s').value),this)};
+q('saveFeed').onclick=function(){
+  cfg('/api/config?m2_rpm='+enc(q('m2').value)+'&trigger_feed_s='+enc(q('trig').value)+'&holgura_settle_ms='+enc(q('holg_set').value)+'&holgura_on_s='+enc(q('holg_on').value)+'&holgura_off_fault_s='+enc(q('holg_off').value)+'&hmi_tfeed_enabled='+(q('tfeed_en').checked?'1':'0'),this);
+};
 
-q('start').onclick=function(){fetch('/api/auto?enable=1').then(pull)};
+q('start').onclick=function(){
+  fetch('/api/auto?enable=1',{cache:'no-store'}).then(function(r){
+    if(r.status===409){flashBanner('Iniciar: activa Materialista desde HMI o espera in process','err');return pull();}
+    return pull();
+  });
+};
 q('stop').onclick=function(){fetch('/api/auto?enable=0').then(pull)};
 q('reset').onclick=function(){fetch('/api/auto?reset=1').then(pull)};
-document.querySelectorAll('[data-ref]').forEach(function(b){b.onclick=function(){fetch('/api/refill?'+b.getAttribute('data-ref')+'=1')}});
+q('bench_on').onclick=function(){fetch('/api/auto?bench=1',{cache:'no-store'}).then(function(r){if(!r.ok)throw new Error('http');return pull();}).catch(function(){flashBanner('No se pudo activar simulación','err');});};
+q('bench_off').onclick=function(){fetch('/api/auto?bench=0',{cache:'no-store'}).then(pull)};
+q('bench_trig').onclick=function(){
+  fetch('/api/auto?trigger=1',{cache:'no-store'}).then(function(r){
+    if(r.status===409){flashBanner('Tfeed prueba: activa simulación En proceso','err');return pull();}
+    return pull();
+  });
+};
+function refillChannel(ch,on){
+  if(!ch)return;
+  fetch('/api/refill?hold=1&'+ch+'='+(on?'1':'0'),{cache:'no-store'}).then(function(r){
+    if(r.status===409){if(on)flashBanner('Refill: activa Materialista desde HMI','err');return;}
+    pull();
+  });
+}
+document.querySelectorAll('[data-ref]').forEach(function(b){
+  var ch=b.getAttribute('data-ref');
+  function down(e){
+    if(b.disabled)return;
+    if(e&&e.pointerType==='mouse'&&e.button!==0)return;
+    e.preventDefault();
+    b.classList.add('on','flash');
+    refillChannel(ch,true);
+  }
+  function up(){
+    b.classList.remove('on','flash');
+    if(!b.disabled)refillChannel(ch,false);
+  }
+  b.addEventListener('pointerdown',down);
+  b.addEventListener('pointerup',up);
+  b.addEventListener('pointerleave',up);
+  b.addEventListener('pointercancel',up);
+});
 pull();setInterval(pull,1500);
 </script>
 </body>

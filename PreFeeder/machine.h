@@ -6,6 +6,7 @@
 struct SensorSnapshot {
   bool bufFullRaw = false;
   bool bufFullStable = false;
+  bool holguraOn = false;
   bool bufMidRaw = false;
   bool bufHighRaw = false;
   bool bufMaxRaw = false;
@@ -25,6 +26,8 @@ enum NetCommandType : uint8_t {
   NC_REFILL,
   NC_REFILL_HOLD,
   NC_SET_TRIGGER_FEED,
+  NC_SET_HMI_TFEED,
+  NC_BENCH_IN_PROCESS,
   NC_SET_REFILL_PULSE,
   NC_PING,
   NC_HALT,
@@ -45,12 +48,8 @@ enum SystemFault : uint8_t {
   FAULT_CYLINDER,
   FAULT_HOSE,
   FAULT_BUFFER_TIMEOUT,
+  FAULT_HOLGURA,
   FAULT_OPERATOR,
-};
-
-struct LidarReading {
-  bool valid = false;
-  uint16_t distCm = 0;
 };
 
 struct MachineStatus {
@@ -58,11 +57,11 @@ struct MachineStatus {
   bool autoEnabled = false;
   bool idleMode = false;
   bool inProcess = false;
+  bool benchInProcess = false;
   bool feederActive = false;
   bool bufferActive = false;
   bool triggerActive = false;
   uint32_t feederMsLeft = 0;
-  LidarReading lidar;
 };
 
 // Tipos de salida (en .h para prototipos auto-generados con machine.ino)
@@ -80,8 +79,6 @@ struct OutputIntent {
   bool servoRun = false;
   int16_t servoExtraUs = 0;
 };
-
-LidarReading machineLidar();
 
 void machineInit(Params* params);
 void machineHandleCommand(const NetCommand& cmd);

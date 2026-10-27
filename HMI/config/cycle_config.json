@@ -6,8 +6,8 @@
   "gripperClearanceMm": 25.0,
   "cutOffsetMm": 2.75,
   "wipBlowerInicioOffsetMm": 130.0,
-  "feedSides": "LR",
-  "pfTriggerEnabled": true,
+  "feedSides": "L",
+  "pfTriggerEnabled": false,
   "refillMm": 55.0,
   "refillAsdaMm": -300.0
 }

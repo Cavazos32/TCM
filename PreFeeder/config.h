@@ -3,7 +3,7 @@
 #include <Arduino.h> 
 
 // Lado: comentar la línea siguiente para L, descomentar para R (misma base de firmware).
-#define PF_SIDE_RIGHT
+//#define PF_SIDE_RIGHT
 //.102 Lado R
 //.101 Lado L
 #ifndef PF_CONFIG_SIDE
@@ -55,14 +55,12 @@ constexpr uint8_t DEREELER_CW_LEVEL = LOW;
 constexpr uint8_t DEREELER_CCW_LEVEL = HIGH;
 
 constexpr int PIN_FEEDER_STEP = 18;
+constexpr uint8_t PIN_HOLGURA = 22;       // HIGH = holgura OK (ON)
+constexpr uint8_t HOLGURA_ON_LEVEL = HIGH;
+constexpr uint16_t HOLGURA_SETTLE_MS_DEFAULT = 150;
+constexpr uint16_t HOLGURA_SETTLE_MS_MIN = 10;
+constexpr uint16_t HOLGURA_SETTLE_MS_MAX = 500;
 constexpr uint8_t PIN_SERVO = 26;
-
-// TFmini Plus — UART2 (mismo pinout que firmware de referencia)
-constexpr int PIN_LIDAR_RX = 16;
-constexpr int PIN_LIDAR_TX = 17;
-constexpr uint32_t LIDAR_BAUD = 115200;
-constexpr uint32_t LIDAR_FRESH_MS = 400;
-constexpr uint16_t LIDAR_SAT_CM = 150;
 
 constexpr uint16_t SERVO_MIN_US = 500;
 constexpr uint16_t SERVO_MAX_US = 2500;

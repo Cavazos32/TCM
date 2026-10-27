@@ -3,10 +3,25 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from datetime import datetime, timezone
 from typing import Any, Callable
+
+# Banco / desarrollo: omitir revisión de arranque al reiniciar la HMI.
+# Producción: False, o lanzar con HMI_CHECKLIST_SKIP=0
+CHECKLIST_SKIP_ON_BOOT = True
+
+
+def _skip_checklist_on_boot() -> bool:
+    env = os.environ.get("HMI_CHECKLIST_SKIP", "").strip().lower()
+    if env in ("1", "true", "yes"):
+        return True
+    if env in ("0", "false", "no"):
+        return False
+    return CHECKLIST_SKIP_ON_BOOT
+
 
 CHECKLIST_COUNTER_MAX = 10_000
 CHECKLIST_MEASURE_TOL_MM = 2.0
@@ -14,6 +29,9 @@ CHECKLIST_MEASURE_TOL_MM = 2.0
 CHECKLIST_PIECE_EXTRA_MM = 55.0
 CHECKLIST_AIR_SETTLE_MS = 200
 CHECKLIST_ASDA_TRAVEL_FRACTION = 0.85  # fracción de depositMaxTravelMm
+# Misma idea que CycleRunner._wait_motion: Idle sin destino no cuenta como llegada.
+CHECKLIST_ASDA_TARGET_TOL_MM = 5.0
+CHECKLIST_ASDA_IDLE_OFF_TARGET_S = 1.0
 
 STEP_IDS = (
     "cycle_counter",
@@ -84,7 +102,7 @@ class ChecklistManager:
         """Arranque de la HMI (encendido / reinicio del programa): revisión obligada
         y sin sesión a medias guardada en disco."""
         with self._lock:
-            self._required = True
+            self._required = not _skip_checklist_on_boot()
             self._session = None
             self._worker_error = ""
             self._worker_phase = ""
@@ -816,25 +834,78 @@ class ChecklistManager:
     def _motion_online(self, host: Any) -> bool:
         return bool(host.motion_connected())
 
-    def _wait_motion_or_cancel(self, host: Any, timeout_s: float) -> bool:
-        """Espera Idle/Reached en tramos cortos.
+    def _checklist_asda_pos_mm(self, host: Any) -> float | None:
+        """Posición ASDA: HTTP con reintentos y luego caché del evento Reached."""
+        refresh = getattr(host, "refresh_asda_position_mm", None)
+        if callable(refresh):
+            for _ in range(4):
+                pos = refresh()
+                if pos is not None:
+                    return float(pos)
+                time.sleep(0.12)
+        get_pos = getattr(host, "asda_position_mm", None)
+        if callable(get_pos):
+            pos = get_pos()
+            if pos is not None:
+                return float(pos)
+        return None
 
-        Sale enseguida si el operador cierra el checklist (cancelación) o si
-        se enclava un error de máquina: el paso queda reintentable en vez de
-        seguir esperando minutos y moviendo la máquina por detrás.
+    def _checklist_asda_at_target(
+        self,
+        host: Any,
+        target_mm: float,
+        *,
+        tol_mm: float = CHECKLIST_ASDA_TARGET_TOL_MM,
+        live: bool = False,
+    ) -> bool | None:
+        if live:
+            pos = self._checklist_asda_pos_mm(host)
+        else:
+            get_pos = getattr(host, "asda_position_mm", None)
+            pos = get_pos() if callable(get_pos) else None
+        if pos is None:
+            return None
+        return abs(abs(float(pos)) - abs(float(target_mm))) <= float(tol_mm)
+
+    def _wait_asda_motion_target(self, host: Any, target_mm: float, timeout_s: float) -> bool:
+        """Espera Reached/Idle validando destino (como el ciclo de producción).
+
+        Un Idle espurio en el origen ya no da el paso por bueno mientras el
+        MOVE sigue en curso.
         """
-        deadline = time.monotonic() + timeout_s
+        deadline = time.monotonic() + float(timeout_s)
+        idle_off_target_since: float | None = None
+        reject_fn = getattr(host, "move_ack_rejected", None)
         while True:
             if self._worker_cancel is not None and self._worker_cancel.is_set():
                 raise _ChecklistCancelled()
             is_latched = getattr(host, "error_is_latched", None)
             if callable(is_latched) and is_latched():
                 raise RuntimeError("Error de máquina durante el paso")
+            if callable(reject_fn):
+                reject = str(reject_fn() or "").strip()
+                if reject:
+                    raise RuntimeError(f"MOVE rechazado — {reject}")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return False
-            if host.wait_motion_idle_or_reached(min(0.25, remaining)):
-                return True
+            if host.wait_motion_idle_or_reached(min(0.25, max(0.05, remaining))):
+                at = self._checklist_asda_at_target(host, target_mm)
+                if at is not False:
+                    return True
+                host.clear_motion_reached_flag()
+                if idle_off_target_since is None:
+                    idle_off_target_since = time.monotonic()
+            elif idle_off_target_since is not None:
+                busy_fn = getattr(host, "motion_busy", None)
+                busy = bool(busy_fn()) if callable(busy_fn) else False
+                if busy:
+                    idle_off_target_since = None
+                elif (
+                    time.monotonic() - idle_off_target_since
+                    >= CHECKLIST_ASDA_IDLE_OFF_TARGET_S
+                ):
+                    return False
 
     def _action_confirm_asda_home(self, host: Any) -> dict[str, Any]:
         """El operador vio el eje en su posición inicial: validar recorrido.
@@ -919,8 +990,6 @@ class ChecklistManager:
         self._set_phase("")
 
     def _run_asda_roundtrip(self, host: Any) -> None:
-        from motion import motion_http_asda_position_mm
-
         if not host._client.connected:
             # Igual que el alimentador: sin enlace no hubo recorrido real.
             raise RuntimeError("Sin enlace — actuador lineal no verificado")
@@ -928,29 +997,40 @@ class ChecklistManager:
         cfg = host._cycle.get_config()
         travel = float(getattr(cfg, "deposit_max_travel_mm", 1500.0) or 1500.0)
         travel *= CHECKLIST_ASDA_TRAVEL_FRACTION
-        host_motion_host = getattr(host._client, "_host", "10.10.32.20")
 
-        pos0 = motion_http_asda_position_mm(host=host_motion_host) or 0.0
+        pos0 = self._checklist_asda_pos_mm(host)
+        if pos0 is None:
+            raise RuntimeError("No se pudo leer la posición del actuador lineal")
 
         self._set_phase("asda:ida")
         host.clear_motion_reached_flag()
         if not host.cmd_motion_move_mm(travel, float(host._rpm)):
             raise RuntimeError("MOVE ida falló")
-        if not self._wait_motion_or_cancel(host, 180.0):
+        if not self._wait_asda_motion_target(host, travel, 180.0):
             raise RuntimeError("Timeout MOVE ida")
-        pos1 = motion_http_asda_position_mm(host=host_motion_host)
-        if pos1 is None or abs(pos1 - pos0) < 5.0:
+        at_travel = self._checklist_asda_at_target(host, travel, live=True)
+        if at_travel is False:
             raise RuntimeError("ASDA no se movió en ida")
+        if at_travel is None:
+            pos1 = self._checklist_asda_pos_mm(host)
+            if pos1 is None or abs(pos1 - pos0) < CHECKLIST_ASDA_TARGET_TOL_MM:
+                raise RuntimeError("ASDA no se movió en ida")
 
         self._set_phase("asda:vuelta")
         host.clear_motion_reached_flag()
         if not host.cmd_motion_move_zero(float(host._rpm)):
             raise RuntimeError("MOVE a 0 falló")
-        if not self._wait_motion_or_cancel(host, 180.0):
+        if not self._wait_asda_motion_target(host, 0.0, 180.0):
             raise RuntimeError("Timeout MOVE vuelta")
-        pos2 = motion_http_asda_position_mm(host=host_motion_host)
-        if pos2 is None or abs(pos2) > 2.0:
+        at_home = self._checklist_asda_at_target(
+            host, 0.0, tol_mm=CHECKLIST_MEASURE_TOL_MM, live=True
+        )
+        if at_home is False:
             raise RuntimeError("ASDA no regresó a 0")
+        if at_home is None:
+            pos2 = self._checklist_asda_pos_mm(host)
+            if pos2 is None or abs(pos2) > CHECKLIST_MEASURE_TOL_MM:
+                raise RuntimeError("ASDA no regresó a 0")
 
         self._log("Checklist: recorrido ASDA ida/vuelta OK")
         with self._lock:

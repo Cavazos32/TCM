@@ -81,8 +81,8 @@ constexpr uint8_t BIT_ENCODER = (1 << 5);
 constexpr unsigned long SENSOR_DEBOUNCE_MS = 150;
 constexpr unsigned long BOOT_GRACE_MS = 15000;
 constexpr unsigned long SNAPSHOT_HEARTBEAT_MS = 3000;
-constexpr unsigned long STATUS_PUSH_MS = 1000;
+constexpr unsigned long STATUS_PUSH_MS = 3000;
 
 #ifndef PLCA_DEBUG
-#define PLCA_DEBUG 1
+#define PLCA_DEBUG 0
 #endif

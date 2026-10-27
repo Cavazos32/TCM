@@ -766,17 +766,6 @@ static bool plcTcpDoByte(uint8_t cmdByte, const char* line)
       break;
   }
 
-  Serial.printf("[PLC-CMD] byte=0x%02X on=%d cutterR=%d cutterL=%d grip=%d hold=%d enc=%d blow=%d\n",
-                (unsigned)cmdByte, (int)wantOn,
-                (int)stCutterR, (int)stCutterL, (int)stGrippers,
-                (int)stHolder, (int)stEncoder, (int)stBlower);
-
-  if (ok) {
-    plcTcpStopPending = false;
-    peerTxEvents();
-    plcTcpPushStateIfChanged();
-  }
-
   char buf[256];
   snprintf(buf, sizeof(buf),
            "{\"ver\":%u,\"type\":\"ack\",\"actuator\":\"plc\",\"byte\":%u,"
@@ -784,6 +773,21 @@ static bool plcTcpDoByte(uint8_t cmdByte, const char* line)
            (unsigned)PLCA_PROTO_VER, (unsigned)cmdByte,
            ok ? "true" : "false", jsonEscape(err).c_str());
   tcpTx(String(buf));
+  if (tcpLinkOk())
+    tcpClient.flush();
+
+  if (ok) {
+    plcTcpStopPending = false;
+    peerTxEvents();
+    plcTcpPushStateIfChanged();
+  }
+
+#if PLCA_DEBUG
+  Serial.printf("[PLC-CMD] byte=0x%02X on=%d cutterR=%d cutterL=%d grip=%d hold=%d enc=%d blow=%d\n",
+                (unsigned)cmdByte, (int)wantOn,
+                (int)stCutterR, (int)stCutterL, (int)stGrippers,
+                (int)stHolder, (int)stEncoder, (int)stBlower);
+#endif
   return ok;
 }
 
@@ -1186,6 +1190,8 @@ void loop()
   }
 
   serviceTcp();
+  if (tcpLinkOk())
+    tcpRxDrain();
   serviceArduinoOta(4);
   blowerService();
 

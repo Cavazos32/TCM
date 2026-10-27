@@ -109,6 +109,10 @@ static bool motionIsOccupied() {
 static void asdaTcpPushStateIfChanged();
 static bool asdaTcpLinkOk();
 static void asdaTcpStartTask();
+static void asdaTcpConsumeCmds();
+static void asdaTcpPollEvents();
+static void motionPrepPollOnce();
+static bool pollMotionOnce();
 
 // ASDA TCP — protocolo maestro (bytes tabla ASDA)
 // COMMUNICATION IMPACT
@@ -332,7 +336,7 @@ bool jsonWantsWait(const String& body) {
   }
   String needle = "\"wait\"";
   int k = body.indexOf(needle);
-  if (k < 0) return false;
+  if (k < 0) return true;
   int colon = body.indexOf(':', k + needle.length());
   if (colon < 0) return true;
   String rest = body.substring(colon + 1);
@@ -526,49 +530,80 @@ static uint16_t modbusCRC(const uint8_t* data, size_t len) {
   return crc;
 }
 
-static bool modbusTransact(const uint8_t* tx, size_t txLen, uint8_t* rx,
-                           size_t& rxLen, size_t rxMax, size_t expectedMinLen) {
-  rxLen = 0;
-  clearServoRx();
-  delay(MODBUS_PRE_TX_GAP_MS);
-  ServoBus.write(tx, txLen);
-  ServoBus.flush();
-  uint32_t lastRxUs = micros();
-  uint32_t timeoutStartMs = millis();
-  bool gotAnyByte = false;
-  while ((millis() - timeoutStartMs) < RESPONSE_TIMEOUT_MS) {
-    while (ServoBus.available() > 0) {
-      int c = ServoBus.read();
-      if (c >= 0) {
-        lastRxUs = micros();
-        gotAnyByte = true;
-        if (rxLen < rxMax) rx[rxLen++] = (uint8_t)c;
-      }
-    }
-    if (gotAnyByte && (micros() - lastRxUs) >= MODBUS_FRAME_GAP_US) break;
-    yield();
+enum ModbusBusPhase : uint8_t {
+  MB_IDLE = 0,
+  MB_GAP,
+  MB_RX,
+};
+
+static ModbusBusPhase mbPhase = MB_IDLE;
+static uint32_t mbGapEndMs = 0;
+static uint32_t mbRxStartMs = 0;
+static uint32_t mbLastRxUs = 0;
+static bool mbGotByte = false;
+static uint8_t mbTx[16];
+static size_t mbTxLen = 0;
+static uint8_t mbRx[64];
+static size_t mbRxLen = 0;
+static uint8_t mbExpectFunc = 0;
+static size_t mbExpectRxLen = 0;
+static uint16_t mbReadRegCount = 0;
+static uint16_t mbReadRegs[4];
+
+static bool modbusBusy() { return mbPhase != MB_IDLE; }
+
+static void modbusAbort() {
+  mbPhase = MB_IDLE;
+  mbRxLen = 0;
+}
+
+static bool modbusParseRxOk() {
+  if (mbRxLen < 5) return false;
+  const uint16_t crcReceived = (uint16_t)mbRx[mbRxLen - 2]
+      | ((uint16_t)mbRx[mbRxLen - 1] << 8);
+  if (crcReceived != modbusCRC(mbRx, mbRxLen - 2)) return false;
+  if (mbRx[0] != MODBUS_ID) return false;
+  if (mbRx[1] & 0x80) return false;
+  if (mbRx[1] == 0x06 || mbRx[1] == 0x10)
+    return mbRxLen == 8 && mbRx[1] == mbExpectFunc;
+  if (mbRx[1] == 0x03) {
+    if (mbRxLen != mbExpectRxLen || mbRx[2] != (uint8_t)(mbReadRegCount * 2))
+      return false;
+    for (uint16_t i = 0; i < mbReadRegCount; i++)
+      mbReadRegs[i] = ((uint16_t)mbRx[3 + i * 2] << 8) | (uint16_t)mbRx[4 + i * 2];
+    return true;
   }
-  if (!gotAnyByte || rxLen < 5) return false;
-  uint16_t crcReceived = (uint16_t)rx[rxLen - 2] | ((uint16_t)rx[rxLen - 1] << 8);
-  if (crcReceived != modbusCRC(rx, rxLen - 2)) return false;
-  if (rx[0] != MODBUS_ID || (rx[1] & 0x80)) return false;
+  return false;
+}
+
+static bool modbusBeginRaw(const uint8_t* tx, size_t txLen, uint8_t expectFunc,
+                           size_t expectRxLen, uint16_t readRegCount) {
+  if (modbusBusy()) return false;
+  if (txLen > sizeof(mbTx)) return false;
+  memcpy(mbTx, tx, txLen);
+  mbTxLen = txLen;
+  mbExpectFunc = expectFunc;
+  mbExpectRxLen = expectRxLen;
+  mbReadRegCount = readRegCount;
+  mbRxLen = 0;
+  mbGotByte = false;
+  clearServoRx();
+  mbGapEndMs = millis() + MODBUS_PRE_TX_GAP_MS;
+  mbPhase = MB_GAP;
   return true;
 }
 
-static bool write16(uint16_t address, uint16_t value) {
+static bool modbusBeginWrite16(uint16_t address, uint16_t value) {
   uint8_t tx[8] = {MODBUS_ID, 0x06,
     (uint8_t)(address >> 8), (uint8_t)address,
     (uint8_t)(value >> 8), (uint8_t)value};
   uint16_t crc = modbusCRC(tx, 6);
   tx[6] = crc & 0xFF;
   tx[7] = crc >> 8;
-  uint8_t rx[32];
-  size_t rxLen = 0;
-  if (!modbusTransact(tx, 8, rx, rxLen, sizeof(rx), 8)) return false;
-  return rxLen == 8 && rx[1] == 0x06;
+  return modbusBeginRaw(tx, 8, 0x06, 8, 0);
 }
 
-static bool write32(uint16_t address, int32_t value) {
+static bool modbusBeginWrite32(uint16_t address, int32_t value) {
   uint32_t u = (uint32_t)value;
   uint8_t tx[13] = {MODBUS_ID, 0x10,
     (uint8_t)(address >> 8), (uint8_t)address, 0, 2, 4,
@@ -577,43 +612,125 @@ static bool write32(uint16_t address, int32_t value) {
   uint16_t crc = modbusCRC(tx, 11);
   tx[11] = crc & 0xFF;
   tx[12] = crc >> 8;
-  uint8_t rx[32];
-  size_t rxLen = 0;
-  if (!modbusTransact(tx, 13, rx, rxLen, sizeof(rx), 8)) return false;
-  return rxLen == 8 && rx[1] == 0x10;
+  return modbusBeginRaw(tx, 13, 0x10, 8, 0);
 }
 
-static bool readRegisters(uint16_t address, uint16_t count, uint16_t* out) {
+static bool modbusBeginReadRegs(uint16_t address, uint16_t count) {
+  if (count == 0 || count > 4) return false;
   uint8_t tx[8] = {MODBUS_ID, 0x03,
     (uint8_t)(address >> 8), (uint8_t)address,
     (uint8_t)(count >> 8), (uint8_t)count};
   uint16_t crc = modbusCRC(tx, 6);
   tx[6] = crc & 0xFF;
   tx[7] = crc >> 8;
-  uint8_t rx[64];
-  size_t rxLen = 0;
-  const size_t expectedLen = 5 + count * 2;
-  if (!modbusTransact(tx, 8, rx, rxLen, sizeof(rx), expectedLen)) return false;
-  if (rxLen != expectedLen || rx[1] != 0x03 || rx[2] != count * 2) return false;
-  for (uint16_t i = 0; i < count; i++)
-    out[i] = ((uint16_t)rx[3 + i * 2] << 8) | (uint16_t)rx[4 + i * 2];
+  return modbusBeginRaw(tx, 8, 0x03, 5 + count * 2, count);
+}
+
+static bool modbusBeginRead16(uint16_t address) {
+  return modbusBeginReadRegs(address, 1);
+}
+
+static bool modbusBeginRead32(uint16_t address) {
+  return modbusBeginReadRegs(address, 2);
+}
+
+// -1 fallo, 0 en curso, 1 OK (idle sin transacción también devuelve 1)
+static int modbusPoll() {
+  if (mbPhase == MB_IDLE) return 1;
+
+  switch (mbPhase) {
+    case MB_GAP:
+      if (millis() < mbGapEndMs) return 0;
+      ServoBus.write(mbTx, mbTxLen);
+      ServoBus.flush();
+      mbRxStartMs = millis();
+      mbLastRxUs = micros();
+      mbGotByte = false;
+      mbRxLen = 0;
+      mbPhase = MB_RX;
+      return 0;
+
+    case MB_RX:
+      while (ServoBus.available() > 0) {
+        int c = ServoBus.read();
+        if (c >= 0) {
+          mbLastRxUs = micros();
+          mbGotByte = true;
+          if (mbRxLen < sizeof(mbRx)) mbRx[mbRxLen++] = (uint8_t)c;
+        }
+      }
+      if (mbGotByte && (micros() - mbLastRxUs) >= MODBUS_FRAME_GAP_US) {
+        if (!modbusParseRxOk()) {
+          modbusAbort();
+          return -1;
+        }
+        mbPhase = MB_IDLE;
+        return 1;
+      }
+      if ((millis() - mbRxStartMs) >= RESPONSE_TIMEOUT_MS) {
+        modbusAbort();
+        return -1;
+      }
+      asdaTcpConsumeCmds();
+      yield();
+      return 0;
+
+    default:
+      modbusAbort();
+      return -1;
+  }
+}
+
+static bool modbusRunToCompletion() {
+  while (modbusBusy()) {
+    const int r = modbusPoll();
+    if (r < 0) return false;
+    if (r == 0) motionCooperateDuringWait();
+  }
   return true;
 }
 
+static bool write16(uint16_t address, uint16_t value) {
+  if (!modbusBeginWrite16(address, value)) return false;
+  return modbusRunToCompletion();
+}
+
+static bool write32(uint16_t address, int32_t value) {
+  if (!modbusBeginWrite32(address, value)) return false;
+  return modbusRunToCompletion();
+}
+
 static bool read16(uint16_t address, uint16_t& value) {
-  return readRegisters(address, 1, &value);
+  if (!modbusBeginRead16(address)) return false;
+  if (!modbusRunToCompletion()) return false;
+  value = mbReadRegs[0];
+  return true;
 }
 
 static bool read32(uint16_t address, int32_t& value) {
-  uint16_t regs[2];
-  if (!readRegisters(address, 2, regs)) return false;
-  value = (int32_t)(((uint32_t)regs[1] << 16) | (uint32_t)regs[0]);
+  if (!modbusBeginRead32(address)) return false;
+  if (!modbusRunToCompletion()) return false;
+  value = (int32_t)(((uint32_t)mbReadRegs[1] << 16) | (uint32_t)mbReadRegs[0]);
   return true;
 }
 
 // =============================================================================
 // ASDA — job de movimiento (P5.007)
 // =============================================================================
+enum MotionJobPollPhase : uint8_t {
+  MJP_IDLE = 0,
+  MJP_WAIT_TRIGGER,
+  MJP_WAIT_POS,
+};
+
+static MotionJobPollPhase motionJobPollPhase = MJP_IDLE;
+static uint8_t motionJobCloseKind = 0;  // 1=target, 2=loose, 3=cancel, 4=timeout+got, 5=timeout+!got
+static uint8_t motionJobPendingPosKind = 0;
+static uint16_t motionJobLastTrigger = 0;
+static bool motionJobGotTrigger = false;
+
+uint8_t motionNestedServiceDepth = 0;
+
 void motionJobBegin(uint16_t command, uint32_t timeoutMs) {
   motionCancelled = false;
   motionJobOk = false;
@@ -625,87 +742,139 @@ void motionJobBegin(uint16_t command, uint32_t timeoutMs) {
   motionJobTimeoutMs = timeoutMs;
   motionJobActive = true;
   lastMotionPollMs = 0;
+  motionJobPollPhase = MJP_IDLE;
+  motionJobCloseKind = 0;
+  motionJobPendingPosKind = 0;
+  motionJobGotTrigger = false;
+}
+
+static void motionJobCachePosFromModbus() {
+  motionJobPos = (int32_t)(((uint32_t)mbReadRegs[1] << 16) | (uint32_t)mbReadRegs[0]);
+  cachedPosPuu = motionJobPos;
+  cachedPosOk = true;
+}
+
+static bool motionJobFinishAfterPosRead() {
+  motionJobPollPhase = MJP_IDLE;
+  motionJobActive = false;
+  busyMotion = false;
+  switch (motionJobCloseKind) {
+    case 1:
+      motionJobDetail = "completo (target reached)";
+      motionJobOk = true;
+      break;
+    case 2:
+      motionJobDetail = "completo";
+      motionJobOk = true;
+      break;
+    case 3:
+      motionJobDetail = "cancelado";
+      motionJobOk = false;
+      break;
+    case 4:
+      raiseMotionAlarm(
+          String("ALARMA: timeout — no llego a destino (limite ") +
+              String(motionJobTimeoutMs) + " ms)",
+          MOT_ERR_ACTUATOR_TARGET);
+      motionJobOk = false;
+      break;
+    case 5:
+      raiseMotionAlarm("ALARMA: Modbus timeout leyendo P5.007", MOT_ERR_ASDA_MODBUS);
+      motionJobOk = false;
+      break;
+    default:
+      motionJobOk = false;
+      break;
+  }
+  if (motionJobOk && cachedPosOk) {
+    overviewOnAsdaMoveDone(puuToMm(cachedPosPuu, false));
+    asdaTcpReachedPos = cachedPosPuu;
+    asdaTcpNotifyReached = true;
+    LAT_MARK("7");
+  }
+  return true;
+}
+
+static bool motionJobBeginPosRead(uint8_t closeKind) {
+  motionJobCloseKind = closeKind;
+  if (modbusBusy()) {
+    motionJobPendingPosKind = closeKind;
+    return false;
+  }
+  motionJobPendingPosKind = 0;
+  if (!modbusBeginRead32(REG_P5_016)) {
+    motionJobPollPhase = MJP_IDLE;
+    return motionJobFinishAfterPosRead();
+  }
+  motionJobPollPhase = MJP_WAIT_POS;
+  return false;
+}
+
+static bool motionJobEvaluateTrigger() {
+  const uint16_t trigger = motionJobLastTrigger;
+  const bool got = motionJobGotTrigger;
+  const uint16_t doneLoose  = (uint16_t)(motionJobCmd + 10000);
+  const uint16_t doneTarget = (uint16_t)(motionJobCmd + 20000);
+
+  if (got && trigger == doneTarget)
+    return motionJobBeginPosRead(1);
+  if (got && trigger == doneLoose)
+    return motionJobBeginPosRead(2);
+
+  if ((millis() - motionJobStartMs) >= motionJobTimeoutMs)
+    return motionJobBeginPosRead(got ? 4 : 5);
+  return false;
 }
 
 static bool pollMotionOnce() {
-  if (!motionJobActive) return false;
+  if (!motionJobActive) {
+    motionJobPollPhase = MJP_IDLE;
+    motionJobPendingPosKind = 0;
+    return false;
+  }
+
+  if (motionJobPendingPosKind != 0)
+    return motionJobBeginPosRead(motionJobPendingPosKind);
+
+  if (motionJobPollPhase == MJP_WAIT_TRIGGER || motionJobPollPhase == MJP_WAIT_POS) {
+    const int mb = modbusPoll();
+    if (mb == 0) return false;
+    if (mb < 0) {
+      if (motionJobPollPhase == MJP_WAIT_TRIGGER) {
+        motionJobGotTrigger = false;
+        motionJobPollPhase = MJP_IDLE;
+        return motionJobEvaluateTrigger();
+      }
+      motionJobPollPhase = MJP_IDLE;
+      return motionJobFinishAfterPosRead();
+    }
+    if (motionJobPollPhase == MJP_WAIT_TRIGGER) {
+      motionJobLastTrigger = mbReadRegs[0];
+      motionJobGotTrigger = true;
+      cachedP5007 = motionJobLastTrigger;
+      cachedTriggerOk = true;
+      motionJobPollPhase = MJP_IDLE;
+      if (motionCancelled) {
+        motionJobCloseKind = 3;
+        return motionJobBeginPosRead(3);
+      }
+      return motionJobEvaluateTrigger();
+    }
+    motionJobCachePosFromModbus();
+    return motionJobFinishAfterPosRead();
+  }
+
+  if (motionCancelled)
+    return motionJobBeginPosRead(3);
 
   const uint32_t now = millis();
   if (lastMotionPollMs != 0 && (now - lastMotionPollMs) < MOTION_POLL_MIN_MS)
     return false;
   lastMotionPollMs = now;
 
-  if (motionCancelled) {
-    motionJobActive = false;
-    busyMotion = false;
-    motionJobOk = false;
-    motionJobDetail = "cancelado";
-    if (read32(REG_P5_016, motionJobPos)) {
-      cachedPosPuu = motionJobPos;
-      cachedPosOk = true;
-    }
-    return true;
-  }
-
-  uint16_t trigger = 0;
-  const bool got = read16(REG_P5_007, trigger);
-  if (got) {
-    cachedP5007 = trigger;
-    cachedTriggerOk = true;
-  }
-  const uint16_t doneLoose  = (uint16_t)(motionJobCmd + 10000);
-  const uint16_t doneTarget = (uint16_t)(motionJobCmd + 20000);
-
-  if (got && trigger == doneTarget) {
-    motionJobDetail = "completo (target reached)";
-    if (read32(REG_P5_016, motionJobPos)) {
-      cachedPosPuu = motionJobPos;
-      cachedPosOk = true;
-    }
-    motionJobActive = false;
-    busyMotion = false;
-    motionJobOk = true;
-    if (cachedPosOk) {
-      overviewOnAsdaMoveDone(puuToMm(cachedPosPuu, false));
-      asdaTcpReachedPos = cachedPosPuu;
-      asdaTcpNotifyReached = true;
-      LAT_MARK("7");
-    }
-    return true;
-  }
-  if (got && trigger == doneLoose) {
-    motionJobDetail = "completo";
-    if (read32(REG_P5_016, motionJobPos)) {
-      cachedPosPuu = motionJobPos;
-      cachedPosOk = true;
-    }
-    motionJobActive = false;
-    busyMotion = false;
-    motionJobOk = true;
-    if (cachedPosOk) {
-      overviewOnAsdaMoveDone(puuToMm(cachedPosPuu, false));
-      asdaTcpReachedPos = cachedPosPuu;
-      asdaTcpNotifyReached = true;
-      LAT_MARK("7");
-    }
-    return true;
-  }
-
-  if ((millis() - motionJobStartMs) >= motionJobTimeoutMs) {
-    const String alarm = got
-        ? String("ALARMA: timeout — no llego a destino (limite ") +
-              String(motionJobTimeoutMs) + " ms)"
-        : String("ALARMA: Modbus timeout leyendo P5.007");
-    raiseMotionAlarm(alarm, got ? MOT_ERR_ACTUATOR_TARGET : MOT_ERR_ASDA_MODBUS);
-    if (read32(REG_P5_016, motionJobPos)) {
-      cachedPosPuu = motionJobPos;
-      cachedPosOk = true;
-    }
-    motionJobActive = false;
-    busyMotion = false;
-    motionJobOk = false;
-    return true;
-  }
+  if (modbusBusy()) return false;
+  if (!modbusBeginRead16(REG_P5_007)) return false;
+  motionJobPollPhase = MJP_WAIT_TRIGGER;
   return false;
 }
 
@@ -723,7 +892,14 @@ static uint32_t calcMoveTimeoutMs(int32_t targetPuu, float speed) {
   return calcTravelTimeoutMs(distMm, speed);
 }
 
+static const uint8_t MOTION_PREP_MB_DONE = 255;
+static bool motionPrepModbusWait = false;
+static uint8_t motionPrepModbusNext = 0;
+static uint16_t motionPrepCompleteJobCmd = 0;
+
 static void motionPrepAbort(const String& err, uint8_t errByte = MOT_ERR_ASDA_MODBUS) {
+  motionPrepModbusWait = false;
+  modbusAbort();
   motionPrepKind = MOT_PREP_NONE;
   motionPrepStep = 0;
   busyMotion = false;
@@ -739,96 +915,161 @@ static void motionPrepComplete(uint16_t jobCmd) {
   LAT_MARK("6");
 }
 
+static void motionPrepStartModbus(uint8_t nextStep) {
+  motionPrepModbusWait = true;
+  motionPrepModbusNext = nextStep;
+}
+
+static void motionPrepStartModbusComplete(uint16_t jobCmd) {
+  motionPrepModbusWait = true;
+  motionPrepModbusNext = MOTION_PREP_MB_DONE;
+  motionPrepCompleteJobCmd = jobCmd;
+}
+
 static void motionPrepPollOnce() {
   if (!motionPrepActive()) return;
 
+  if (motionPrepModbusWait) {
+    const int mb = modbusPoll();
+    if (mb == 0) return;
+    motionPrepModbusWait = false;
+    if (mb < 0) {
+      const bool home = (motionPrepKind == MOT_PREP_HOME);
+      motionPrepAbort(home ? "Fallo Modbus preparando HOME" : "Fallo Modbus preparando MOVE",
+                      home ? MOT_ERR_ACTUATOR_HOME : MOT_ERR_ASDA_MODBUS);
+      return;
+    }
+    if (motionPrepModbusNext == MOTION_PREP_MB_DONE) {
+      motionPrepComplete(motionPrepCompleteJobCmd);
+      return;
+    }
+    motionPrepStep = motionPrepModbusNext;
+    if (motionPrepKind == MOT_PREP_HOME && motionPrepStep == 1)
+      motionPrepWaitUntilMs = millis() + ASDA_SERVO_ON_SETTLE_MS;
+  }
+
+  if (!motionPrepModbusWait && modbusBusy()) return;
+
   if (motionPrepStep == 0) LAT_MARK("4");
 
-  bool ok = false;
   switch (motionPrepKind) {
     case MOT_PREP_MOVE:
       switch (motionPrepStep) {
-        case 0:
-          ok = setMoveSpeed(motionPrepSpeed);
-          if (ok) motionPrepStep = 1;
-          break;
+        case 0: {
+          float rpm = motionPrepSpeed;
+          if (rpm < 0) rpm = -rpm;
+          if (rpm > 7500.0f) rpm = 7500.0f;
+          const int32_t speed01rpm = (int32_t)lroundf(rpm * 10.0f);
+          if (!modbusBeginWrite32(REG_P5_060, speed01rpm)) {
+            motionPrepAbort("Fallo Modbus preparando MOVE");
+            return;
+          }
+          motionPrepStartModbus(1);
+          return;
+        }
         case 1:
-          ok = write32(REG_P6_002, (int32_t)PR1_ABSOLUTE_DEF);
-          if (ok) motionPrepStep = 2;
-          break;
+          if (!modbusBeginWrite32(REG_P6_002, (int32_t)PR1_ABSOLUTE_DEF)) {
+            motionPrepAbort("Fallo Modbus preparando MOVE");
+            return;
+          }
+          motionPrepStartModbus(2);
+          return;
         case 2:
-          ok = write32(REG_P6_003, motionPrepTargetPuu);
-          if (ok) motionPrepStep = 3;
-          break;
+          if (!modbusBeginWrite32(REG_P6_003, motionPrepTargetPuu)) {
+            motionPrepAbort("Fallo Modbus preparando MOVE");
+            return;
+          }
+          motionPrepStartModbus(3);
+          return;
         case 3:
           LAT_MARK("5");
-          ok = write16(REG_P5_007, 1);
-          if (ok) motionPrepComplete(1);
-          break;
+          if (!modbusBeginWrite16(REG_P5_007, 1)) {
+            motionPrepAbort("Fallo Modbus preparando MOVE");
+            return;
+          }
+          motionPrepStartModbusComplete(1);
+          return;
         default:
           motionPrepAbort("Prep MOVE paso invalido");
           return;
       }
-      if (!ok) motionPrepAbort("Fallo Modbus preparando MOVE");
-      break;
 
     case MOT_PREP_HOME: {
       const uint16_t homingMethod = motionPrepForward ? 0x0029 : 0x002A;
       const int32_t speed01rpm = (int32_t)lroundf(motionPrepSpeed * 10.0f);
       switch (motionPrepStep) {
         case 0:
-          // SON antes de params/trigger: si ON y HOME van seguidos, el drive
-          // a veces solo queda en Servo ON y no ejecuta el PR de homing.
-          ok = servoOn();
-          if (ok) {
-            motionPrepWaitUntilMs = millis() + ASDA_SERVO_ON_SETTLE_MS;
-            motionPrepStep = 1;
-          }
-          break;
-        case 1:
-          if ((int32_t)(millis() - motionPrepWaitUntilMs) < 0)
+          if (!modbusBeginWrite16(REG_P2_030, 1)) {
+            motionPrepAbort("Fallo Modbus preparando HOME", MOT_ERR_ACTUATOR_HOME);
             return;
-          ok = true;
+          }
+          motionPrepStartModbus(1);
+          return;
+        case 1:
+          if (millis() < motionPrepWaitUntilMs) return;
           motionPrepStep = 2;
           break;
         case 2:
-          ok = write16(REG_P1_087, motionPrepTorque);
-          if (ok) motionPrepStep = 3;
-          break;
+          if (!modbusBeginWrite16(REG_P1_087, motionPrepTorque)) {
+            motionPrepAbort("Fallo Modbus preparando HOME", MOT_ERR_ACTUATOR_HOME);
+            return;
+          }
+          motionPrepStartModbus(3);
+          return;
         case 3:
-          ok = write16(REG_P1_088, motionPrepTimeMs);
-          if (ok) motionPrepStep = 4;
-          break;
+          if (!modbusBeginWrite16(REG_P1_088, motionPrepTimeMs)) {
+            motionPrepAbort("Fallo Modbus preparando HOME", MOT_ERR_ACTUATOR_HOME);
+            return;
+          }
+          motionPrepStartModbus(4);
+          return;
         case 4:
-          ok = write16(REG_P5_004, homingMethod);
-          if (ok) motionPrepStep = 5;
-          break;
+          if (!modbusBeginWrite16(REG_P5_004, homingMethod)) {
+            motionPrepAbort("Fallo Modbus preparando HOME", MOT_ERR_ACTUATOR_HOME);
+            return;
+          }
+          motionPrepStartModbus(5);
+          return;
         case 5:
-          ok = write32(REG_P5_005, speed01rpm);
-          if (ok) motionPrepStep = 6;
-          break;
+          if (!modbusBeginWrite32(REG_P5_005, speed01rpm)) {
+            motionPrepAbort("Fallo Modbus preparando HOME", MOT_ERR_ACTUATOR_HOME);
+            return;
+          }
+          motionPrepStartModbus(6);
+          return;
         case 6:
-          ok = write32(REG_P5_006, speed01rpm);
-          if (ok) motionPrepStep = 7;
-          break;
+          if (!modbusBeginWrite32(REG_P5_006, speed01rpm)) {
+            motionPrepAbort("Fallo Modbus preparando HOME", MOT_ERR_ACTUATOR_HOME);
+            return;
+          }
+          motionPrepStartModbus(7);
+          return;
         case 7:
-          ok = write32(REG_P6_000, 0);
-          if (ok) motionPrepStep = 8;
-          break;
+          if (!modbusBeginWrite32(REG_P6_000, 0)) {
+            motionPrepAbort("Fallo Modbus preparando HOME", MOT_ERR_ACTUATOR_HOME);
+            return;
+          }
+          motionPrepStartModbus(8);
+          return;
         case 8:
-          ok = write32(REG_P6_001, 0);
-          if (ok) motionPrepStep = 9;
-          break;
+          if (!modbusBeginWrite32(REG_P6_001, 0)) {
+            motionPrepAbort("Fallo Modbus preparando HOME", MOT_ERR_ACTUATOR_HOME);
+            return;
+          }
+          motionPrepStartModbus(9);
+          return;
         case 9:
           LAT_MARK("5");
-          ok = write16(REG_P5_007, 0);
-          if (ok) motionPrepComplete(0);
-          break;
+          if (!modbusBeginWrite16(REG_P5_007, 0)) {
+            motionPrepAbort("Fallo Modbus preparando HOME", MOT_ERR_ACTUATOR_HOME);
+            return;
+          }
+          motionPrepStartModbusComplete(0);
+          return;
         default:
           motionPrepAbort("Prep HOME paso invalido");
           return;
       }
-      if (!ok) motionPrepAbort("Fallo Modbus preparando HOME", MOT_ERR_ACTUATOR_HOME);
       break;
     }
 
@@ -838,24 +1079,44 @@ static void motionPrepPollOnce() {
   }
 }
 
+void motionCooperateDuringWait() {
+  modbusPoll();
+  if (!modbusBusy()) {
+    motionPrepPollOnce();
+    if (motionJobActive) pollMotionOnce();
+  }
+  serviceWifi();
+  serviceArduinoOta(2);
+  asdaTcpConsumeCmds();
+  server.handleClient();
+  asdaTcpPollEvents();
+  motionPollIoSensors();
+  updateEncoderMotion(millis());
+  serviceCANRx();
+  if (motionNestedServiceDepth == 0) {
+    feedLoop();
+    stage2Loop();
+  }
+  yield();
+}
+
+static bool motionWaitUntilIdle(String& detail, int32_t* outPos) {
+  while (motionJobActive || motionPrepActive() || modbusBusy()) {
+    motionCooperateDuringWait();
+    if (pollMotionOnce()) break;
+  }
+  detail = motionJobDetail;
+  if (outPos) *outPos = motionJobPos;
+  return motionJobOk;
+}
+
 bool waitPrComplete(uint16_t command,
                     uint32_t timeoutMs,
                     String& detail,
                     int32_t* outPos) {
-  motionJobBegin(command, timeoutMs);
-
-  while (motionJobActive || motionPrepActive()) {
-    motionPrepPollOnce();
-    if (pollMotionOnce()) break;
-    server.handleClient();
-    updateEncoderMotion(millis());
-    delay(40);
-    yield();
-  }
-
-  detail = motionJobDetail;
-  if (outPos) *outPos = motionJobPos;
-  return motionJobOk;
+  (void)command;
+  (void)timeoutMs;
+  return motionWaitUntilIdle(detail, outPos);
 }
 
 // =============================================================================
@@ -867,9 +1128,9 @@ bool servoOn() {
 
 bool servoOff() {
   if (!write16(REG_P2_030, 0xFFFF)) return false;
-  delay(20);
-  write16(REG_P2_030, 0);
-  return true;
+  const uint32_t until = millis() + 20;
+  while (millis() < until) motionCooperateDuringWait();
+  return write16(REG_P2_030, 0);
 }
 
 bool stopMotion() {
@@ -881,37 +1142,6 @@ bool setMoveSpeed(float rpm) {
   if (rpm > 7500.0f) rpm = 7500.0f;
   int32_t speed01rpm = (int32_t)lroundf(rpm * 10.0f);
   return write32(REG_P5_060, speed01rpm);
-}
-
-bool moveAbsolute(int32_t targetPUU, float rpm) {
-  if (!setMoveSpeed(rpm)) return false;
-  if (!write32(REG_P6_002, (int32_t)PR1_ABSOLUTE_DEF)) return false;
-  if (!write32(REG_P6_003, targetPUU)) return false;
-  if (!write16(REG_P5_007, 1)) return false;
-  return true;
-}
-
-bool homeTorque(bool forward,
-                uint16_t torquePct,
-                uint16_t timeMs,
-                float speedRpm) {
-  torquePct = constrain(torquePct, 1, 300);
-  timeMs    = constrain(timeMs, 2, 2000);
-  if (speedRpm < 0.1f) speedRpm = 0.1f;
-  if (speedRpm > 2000.0f) speedRpm = 2000.0f;
-
-  uint16_t homingMethod = forward ? 0x0029 : 0x002A;
-  int32_t speed01rpm = (int32_t)lroundf(speedRpm * 10.0f);
-
-  if (!write16(REG_P1_087, torquePct)) return false;
-  if (!write16(REG_P1_088, timeMs)) return false;
-  if (!write16(REG_P5_004, homingMethod)) return false;
-  if (!write32(REG_P5_005, speed01rpm)) return false;
-  if (!write32(REG_P5_006, speed01rpm)) return false;
-  if (!write32(REG_P6_000, 0)) return false;
-  if (!write32(REG_P6_001, 0)) return false;
-  if (!write16(REG_P5_007, 0)) return false;
-  return true;
 }
 
 bool communicationTest(String& detail) {
@@ -936,21 +1166,27 @@ bool communicationTest(String& detail) {
 // ASDA — API interna (HTTP + TCP maestro) — opcodes en MotionStates.h
 // =============================================================================
 
-static bool asdaStartHome(bool forward, String& err) {
+static bool asdaStartHome(bool forward, String& err, bool useDefaultPrep = true) {
   if (motionIsOccupied()) {
     err = "Ocupado en movimiento";
     return false;
   }
 
   motionPrepForward = forward;
-  motionPrepTorque = DEFAULT_HOME_TORQUE_PCT;
-  motionPrepTimeMs = DEFAULT_HOME_TIME_MS;
-  motionPrepSpeed = DEFAULT_HOME_SPEED_RPM;
-  motionPrepTimeoutMs =
-      calcTravelTimeoutMs(HOME_MAX_TRAVEL_MM, motionPrepSpeed);
+  if (useDefaultPrep) {
+    motionPrepTorque = DEFAULT_HOME_TORQUE_PCT;
+    motionPrepTimeMs = DEFAULT_HOME_TIME_MS;
+    motionPrepSpeed = DEFAULT_HOME_SPEED_RPM;
+    motionPrepTimeoutMs =
+        calcTravelTimeoutMs(HOME_MAX_TRAVEL_MM, motionPrepSpeed);
+  } else if (motionPrepTimeoutMs == 0) {
+    motionPrepTimeoutMs =
+        calcTravelTimeoutMs(HOME_MAX_TRAVEL_MM, motionPrepSpeed);
+  }
 
   busyMotion = true;
   clearMotionAlarm();
+  motionPrepModbusWait = false;
   motionPrepKind = MOT_PREP_HOME;
   motionPrepStep = 0;
   LAT_MARK("3");
@@ -971,6 +1207,7 @@ static bool asdaStartMove(int32_t position, float speed, String& err) {
 
   busyMotion = true;
   clearMotionAlarm();
+  motionPrepModbusWait = false;
   motionPrepKind = MOT_PREP_MOVE;
   motionPrepStep = 0;
   LAT_MARK("3");
@@ -982,6 +1219,10 @@ static bool asdaStartMove(int32_t position, float speed, String& err) {
 static bool asdaExecStop(String& err) {
   const bool ok = stopMotion();
   motionCancelled = true;
+  motionPrepModbusWait = false;
+  modbusAbort();
+  motionJobPollPhase = MJP_IDLE;
+  motionJobPendingPosKind = 0;
   motionJobActive = false;
   motionPrepKind = MOT_PREP_NONE;
   motionPrepStep = 0;
@@ -2198,21 +2439,25 @@ void handleHome() {
   float speed = jsonFloat(body, "speedRpm", DEFAULT_HOME_SPEED_RPM);
   const uint32_t timeoutMs = calcTravelTimeoutMs(HOME_MAX_TRAVEL_MM, speed);
 
-  busyMotion = true;
+  motionPrepTorque = (uint16_t)constrain((int)torque, 1, 300);
+  motionPrepTimeMs = timeMs;
+  motionPrepSpeed = speed;
+  motionPrepTimeoutMs = timeoutMs;
   clearMotionAlarm();
   Serial.printf("API HOME %s torque=%u hold=%u speed=%.1f timeout=%lu\n",
                 forward ? "F" : "R", torque, timeMs, speed,
                 (unsigned long)timeoutMs);
 
-  if (!homeTorque(forward, torque, timeMs, speed)) {
+  String err;
+  if (!asdaStartHome(forward, err, false)) {
     busyMotion = false;
-    sendJson(500, errJson("No se pudo disparar homing"));
+    sendJson(500, errJson(err));
     return;
   }
 
   String detail;
   int32_t pos = 0;
-  bool done = waitPrComplete(0, timeoutMs, detail, &pos);
+  bool done = motionWaitUntilIdle(detail, &pos);
   busyMotion = false;
 
   char buf[280];
@@ -2350,21 +2595,21 @@ void handleMove() {
       fabsf(puuToMm(position, factory) - puuToMm(curPuu, factory));
   const uint32_t timeoutMs = calcTravelTimeoutMs(distMm, speed);
 
-  busyMotion = true;
   clearMotionAlarm();
   Serial.printf("API MOVE %ld PUU (mm=%.2f d=%.2f) @ %.1f rpm timeout=%lu\n",
                 (long)position, hasMm ? cmdMm : puuToMm(position, factory),
                 distMm, speed, (unsigned long)timeoutMs);
 
-  if (!moveAbsolute(position, speed)) {
-    busyMotion = false;
-    sendJson(500, errJson("No se pudo disparar MOVE"));
+  motionPrepTimeoutMs = timeoutMs;
+  String err;
+  if (!asdaStartMove(position, speed, err)) {
+    sendJson(500, errJson(err));
     return;
   }
 
   String detail;
   int32_t pos = 0;
-  bool done = waitPrComplete(1, timeoutMs, detail, &pos);
+  bool done = motionWaitUntilIdle(detail, &pos);
   busyMotion = false;
   if (done) overviewOnAsdaMoveDone(puuToMm(pos, factory));
 
@@ -3528,7 +3773,7 @@ void setup() {
 
   servoCanInitMutex();
   delay(SERVO_POWERUP_MS);
-  (void)feedCanColdStart();
+  (void)feedCanStartup();
   feedInit();
   stage2Init();
   Serial.printf("Motion CAN: can=%d servo=%d\n", (int)canInitialized, (int)servoCanReady);
@@ -3543,16 +3788,20 @@ void loop() {
     server.handleClient();
     return;
   }
+  // Comunicación: WiFi, TCP HMI (:8767), HTTP local
   serviceWifi();
   serviceArduinoOta(4);
   asdaTcpConsumeCmds();
   server.handleClient();
+  // Sensores de máquina y eventos de enlace TCP
   motionPollIoSensors();
   asdaTcpPollEvents();
+  // ASDA: bus Modbus incremental, preparación MOVE/HOME y seguimiento P5.007
+  if (modbusBusy()) modbusPoll();
   motionPrepPollOnce();
-  if (motionJobActive)
-    pollMotionOnce();
+  if (motionJobActive) pollMotionOnce();
   updateEncoderMotion(millis());
+  // CAN / alimentación y Stage2 (sin reinicio automático del bus)
   serviceCANRx();
   feedLoop();
   stage2Loop();

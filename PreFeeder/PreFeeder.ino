@@ -2,7 +2,7 @@
 //
 // Ciclo principal (loop):
 //   1) vacía cola NC_* (web/TCP) → machineHandleCommand
-//   2) machineTick: lee sensores/lidar, lógica feeder/buffer, syncOutputs
+//   2) machineTick: lee sensores, lógica feeder/buffer, syncOutputs
 //   3) pfNetworkTick: HTTP, OTA, peer Maestro
 // Motores/servo: tarea outputTask (core 1) aplica la intención cada ~8 ms
 
@@ -65,6 +65,11 @@ static void sensorsInitPins() {
   pinMode(PIN_TENSION, INPUT_PULLUP);
   pinMode(PIN_CYLINDER, INPUT_PULLDOWN);
   pinMode(PIN_HOSE, INPUT_PULLUP);
+  pinMode(PIN_HOLGURA, INPUT_PULLUP);
+}
+
+static bool holguraSensorOn() {
+  return digitalRead(PIN_HOLGURA) == HOLGURA_ON_LEVEL;
 }
 
 // Lee GPIO de buffer, tensión, cilindro, manguera; filtra estabilidad GPIO19 (full)
@@ -80,6 +85,7 @@ static void sensorsUpdate(uint32_t nowMs) {
   gSnap.tensionRaw = digitalRead(PIN_TENSION) == HIGH;
   gSnap.cylinderOpen = digitalRead(PIN_CYLINDER) == HIGH;
   gSnap.hoseAbsent = digitalRead(PIN_HOSE) == HIGH;
+  gSnap.holguraOn = holguraSensorOn();
 
   if (gSnap.bufFullRaw) {
     fullHighMs += dt;
@@ -263,14 +269,31 @@ static SystemFault fault = FAULT_NONE;
 static bool autoOn = false;
 static bool idleMode = false;
 static bool inProcess = false;
+static bool benchInProcess = false;
+
+enum FeederMode : uint8_t {
+  FEED_NONE = 0,
+  FEED_TFEED,
+  FEED_HOLGURA,
+};
+
+enum HolguraPhase : uint8_t {
+  HOLG_IDLE = 0,
+  HOLG_WAIT_ON,
+  HOLG_SETTLE,
+  HOLG_TIMED_FEED,
+};
 
 static bool feederDemand = false;
+static FeederMode feederMode = FEED_NONE;
+static HolguraPhase holguraPhase = HOLG_IDLE;
 static uint32_t feederMinEndMs = 0;
-static uint32_t feederMaxEndMs = 0;
-static HardwareSerial lidarSerial(2);
-static volatile uint16_t lidarDistCm = 0;
-static volatile uint32_t lidarUpdatedMs = 0;
-static volatile bool lidarValid = false;
+static uint32_t holguraSettleEndMs = 0;
+static uint32_t holguraTimedEndMs = 0;
+static bool holguraLastOn = false;
+static bool holguraSawOn = false;
+static bool holguraPostCycleOffWatch = false;
+static uint32_t holguraOffSinceMs = 0;
 static bool pendingTrigger = false;
 static float pendingTriggerSec = 0.0f;
 static uint16_t pendingTriggerId = 0;
@@ -311,61 +334,100 @@ static bool bufferWantsFill() {
   return motionArmed() && !gSnap.bufFullStable;
 }
 
+static void resetHolguraFeedState() {
+  holguraPhase = HOLG_IDLE;
+  holguraSettleEndMs = 0;
+  holguraTimedEndMs = 0;
+  holguraLastOn = false;
+  holguraSawOn = false;
+  holguraPostCycleOffWatch = false;
+  holguraOffSinceMs = 0;
+}
+
+static void holguraOnRisingEdge(uint32_t nowMs) {
+  holguraSawOn = true;
+  holguraPhase = HOLG_SETTLE;
+  holguraSettleEndMs = nowMs + (P ? (uint32_t)P->holguraSettleMs : (uint32_t)HOLGURA_SETTLE_MS_DEFAULT);
+  holguraTimedEndMs = 0;
+  holguraOffSinceMs = 0;
+}
+
+static void enterFault(SystemFault f);
+
 static void stopFeederDemand() {
   feederDemand = false;
+  feederMode = FEED_NONE;
   feederMinEndMs = 0;
-  feederMaxEndMs = 0;
+  resetHolguraFeedState();
   pendingTrigger = false;
 }
 
-// TFmini Plus: trama 9 bytes 0x59 0x59 (polaridad / UART como en referencia).
-static void lidarPoll() {
-  static uint8_t frame[9];
-  static uint8_t frameIndex = 0;
-  uint8_t n = 0;
-  while (lidarSerial.available() > 0 && n < 64) {
-    n++;
-    const uint8_t b = (uint8_t)lidarSerial.read();
-    if (frameIndex == 0) {
-      if (b == 0x59) frame[frameIndex++] = b;
-      continue;
-    }
-    if (frameIndex == 1) {
-      if (b == 0x59) frame[frameIndex++] = b;
-      else frameIndex = 0;
-      continue;
-    }
-    frame[frameIndex++] = b;
-    if (frameIndex < 9) continue;
-    frameIndex = 0;
-    uint16_t checksum = 0;
-    for (uint8_t i = 0; i < 8; i++) checksum = (uint16_t)(checksum + frame[i]);
-    if ((checksum & 0xFF) != frame[8]) continue;
-    lidarDistCm = (uint16_t)(frame[2] | (frame[3] << 8));
-    lidarUpdatedMs = millis();
-    lidarValid = true;
+static void beginHolguraFeed(uint32_t nowMs) {
+  holguraPostCycleOffWatch = false;
+  holguraOffSinceMs = 0;
+  feederDemand = true;
+  feederMode = FEED_HOLGURA;
+  holguraSawOn = false;
+  holguraSettleEndMs = 0;
+  holguraTimedEndMs = 0;
+  holguraLastOn = holguraSensorOn();
+  holguraPhase = HOLG_WAIT_ON;
+}
+
+// Ciclo holgura terminó: flanco ON → settle → n s de alimentación.
+static void stopHolguraFeedCycle(uint32_t nowMs) {
+  feederDemand = false;
+  feederMode = FEED_NONE;
+  holguraPhase = HOLG_IDLE;
+  holguraTimedEndMs = 0;
+  if (holguraSawOn) {
+    holguraPostCycleOffWatch = true;
+    holguraSawOn = false;
   }
+  if (!holguraSensorOn())
+    holguraOffSinceMs = nowMs;
+  else
+    holguraOffSinceMs = 0;
 }
 
-static bool lidarFresh(uint16_t& distOut) {
-  if (!lidarValid) return false;
-  if ((uint32_t)(millis() - lidarUpdatedMs) > LIDAR_FRESH_MS) return false;
-  distOut = lidarDistCm;
-  return true;
+// Tras OFF→ON→OFF: en OFF cuenta N s para fallo de holgura insuficiente.
+static void serviceHolguraInsufficiency(uint32_t nowMs) {
+  if (!holguraPostCycleOffWatch || !P) return;
+  if (holguraSensorOn()) {
+    holguraOffSinceMs = 0;
+    return;
+  }
+  if (!holguraOffSinceMs) holguraOffSinceMs = nowMs;
+  if ((nowMs - holguraOffSinceMs) >= (uint32_t)(P->holguraOffFaultSec * 1000.0f))
+    enterFault(FAULT_HOLGURA);
 }
 
-// Holgura TFmini: OFF (puede parar) si dist < activación; ≥ saturación no prolonga feeder
-static bool lidarHolguraOk() {
-  if (!P) return false;
-  uint16_t dist = 0;
-  if (!lidarFresh(dist)) return false;
-  if (dist >= LIDAR_SAT_CM) return true;
-  return dist < P->lidarActivateCm;
-}
+static void serviceHolguraFeed(uint32_t nowMs) {
+  if (feederMode != FEED_HOLGURA || !P) return;
+  const bool on = holguraSensorOn();
+  const bool rising = on && !holguraLastOn;
+  holguraLastOn = on;
 
-static bool lidarHolguraActivated(uint16_t dist) {
-  if (!P) return false;
-  return dist >= P->lidarActivateCm;
+  if (holguraPhase == HOLG_WAIT_ON) {
+    if (rising) holguraOnRisingEdge(nowMs);
+    feederDemand = true;
+    return;
+  }
+
+  if (holguraPhase == HOLG_SETTLE) {
+    feederDemand = true;
+    if (holguraSettleEndMs && (int32_t)(nowMs - holguraSettleEndMs) >= 0) {
+      holguraPhase = HOLG_TIMED_FEED;
+      holguraTimedEndMs = nowMs + (uint32_t)(P->holguraOnFeedSec * 1000.0f);
+    }
+    return;
+  }
+
+  if (holguraPhase == HOLG_TIMED_FEED) {
+    feederDemand = true;
+    if (holguraTimedEndMs && (int32_t)(nowMs - holguraTimedEndMs) >= 0)
+      stopHolguraFeedCycle(nowMs);
+  }
 }
 
 static void stopAutoOutputs() {
@@ -432,31 +494,28 @@ static void syncOutputs() {
   outputsSetIntent(o);
 }
 
-// Arranca ciclo feeder: espera mínimo trigger_feed_s, luego holgura lidar hasta lidar_max_s
-static void startFeederDemand(uint32_t nowMs, float sec, uint16_t trigId) {
+// Tfeed por tiempo (trigger HMI con holgura ya ON).
+static void startTfeedDemand(uint32_t nowMs, float sec, uint16_t trigId) {
   if (sec < 0.05f) sec = P->triggerFeedS;
   triggerIdRemember(trigId);
+  resetHolguraFeedState();
+  feederMode = FEED_TFEED;
   feederDemand = true;
   feederMinEndMs = nowMs + (uint32_t)(sec * 1000.0f);
-  float extra = P->lidarFeedMaxSec;
-  if (extra < 0.1f) extra = 0.1f;
-  feederMaxEndMs = feederMinEndMs + (uint32_t)(extra * 1000.0f);
   pendingTrigger = false;
 }
 
+static void serviceTfeedDemand(uint32_t nowMs) {
+  if (feederMode != FEED_TFEED || !feederDemand) return;
+  if ((int32_t)(nowMs - feederMinEndMs) >= 0)
+    stopFeederDemand();
+}
+
 static void serviceFeederDemand(uint32_t nowMs) {
-  if (!feederDemand) return;
-  if (!P->lidarHolguraEnabled) {
-    if ((int32_t)(nowMs - feederMinEndMs) >= 0)  // solo Tfeed → para feeder
-      stopFeederDemand();
-    return;
-  }
-  if ((int32_t)(nowMs - feederMaxEndMs) >= 0) {  // espera tope lidar_max_s → para feeder
-    stopFeederDemand();
-    return;
-  }
-  if ((int32_t)(nowMs - feederMinEndMs) >= 0 && lidarHolguraOk())  // holgura OK → para feeder
-    stopFeederDemand();
+  if (feederMode == FEED_TFEED)
+    serviceTfeedDemand(nowMs);
+  else if (feederMode == FEED_HOLGURA)
+    serviceHolguraFeed(nowMs);
 }
 
 // Flanco mid/high buffer → impulso boost RPM servo (timers mid_boost_s / high_boost_s)
@@ -521,7 +580,6 @@ void machineInit(Params* params) {
   P = params;
   commandsInit();
   sensorsInitPins();
-  lidarSerial.begin(LIDAR_BAUD, SERIAL_8N1, PIN_LIDAR_RX, PIN_LIDAR_TX);
   outputsInit();
   xTaskCreatePinnedToCore(outputTask, "outputs", 4096, nullptr, 2, nullptr, 1);
   fault = FAULT_NONE;
@@ -544,6 +602,7 @@ void machineHandleCommand(const NetCommand& cmd) {
       autoOn = false;
       idleMode = false;
       inProcess = false;
+      benchInProcess = false;
       stopAutoOutputs();
       break;
     case NC_TRIGGER:  // encola Tfeed; machineTick → startFeederDemand
@@ -555,18 +614,40 @@ void machineHandleCommand(const NetCommand& cmd) {
       break;
     case NC_IN_PROCESS:  // TCM: sensores/buffer armados
       inProcess = (cmd.arg == "1" || cmd.arg == "true" || cmd.arg == "on");
-      if (!inProcess) stopAutoOutputs();
+      if (!inProcess) {
+        benchInProcess = false;
+        stopAutoOutputs();
+      } else
+        benchInProcess = false;
+      break;
+    case NC_BENCH_IN_PROCESS:  // HTML local: simular En proceso (banco)
+      benchInProcess = (cmd.arg == "1" || cmd.arg == "true" || cmd.arg == "on");
+      if (benchInProcess) {
+        idleMode = false;
+        inProcess = true;
+        if (fault == FAULT_NONE) autoOn = true;
+      } else {
+        inProcess = false;
+        autoOn = false;
+        stopAutoOutputs();
+      }
       break;
     case NC_IDLE_MODE:  // Materialista: solo refill manual
       idleMode = (cmd.arg == "1" || cmd.arg == "true" || cmd.arg == "on");
       if (idleMode) {
         autoOn = false;
         inProcess = false;
+        benchInProcess = false;
         stopAutoOutputs();
       }
       break;
     case NC_SET_TRIGGER_FEED:
       P->triggerFeedS = cmd.arg.toFloat();
+      paramsValidate(*P);
+      paramsSave(*P);
+      break;
+    case NC_SET_HMI_TFEED:
+      P->hmiTfeedEnabled = (cmd.arg == "1" || cmd.arg == "true" || cmd.arg == "on");
       paramsValidate(*P);
       paramsSave(*P);
       break;
@@ -612,7 +693,6 @@ void machineHandleCommand(const NetCommand& cmd) {
 
 // Un paso del ciclo de máquina (~cada loop + delay 2 ms)
 void machineTick(uint32_t nowMs) {
-  lidarPoll();           // lee UART TFmini
   sensorsUpdate(nowMs);  // lee GPIO + estabilidad buffer
 
   for (int i = 0; i < 4; i++) {  // espera refill_pulse_s → apaga canal Materialista
@@ -628,11 +708,26 @@ void machineTick(uint32_t nowMs) {
   serviceProtections();
 
   if (fault == FAULT_NONE && motionArmed()) {
+    if (holguraPostCycleOffWatch && holguraSensorOn()) {
+      holguraPostCycleOffWatch = false;
+      holguraOffSinceMs = 0;
+    }
+    serviceHolguraInsufficiency(nowMs);
     if (pendingTrigger && !feederDemand) {
       float sec = pendingTriggerSec > 0.05f ? pendingTriggerSec : P->triggerFeedS;
-      startFeederDemand(nowMs, sec, pendingTriggerId);  // mueve feeder (vía syncOutputs)
-    }
-    serviceFeederDemand(nowMs);   // espera Tfeed / holgura / tope
+      const uint16_t tid = pendingTriggerId;
+      pendingTrigger = false;
+      pendingTriggerId = 0;
+      pendingTriggerSec = 0.0f;
+      if (P->hmiTfeedEnabled && holguraSensorOn())
+        startTfeedDemand(nowMs, sec, tid);
+      else {
+        if (tid) triggerIdRemember(tid);
+        beginHolguraFeed(nowMs);
+      }
+    } else if (!feederDemand && !holguraSensorOn() && !holguraPostCycleOffWatch)
+      beginHolguraFeed(nowMs);
+    serviceFeederDemand(nowMs);
     serviceBoostEdges(nowMs);     // impulsos mid/high
     serviceTension(nowMs);        // inversión / falla tensión
     serviceBufferTimeout(nowMs);  // espera llenado buffer
@@ -649,25 +744,18 @@ MachineStatus machineStatus() {
   s.autoEnabled = autoOn;
   s.idleMode = idleMode;
   s.inProcess = inProcess;
+  s.benchInProcess = benchInProcess;
   s.feederActive = feederDemand && motionArmed();
   s.bufferActive = bufferWantsFill();
   s.triggerActive = s.feederActive;
-  if (feederDemand && feederMaxEndMs) {
-    int32_t left = (int32_t)(feederMaxEndMs - millis());
-    s.feederMsLeft = left > 0 ? (uint32_t)left : 0;
+  if (feederDemand) {
+    uint32_t endMs = feederMode == FEED_TFEED ? feederMinEndMs : holguraTimedEndMs;
+    if (endMs) {
+      int32_t left = (int32_t)(endMs - millis());
+      s.feederMsLeft = left > 0 ? (uint32_t)left : 0;
+    }
   }
-  uint16_t d = 0;
-  s.lidar.valid = lidarFresh(d);
-  s.lidar.distCm = d;
   return s;
-}
-
-LidarReading machineLidar() {
-  LidarReading r;
-  uint16_t d = 0;
-  r.valid = lidarFresh(d);
-  r.distCm = d;
-  return r;
 }
 
 uint8_t machineFaultWireCode() {
@@ -679,6 +767,7 @@ uint8_t machineFaultWireCode() {
     case FAULT_CYLINDER: id = 3; break;
     case FAULT_HOSE: id = 4; break;
     case FAULT_BUFFER_TIMEOUT: id = 5; break;
+    case FAULT_HOLGURA: id = 6; break;
     default: return 0;
   }
   return PF_FAULT_WIRE_BASE + id;
@@ -738,6 +827,9 @@ static void dispatchPeerJson(const String& line) {
   } else if (cmd == "setTriggerFeed" || cmd == "setTriggerCfg") {
     nc.type = NC_SET_TRIGGER_FEED;
     nc.arg = val;
+  } else if (cmd == "setHmiTfeedEnabled" || cmd == "setTfeedEnabled") {
+    nc.type = NC_SET_HMI_TFEED;
+    nc.arg = val;
   } else if (cmd == "setRefillPulseS" || cmd == "refillPulseS") {
     nc.type = NC_SET_REFILL_PULSE;
     nc.arg = val;
@@ -786,6 +878,8 @@ static String buildPeerStatus(const MachineStatus& c, const SensorSnapshot& s) {
   j += s.cylinderOpen ? "true" : "false";
   j += ",\"hoseAbsent\":";
   j += s.hoseAbsent ? "true" : "false";
+  j += ",\"holgura\":";
+  j += s.holguraOn ? "true" : "false";
   j += ",\"error\":";
   j += c.fault != FAULT_NONE ? "true" : "false";
   j += ",\"errorCode\":";
@@ -884,20 +978,18 @@ static void sendStatusJson(bool paramsSaved = false) {
   appendJsonFloat(json, P->triggerFeedS, 2);
   json += ",\"m2_rpm\":";
   appendJsonFloat(json, P->feederRpm);
-  json += ",\"lidar_cm\":";
-  json += String(P->lidarActivateCm);
-  json += ",\"lidar_max_s\":";
-  appendJsonFloat(json, P->lidarFeedMaxSec);
-  json += ",\"lidar_holgura\":";
-  json += P->lidarHolguraEnabled ? "true" : "false";
   json += ",\"trigger_active\":";
   json += c.triggerActive ? "true" : "false";
-  json += ",\"lidar_valid\":";
-  json += c.lidar.valid ? "true" : "false";
-  json += ",\"lidar_dist_cm\":";
-  json += String(c.lidar.valid ? c.lidar.distCm : 0);
-  json += ",\"lidar_activated\":";
-  json += (c.lidar.valid && lidarHolguraActivated(c.lidar.distCm)) ? "true" : "false";
+  json += ",\"hmi_tfeed_enabled\":";
+  json += P->hmiTfeedEnabled ? "true" : "false";
+  json += ",\"holgura_settle_ms\":";
+  json += String((unsigned)P->holguraSettleMs);
+  json += ",\"holgura_on_s\":";
+  appendJsonFloat(json, P->holguraOnFeedSec, 2);
+  json += ",\"holgura_off_fault_s\":";
+  appendJsonFloat(json, P->holguraOffFaultSec, 2);
+  json += ",\"holgura_on\":";
+  json += s.holguraOn ? "true" : "false";
   json += "},\"refill\":{\"pulse_s\":";
   appendJsonFloat(json, P->refillPulseMs / 1000.0f);
   json += "},\"actuators\":{\"feeder\":";
@@ -919,12 +1011,16 @@ static void sendStatusJson(bool paramsSaved = false) {
   json += s.cylinderOpen ? "true" : "false";
   json += ",\"hose\":";
   json += s.hoseAbsent ? "true" : "false";
+  json += ",\"holgura\":";
+  json += s.holguraOn ? "true" : "false";
   json += "},\"fault\":";
   json += String((unsigned)c.fault);
   json += ",\"idleMode\":";
   json += c.idleMode ? "true" : "false";
   json += ",\"inProcess\":";
   json += c.inProcess ? "true" : "false";
+  json += ",\"benchInProcess\":";
+  json += c.benchInProcess ? "true" : "false";
   json += ",\"peer\":{\"link\":";
   json += peerLinkOk ? "true" : "false";
   json += "}";
@@ -976,10 +1072,24 @@ static void handleAuto() {
     nc.type = NC_RESET;
     machinePushCommand(nc);
   }
+  if (server.hasArg("bench")) {
+    NetCommand nc;
+    nc.type = NC_BENCH_IN_PROCESS;
+    nc.arg = (server.arg("bench") == "1") ? "1" : "0";
+    machinePushCommand(nc);
+  }
+  if (server.hasArg("trigger")) {
+    NetCommand nc;
+    nc.type = NC_TRIGGER;
+    nc.arg = server.hasArg("sec") ? server.arg("sec") : "";
+    nc.id = 0;
+    machinePushCommand(nc);
+  }
   String q;
   for (int i = 0; i < server.args(); i++) {
     const String& n = server.argName(i);
-    if (n == "enable" || n == "reset") continue;
+    if (n == "enable" || n == "reset" || n == "bench" || n == "trigger" || n == "sec")
+      continue;
     if (q.length()) q += "&";
     q += n + "=" + server.arg(i);
   }

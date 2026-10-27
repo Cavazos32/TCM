@@ -156,6 +156,8 @@ def main() -> int:
     port = args.port
     url = f"http://127.0.0.1:{port}"
     os.environ.setdefault("HMI_PORT", str(port))
+    # Omitir checklist de arranque (banco). Producción: HMI_CHECKLIST_SKIP=0
+    os.environ.setdefault("HMI_CHECKLIST_SKIP", "1")
     os.environ["PYTHONUNBUFFERED"] = "1"
 
     if _port_open(port):

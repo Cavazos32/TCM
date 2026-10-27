@@ -9,224 +9,275 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>Motion · ASDA + OM</title>
+  <meta http-equiv="Cache-Control" content="no-store"/>
   <style>
     :root {
-      --bg0: #101418;
-      --bg1: #1a2229;
-      --panel: #222b33;
-      --line: #3a4652;
-      --text: #eef2f5;
-      --muted: #9aabba;
-      --ok: #3dba7a;
-      --bad: #e05252;
-      --warn: #d4a017;
-      --accent: #2a9d8f;
-      --cw: #5ee07a;
-      --ccw: #ff7a6e;
-      --radius: 12px;
-      --font: "Segoe UI", Tahoma, sans-serif;
-      --mono: Consolas, "Courier New", monospace;
+      --bg: #0d1117;
+      --card: #161b22;
+      --panel: #21262d;
+      --border: #30363d;
+      --text: #f0f6fc;
+      --muted: #8b949e;
+      --ok: #3fb950;
+      --warn: #e2a41d;
+      --err: #f85149;
+      --blue: #58a6ff;
+      --cw: #3fb950;
+      --ccw: #f85149;
+      --line: var(--border);
+      --bad: var(--err);
+      --accent: var(--ok);
     }
-    * { box-sizing: border-box; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body {
-      margin: 0;
       min-height: 100%;
       color: var(--text);
-      font-family: var(--font);
-      background:
-        radial-gradient(900px 480px at 0% 0%, #243840 0%, transparent 55%),
-        radial-gradient(700px 420px at 100% 10%, #2c3420 0%, transparent 50%),
-        linear-gradient(160deg, var(--bg0), var(--bg1));
+      font-family: system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      line-height: 1.4;
     }
-    body { padding: 1.25rem 1rem 2.5rem; }
-    .wrap { max-width: 960px; margin: 0 auto; }
-    header {
-      display: flex;
-      flex-wrap: wrap;
-      justify-content: space-between;
-      gap: 1rem;
-      align-items: flex-end;
-      margin-bottom: 1rem;
+    body { padding: 16px; }
+    .wrap { max-width: 1040px; margin: 0 auto; }
+    .hdr {
+      text-align: center;
+      margin-bottom: 16px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border);
     }
-    .brand {
+    .hdr h1 {
+      font-size: 1.25rem;
+      font-weight: 600;
       margin: 0;
-      font-size: clamp(1.5rem, 4vw, 2.1rem);
-      letter-spacing: -.02em;
     }
-    .brand span { color: var(--accent); }
-    .sub {
-      margin: .3rem 0 0;
+    .hdr h1 span { color: var(--blue); }
+    .sub, .meta {
+      font-size: .78rem;
       color: var(--muted);
-      font-family: var(--mono);
-      font-size: .82rem;
+      margin-top: 6px;
     }
     .chip {
-      font-family: var(--mono);
-      font-size: .75rem;
+      display: inline-block;
+      font-size: .72rem;
       color: var(--muted);
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      padding: .35rem .7rem;
+      margin-top: 6px;
+    }
+    .note {
+      font-size: .72rem;
+      color: var(--muted);
+      margin-bottom: 10px;
+      line-height: 1.45;
     }
     .tabs {
-      display: flex;
-      gap: .4rem;
-      margin-bottom: 1rem;
-      flex-wrap: wrap;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6px;
+      margin-bottom: 12px;
+    }
+    @media (max-width: 520px) {
+      .tabs { grid-template-columns: 1fr 1fr; }
     }
     .tab {
-      border: 1px solid var(--line);
-      background: #151b21;
+      text-align: center;
+      padding: 10px 6px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--panel);
       color: var(--muted);
-      border-radius: 999px;
-      padding: .55rem 1.1rem;
       font-weight: 600;
+      font-size: .72rem;
       cursor: pointer;
-      font-family: var(--font);
+      font-family: inherit;
     }
     .tab.active {
-      background: var(--accent);
-      color: #04201c;
-      border-color: var(--accent);
+      background: rgba(63, 185, 80, .22);
+      color: var(--ok);
+      border-color: rgba(63, 185, 80, .5);
     }
     .panel { display: none; }
     .panel.active { display: block; }
+    .status-banner,
+    .global-status,
     .banner {
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      padding: 1rem 1.1rem;
-      margin-bottom: 1rem;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      padding: 10px 12px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin-bottom: 10px;
+      font-size: .875rem;
     }
-    .banner.ok {
-      border-color: var(--ok);
-      background: color-mix(in srgb, var(--ok) 16%, #141a20);
+    .banner { flex-direction: column; align-items: flex-start; }
+    .status-banner.ok, .global-status.ok, .banner.ok {
+      border-color: rgba(63, 185, 80, .35);
+      background: rgba(63, 185, 80, .08);
     }
-    .banner.bad {
-      border-color: var(--bad);
-      background: color-mix(in srgb, var(--bad) 16%, #141a20);
+    .status-banner.warn, .global-status.wait, .banner.wait {
+      border-color: rgba(226, 164, 29, .4);
+      background: rgba(226, 164, 29, .1);
     }
-    .banner.wait {
-      border-color: var(--warn);
-      background: color-mix(in srgb, var(--warn) 14%, #141a20);
+    .status-banner.err, .global-status.bad, .banner.bad {
+      border-color: rgba(248, 81, 73, .4);
+      background: rgba(248, 81, 73, .1);
     }
-    .banner h2 { margin: 0; font-size: 1.05rem; }
+    .banner h2 { font-size: .9rem; font-weight: 600; }
     .banner p {
-      margin: .3rem 0 0;
-      font-family: var(--mono);
-      font-size: .78rem;
+      margin: 4px 0 0;
+      font-size: .72rem;
       color: var(--muted);
     }
-    .grid { display: grid; gap: 1rem; }
-    @media (min-width: 800px) {
-      .grid { grid-template-columns: 1fr 1fr; }
+    .dot, .gdot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--muted);
+      flex-shrink: 0;
     }
-    section {
-      background: color-mix(in srgb, var(--panel) 90%, transparent);
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      padding: 1rem 1.1rem;
+    .dot.ok, .gdot.ok {
+      background: var(--ok);
+      box-shadow: 0 0 8px rgba(63, 185, 80, .5);
     }
+    .dot.err, .gdot.bad {
+      background: var(--err);
+      box-shadow: 0 0 8px rgba(248, 81, 73, .45);
+    }
+    .dot.warn, .gdot.wait {
+      background: var(--warn);
+      box-shadow: 0 0 8px rgba(226, 164, 29, .45);
+    }
+    .grid { display: grid; gap: 12px; }
+    @media (min-width: 760px) {
+      .grid { grid-template-columns: 1fr 1fr; align-items: start; }
+    }
+    section, .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin-bottom: 12px;
+    }
+    .grid > section, .grid > .card { margin-bottom: 0; }
+    .panel > section.full { margin-bottom: 12px; }
     h2 {
-      margin: 0 0 .85rem;
       font-size: .8rem;
-      letter-spacing: .08em;
+      font-weight: 600;
+      margin: 0 0 10px;
+      color: var(--text);
+    }
+    section h3 {
+      font-size: .72rem;
       text-transform: uppercase;
+      letter-spacing: .04em;
       color: var(--muted);
+      margin: 12px 0 8px;
     }
     .stats {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: .55rem;
+      gap: 6px;
     }
     .stat {
-      background: #151b21;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: .65rem .7rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 10px;
     }
     .stat-hide { display: none !important; }
     .stat span, .k {
       display: block;
-      font-size: .68rem;
+      font-size: .65rem;
+      font-weight: 600;
       color: var(--muted);
-      text-transform: uppercase;
     }
     .stat b, .v {
-      font-family: var(--mono);
-      font-size: 1rem;
-      font-weight: 500;
+      font-size: .95rem;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
     }
-    .v { margin-top: 4px; font-size: 1.15rem; }
+    .v { margin-top: 4px; font-size: 1.1rem; }
     label {
       display: block;
-      font-size: .75rem;
+      font-size: .72rem;
+      font-weight: 600;
       color: var(--muted);
-      margin: 0 0 .3rem;
+      margin: 8px 0 4px;
     }
     input, select {
       width: 100%;
-      padding: .6rem .65rem;
-      border-radius: 8px;
-      border: 1px solid var(--line);
-      background: #151b21;
+      padding: 8px 10px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--bg);
       color: var(--text);
-      font-family: var(--mono);
+      font-family: inherit;
+      font-size: .85rem;
     }
     input[readonly] {
-      color: var(--accent);
+      color: var(--blue);
       opacity: 1;
       cursor: default;
     }
-    .row {
+    .row, .f2 {
       display: grid;
-      gap: .65rem;
-      margin-bottom: .75rem;
+      gap: 8px;
+      margin-bottom: 8px;
     }
     @media (min-width: 480px) {
-      .row.c2 { grid-template-columns: 1fr 1fr; }
+      .row.c2, .f2 { grid-template-columns: 1fr 1fr; }
       .row.c3 { grid-template-columns: 1fr 1fr 1fr; }
     }
-    .btns { display: flex; flex-wrap: wrap; gap: .5rem; }
+    .btns, .btn-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      gap: 8px;
+      margin-top: 8px;
+    }
     button {
-      border: 0;
+      padding: 10px 8px;
       border-radius: 8px;
-      padding: .65rem .95rem;
+      border: none;
       font-weight: 600;
+      font-size: .8rem;
       cursor: pointer;
-      font-family: var(--font);
+      font-family: inherit;
     }
     button:disabled { opacity: .45; cursor: not-allowed; }
-    .btn { background: var(--accent); color: #04201c; }
-    .btn2 { background: var(--warn); color: #1a1408; }
-    .btnG {
-      background: transparent;
+    .btn { background: var(--ok); color: #0d1117; }
+    .btn2 { background: var(--warn); color: #0d1117; }
+    .btnG, .btn-refill {
+      background: var(--panel);
       color: var(--text);
-      border: 1px solid var(--line);
+      border: 1px solid var(--border);
     }
-    .btnD { background: var(--bad); color: #fff; }
+    .btnD { background: var(--err); color: #fff; }
+    .btn-save {
+      background: rgba(88, 166, 255, .2);
+      color: var(--blue);
+      border: 1px solid rgba(88, 166, 255, .4);
+    }
     .log {
-      margin-top: 1rem;
-      border-top: 1px dashed var(--line);
-      padding-top: .75rem;
-      font-family: var(--mono);
-      font-size: .78rem;
+      margin-top: 8px;
+      border-top: 1px dashed var(--border);
+      padding-top: 10px;
+      font-size: .72rem;
       color: var(--muted);
       white-space: pre-wrap;
       min-height: 3rem;
     }
     .full { grid-column: 1 / -1; }
-    .hint { margin: 0 0 .8rem; color: var(--muted); font-size: .82rem; line-height: 1.45; }
+    .hint, .ov-note { margin: 0 0 10px; color: var(--muted); font-size: .72rem; line-height: 1.45; }
     .preview {
-      font-family: var(--mono);
-      font-size: .82rem;
-      color: var(--accent);
-      margin: .35rem 0 .75rem;
+      font-size: .78rem;
+      color: var(--blue);
+      margin: 4px 0 8px;
     }
     .dial-wrap { display: flex; flex-direction: column; align-items: center; gap: 10px; }
     .dial-outer {
       width: min(260px, 70vw); aspect-ratio: 1; border-radius: 50%;
-      background: #1a2229; position: relative;
-      box-shadow: 0 0 0 8px #151b21 inset;
+      background: var(--panel); position: relative;
+      box-shadow: 0 0 0 8px var(--bg) inset;
     }
     .dial-sweep {
       position: absolute; inset: 0; width: 100%; height: 100%;
@@ -234,55 +285,256 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
       transform: rotate(-90deg);
     }
     .dial-hub {
-      position: absolute; inset: 22%; border-radius: 50%; background: #151b21;
+      position: absolute; inset: 22%; border-radius: 50%; background: var(--bg);
       display: grid; place-items: center; z-index: 3;
     }
-    .deg { font-size: 1.8rem; font-variant-numeric: tabular-nums; font-family: var(--mono); }
+    .deg { font-size: 1.8rem; font-variant-numeric: tabular-nums; }
     .unit { color: var(--muted); font-size: .8rem; }
     .mm-hero {
       font-size: 2.2rem; font-variant-numeric: tabular-nums; text-align: center;
-      margin: 4px 0 2px; color: var(--accent); font-family: var(--mono);
+      margin: 4px 0 2px; color: var(--ok);
     }
     .signals { display: flex; gap: 10px; margin-top: 14px; }
     .sig {
-      flex: 1; text-align: center; padding: 10px; border-radius: 10px;
-      border: 1px solid var(--line); background: #151b21; font-size: .8rem;
+      flex: 1; text-align: center; padding: 10px; border-radius: 8px;
+      border: 1px solid var(--border); background: var(--bg); font-size: .8rem;
     }
+    .sensor-list { display: flex; flex-direction: column; gap: 0; }
     .led {
-      width: 14px; height: 14px; border-radius: 50%; margin: 6px auto 0;
-      background: #2a354d;
+      width: 28px; height: 28px; border-radius: 50%;
+      border: 2px solid var(--border); background: var(--bg); flex-shrink: 0;
     }
-    .led.on { background: var(--accent); box-shadow: 0 0 10px var(--accent); }
-    .led.z.on { background: var(--warn); box-shadow: 0 0 10px var(--warn); }
+    .led.on {
+      background: var(--ok);
+      border-color: rgba(63, 185, 80, .5);
+      box-shadow: 0 0 12px rgba(63, 185, 80, .4);
+    }
+    .led.warn.on {
+      background: var(--warn);
+      border-color: rgba(226, 164, 29, .5);
+      box-shadow: 0 0 12px rgba(226, 164, 29, .4);
+    }
+    .led.err.on {
+      background: var(--err);
+      border-color: rgba(248, 81, 73, .5);
+    }
+    .badge {
+      font-size: .65rem;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      color: var(--muted);
+    }
+    .badge.on {
+      color: var(--ok);
+      border-color: rgba(63, 185, 80, .4);
+      background: rgba(63, 185, 80, .1);
+    }
+    .badge.warn.on {
+      color: var(--warn);
+      border-color: rgba(226, 164, 29, .4);
+      background: rgba(226, 164, 29, .1);
+    }
     .dir-cw { color: var(--cw); }
     .dir-ccw { color: var(--ccw); }
     .ok { color: var(--ok); }
     .badc { color: var(--bad); }
-    .enc-foot { color: var(--muted); font-size: .78rem; margin-top: .85rem; line-height: 1.4; }
-    .enc-dual { display: grid; gap: 1rem; }
-    @media (min-width: 800px) {
-      .enc-dual { grid-template-columns: 1fr 1fr; }
+    .enc-foot { color: var(--muted); font-size: .72rem; margin-top: 10px; line-height: 1.45; }
+    .enc-dual {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: 1fr 1fr;
+      align-items: stretch;
     }
-    .enc-card {
-      background: #151b21;
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      padding: .9rem 1rem 1rem;
+    @media (max-width: 700px) {
+      .enc-dual { grid-template-columns: 1fr; }
     }
-    .enc-card-head {
-      display: flex; align-items: center; justify-content: space-between;
-      margin-bottom: .75rem;
+    .enc-side-card { margin-bottom: 0; min-width: 0; }
+    .enc-side-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
     }
     .enc-side-tag {
-      font-weight: 700; color: var(--accent); letter-spacing: .04em;
-      font-size: .95rem;
+      font-size: .85rem;
+      font-weight: 700;
+      color: var(--blue);
     }
-    .enc-hw {
-      font-family: var(--mono); font-size: .72rem; color: var(--muted);
-      border: 1px solid var(--line); border-radius: 999px; padding: .15rem .55rem;
+    .enc-compact {
+      display: grid;
+      grid-template-columns: minmax(100px, 42%) 1fr;
+      gap: 8px 10px;
+      align-items: start;
     }
-    .enc-hw.on { color: var(--ok); border-color: rgba(61,186,122,.45); }
-    .enc-hw.off { color: var(--bad); border-color: rgba(224,82,82,.45); }
+    .dial-compact { gap: 4px; align-items: stretch; }
+    .dial-compact .unit { font-size: .65rem; }
+    .dial-outer.dial-sm {
+      width: 100%;
+      max-width: 130px;
+      margin: 0 auto;
+    }
+    .dial-sm .deg { font-size: 1rem; }
+    .dial-compact .mm-hero {
+      font-size: 1.35rem;
+      margin: 0;
+      text-align: center;
+    }
+    .enc-mini-stats {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4px;
+      align-content: start;
+    }
+    .enc-mini-stats .stat { padding: 5px 6px; }
+    .enc-mini-stats .stat span { font-size: .58rem; }
+    .enc-mini-stats .stat b { font-size: .78rem; }
+    .enc-actions {
+      display: grid;
+      grid-template-columns: 1fr auto auto;
+      gap: 6px;
+      align-items: end;
+      margin-top: 10px;
+    }
+    .enc-actions label { margin: 0; font-size: .65rem; }
+    .enc-actions input { padding: 6px 8px; font-size: .8rem; }
+    .enc-actions button { padding: 8px 10px; font-size: .72rem; }
+    .enc-side-card.off { opacity: .55; }
+    .enc-side-card.off .enc-compact { pointer-events: none; }
+    .feed-test-head {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: .65rem;
+      margin-bottom: .75rem;
+    }
+    .feed-test-head h2 { margin-bottom: .2rem; }
+    .feed-test-head .hint { margin: 0; }
+    .feed-side-switch {
+      display: flex;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+    .feed-side-btn {
+      padding: 8px 14px;
+      background: var(--panel);
+      color: var(--muted);
+      border: 0;
+      border-radius: 0;
+      font-weight: 700;
+      font-size: .8rem;
+      cursor: pointer;
+    }
+    .feed-side-btn + .feed-side-btn { border-left: 1px solid var(--border); }
+    .feed-side-btn.active {
+      background: rgba(63, 185, 80, .22);
+      color: var(--ok);
+    }
+    .feed-params-grid {
+      display: grid;
+      gap: .55rem;
+      grid-template-columns: 1fr 1fr;
+      margin-bottom: .55rem;
+    }
+    @media (max-width: 560px) { .feed-params-grid { grid-template-columns: 1fr; } }
+    .feed-param-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      align-items: end;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 12px;
+    }
+    .feed-col-label {
+      grid-column: 1 / -1;
+      font-weight: 700;
+      color: var(--blue);
+      font-size: .72rem;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+    .feed-param-col label { margin: 0; font-size: .68rem; }
+    .feed-param-col .btn {
+      grid-column: 1 / -1;
+      margin-top: .15rem;
+      padding: .5rem .7rem;
+      font-size: .82rem;
+    }
+    .feed-shared-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .5rem;
+      align-items: flex-end;
+      margin-bottom: .45rem;
+    }
+    .feed-shared-row label {
+      flex: 0 0 7.5rem;
+      margin: 0;
+      font-size: .68rem;
+    }
+    .feed-shared-row .btn-save { width: auto; margin-top: 0; }
+    .feed-mode-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .45rem;
+      align-items: center;
+      margin: 0 0 .55rem;
+    }
+    .feed-mode-row .lbl {
+      font-size: .72rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      margin-right: .25rem;
+    }
+    .feed-mode-btn {
+      border: 1px solid var(--line);
+      background: #151b21;
+      color: var(--muted);
+      border-radius: 8px;
+      padding: .4rem .7rem;
+      font-weight: 700;
+      font-size: .78rem;
+      cursor: pointer;
+    }
+    .feed-mode-btn.active {
+      background: rgba(63, 185, 80, .22);
+      color: var(--ok);
+      border-color: rgba(63, 185, 80, .5);
+    }
+    .feed-vel-row { display: flex; flex-wrap: wrap; gap: .5rem; align-items: flex-end; margin-bottom: .45rem; }
+    .feed-vel-row label { flex: 0 0 7.2rem; margin: 0; font-size: .68rem; }
+    .feed-viz-label {
+      font-size: .68rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      margin: 0 0 .3rem;
+    }
+    .feed-canvas {
+      width: 100%; height: 110px;
+      background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+      display: block;
+    }
+    .feed-stats { font-size: .72rem; color: var(--muted); margin: 4px 0 0; }
+    .feed-msg {
+      margin-top: .75rem; padding: .65rem .8rem; border-radius: 8px;
+      font-size: .85rem; display: none;
+    }
+    .feed-msg.show { display: block; }
+    .feed-msg.ok { border-color: rgba(63, 185, 80, .35); background: rgba(63, 185, 80, .08); }
+    .feed-msg.bad { border-color: rgba(248, 81, 73, .4); background: rgba(248, 81, 73, .1); }
+    .feed-msg.wait { border-color: rgba(226, 164, 29, .4); background: rgba(226, 164, 29, .1); }
+    .can-chip { display: inline-block; font-family: var(--mono); font-size: .75rem; padding: .2rem .5rem; border-radius: 999px; border: 1px solid var(--line); margin-right: .35rem; }
+    .can-chip.ok { border-color: var(--ok); color: var(--ok); }
+    .can-chip.bad { border-color: var(--bad); color: var(--bad); }
     .hit-grid {
       display: grid;
       gap: .65rem;
@@ -293,10 +545,10 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
       .hit-grid.cols-3 { grid-template-columns: 1fr 1fr 1fr; }
     }
     .hit {
-      background: #151b21;
-      border: 1px solid var(--line);
+      background: var(--bg);
+      border: 1px solid var(--border);
       border-radius: 8px;
-      padding: .75rem .8rem;
+      padding: 10px 12px;
       text-align: center;
     }
     .hit .lbl {
@@ -306,15 +558,15 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
       letter-spacing: .06em;
     }
     .hit .val {
-      font-family: var(--mono);
-      font-size: 1.35rem;
-      margin: .35rem 0 .45rem;
+      font-size: 1.25rem;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      margin: 6px 0;
     }
     .hit .subv {
-      font-family: var(--mono);
-      font-size: .78rem;
+      font-size: .72rem;
       color: var(--muted);
-      margin-bottom: .45rem;
+      margin-bottom: 6px;
     }
     .ind {
       display: inline-block;
@@ -327,29 +579,111 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
     .ind.pending { background: var(--warn); box-shadow: 0 0 8px color-mix(in srgb, var(--warn) 50%, transparent); }
     .ind.ok { background: var(--ok); box-shadow: 0 0 8px color-mix(in srgb, var(--ok) 55%, transparent); }
     .ind.bad { background: var(--bad); box-shadow: 0 0 8px color-mix(in srgb, var(--bad) 55%, transparent); }
-    .ov-note {
-      color: var(--muted);
-      font-size: .78rem;
-      line-height: 1.45;
-      margin: 0 0 .75rem;
+    .link-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 10px;
+      font-size: .72rem;
+      align-items: center;
     }
+    .link-bar a {
+      color: var(--blue);
+      text-decoration: none;
+      font-weight: 600;
+    }
+    .link-bar a:hover { text-decoration: underline; }
+    .global-sub {
+      display: block;
+      font-size: .72rem;
+      color: var(--muted);
+      font-weight: 400;
+      margin-top: 2px;
+    }
+    .pill-row, .pills {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+      gap: 6px;
+      margin-left: auto;
+      flex: 1 1 200px;
+      min-width: 0;
+    }
+    .pill {
+      text-align: center;
+      font-size: .68rem;
+      font-weight: 600;
+      padding: 6px 4px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      background: var(--panel);
+    }
+    .pill.on {
+      background: rgba(63, 185, 80, .22);
+      color: var(--ok);
+      border-color: rgba(63, 185, 80, .5);
+    }
+    .pill.warn {
+      background: rgba(226, 164, 29, .12);
+      color: var(--warn);
+      border-color: rgba(226, 164, 29, .4);
+    }
+    .pill.bad {
+      background: rgba(248, 81, 73, .12);
+      color: var(--err);
+      border-color: rgba(248, 81, 73, .4);
+    }
+    .alarm-box {
+      margin-bottom: 10px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid rgba(248, 81, 73, .45);
+      background: rgba(248, 81, 73, .1);
+      font-size: .78rem;
+      display: none;
+    }
+    .alarm-box.show { display: block; }
+    .srow {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 0;
+      border-bottom: 1px solid rgba(48, 54, 61, .6);
+      font-size: .8rem;
+    }
+    .srow:last-child { border-bottom: none; }
+    .srow .stitle { flex: 1; min-width: 0; }
+    .global-status > div:first-of-type { flex: 1; min-width: 0; }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <header>
-      <div>
-        <h1 class="brand">Motion <span>ESP32</span></h1>
-        <p class="sub" id="headerSub">Vista general · ASDA + OM</p>
-      </div>
-      <div class="chip" id="ipChip">…</div>
+    <header class="hdr">
+      <h1>Motion · <span>ESP32</span></h1>
+      <p class="meta" id="headerSub">Vista general · ASDA + OM</p>
+      <span class="chip" id="ipChip">…</span>
     </header>
+
+    <div class="global-status wait" id="globalStatus" role="status" aria-live="polite">
+      <span class="dot wait" id="globalDot"></span>
+      <div>
+        <strong id="globalStatusTitle">Conectando…</strong>
+        <span class="global-sub" id="globalStatusSub">Motion · mantenimiento local</span>
+      </div>
+      <div class="pills" id="globalPills"></div>
+    </div>
+
+    <p class="link-bar note">
+      <a href="/feed" title="Página dedicada alimentación">Alimentación (/feed)</a>
+      <span style="color:var(--muted)">·</span>
+      <span style="color:var(--muted);font-size:.78rem">TCP HMI :8767 · sin sustituir esta UI</span>
+    </p>
 
     <nav class="tabs" role="tablist">
       <button type="button" class="tab active" id="tabOv" onclick="showTab('ov')">Vista general</button>
       <button type="button" class="tab" id="tabAsda" onclick="showTab('asda')">ASDA B3</button>
       <button type="button" class="tab" id="tabEnc" onclick="showTab('enc')">OM Encoder</button>
-      <a class="tab" href="/feed" style="text-decoration:none;display:inline-flex;align-items:center">Alimentación CAN</a>
+      <button type="button" class="tab" id="tabFeed" onclick="showTab('feed')">Alimentación CAN</button>
     </nav>
 
     <!-- ========== VISTA GENERAL ========== -->
@@ -372,6 +706,25 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
             <div class="stat"><span>Tol ±mm</span><b id="ovTol">—</b></div>
             <div class="stat"><span>Pieza OK</span><b id="ovPieceOk">—</b></div>
             <div class="stat"><span></span><button class="btnG" type="button" onclick="ovRefresh()">Actualizar</button></div>
+          </div>
+          <div class="row c3" style="margin-top:.85rem">
+            <div>
+              <label for="ovPieceIn">Longitud pieza L (mm)</label>
+              <input id="ovPieceIn" type="number" min="10" step="0.5" value="100"/>
+            </div>
+            <div>
+              <label for="ovExtraIn">Extra depósito (mm)</label>
+              <input id="ovExtraIn" type="number" min="0" step="0.5" value="5"/>
+            </div>
+            <div class="btns" style="align-items:flex-end">
+              <button class="btn" type="button" id="btnOvStart">Iniciar monitoreo</button>
+            </div>
+          </div>
+          <p class="ov-note">Marca hitos vía API si el ciclo de prueba lo requiere (técnico).</p>
+          <div class="btns">
+            <button class="btnG" type="button" data-ov-mark="om_feed55">Marca OM feed 55</button>
+            <button class="btnG" type="button" data-ov-mark="om_reset">Marca OM reset</button>
+            <button class="btnG" type="button" data-ov-mark="om_final">Marca OM final</button>
           </div>
         </section>
 
@@ -425,6 +778,7 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
         <h2 id="bannerTitle">Conectando…</h2>
         <p id="bannerDetail">Leyendo /api/status</p>
       </div>
+      <div class="alarm-box" id="asdaAlarmBox"></div>
 
       <div class="grid">
         <section>
@@ -438,9 +792,18 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
           <div class="btns" style="margin-top:1rem">
             <button class="btnG" type="button" onclick="refresh()">Actualizar</button>
             <button class="btnG" type="button" onclick="call('POST','/api/test')">Test Modbus</button>
-            <button class="btnG" type="button" onclick="call('POST','/api/on')">Servo ON</button>
-            <button class="btnG" type="button" onclick="call('POST','/api/off')">Servo OFF</button>
-            <button class="btnD" type="button" onclick="call('POST','/api/stop')">STOP</button>
+            <button class="btnG" type="button" id="btnServoOn">Servo ON</button>
+            <button class="btnG" type="button" id="btnServoOff">Servo OFF</button>
+            <button class="btnD" type="button" id="btnStop">STOP</button>
+          </div>
+        </section>
+
+        <section>
+          <h2>Sensores máquina</h2>
+          <div class="sensor-list">
+            <div class="srow"><div class="led" id="ledLaserR"></div><span class="stitle">Láser material R</span><span class="badge" id="pillLaserR">OFF</span></div>
+            <div class="srow"><div class="led" id="ledLaserL"></div><span class="stitle">Láser material L</span><span class="badge" id="pillLaserL">OFF</span></div>
+            <div class="srow"><div class="led" id="ledSafety"></div><span class="stitle">Escape / aire planta</span><span class="badge" id="pillSafety">—</span></div>
           </div>
         </section>
 
@@ -465,6 +828,9 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
             </div>
           </div>
           <div class="btns">
+            <label style="display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--muted)">
+              <input type="checkbox" id="homeWait" checked/> Esperar fin (bloqueante)
+            </label>
             <button class="btn2" type="button" id="btnHome" onclick="doHome()">Iniciar HOME</button>
           </div>
         </section>
@@ -499,42 +865,12 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
             </div>
           </div>
           <div class="btns">
+            <label style="display:flex;align-items:center;gap:.4rem;font-size:.78rem;color:var(--muted)">
+              <input type="checkbox" id="moveWait" checked/> Esperar fin (bloqueante)
+            </label>
             <button class="btn" type="button" id="btnMove" onclick="doMove()">MOVE PUU</button>
             <button class="btnG" type="button" onclick="document.getElementById('target').value='0'; previewPuuMm()">Ir a 0</button>
           </div>
-        </section>
-
-        <section class="full">
-          <h2>Stage 2 · Lineal (doble gripper)</h2>
-          <p class="hint">
-            Target = L − 55 mm · Approach % × Fast RPM · luego remaining real @ Fine RPM.
-            Parámetros en NVS (namespace asda). No modifica Feed.
-          </p>
-          <div class="row c3">
-            <div>
-              <label for="s2ApPct">Approach %</label>
-              <input id="s2ApPct" type="number" min="50" max="95" step="1" value="80"/>
-            </div>
-            <div>
-              <label for="s2FastRpm">Fast RPM</label>
-              <input id="s2FastRpm" type="number" min="400" max="3000" step="50" value="3000"/>
-            </div>
-            <div>
-              <label for="s2FineRpm">Fine RPM</label>
-              <input id="s2FineRpm" type="number" min="400" max="3000" step="50" value="800"/>
-            </div>
-          </div>
-          <div class="row c2">
-            <div>
-              <label for="s2PieceMm">Pieza L (mm) · test</label>
-              <input id="s2PieceMm" type="number" min="56" step="1" value="310"/>
-            </div>
-            <div class="btns" style="align-items:flex-end">
-              <button class="btnG" type="button" onclick="saveStage2Cfg()">Guardar Stage2</button>
-              <button class="btn" type="button" onclick="startStage2()">Start Stage2</button>
-            </div>
-          </div>
-          <p class="hint" id="s2Hint">Approach → — mm @ — RPM · Fine remaining @ — RPM</p>
         </section>
 
         <section class="full">
@@ -543,99 +879,183 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- ========== VENTANA OM ENCODER ========== -->
+    <!-- ========== VENTANA OM ENCODER L + R ========== -->
     <div class="panel" id="panelEnc">
       <div class="banner wait" id="encBanner">
-        <h2 id="encBannerTitle">Encoder L / R</h2>
-        <p id="encBannerDetail">RE30AJ2000F · ambos lados · valores al settle</p>
+        <h2 id="encBannerTitle">OM Encoder</h2>
+        <p id="encBannerDetail">RE30AJ2000F · L y R · lectura al settle</p>
       </div>
 
       <div class="enc-dual">
-        <section class="enc-card" id="encCardL">
-          <div class="enc-card-head">
-            <span class="enc-side-tag">Lado L</span>
-            <span class="enc-hw" id="encHwL">HW …</span>
+        <section class="enc-side-card" id="encCardL">
+          <div class="enc-side-head">
+            <span class="enc-side-tag">Lado izquierdo</span>
+            <span class="badge" id="encHwL">—</span>
           </div>
-          <div class="dial-wrap">
-            <div class="mm-hero" id="encLMmAbs">—</div>
-            <div class="unit">longitud final (settle)</div>
-            <div class="dial-outer">
-              <svg class="dial-sweep" viewBox="0 0 100 100" aria-hidden="true">
-                <circle cx="50" cy="50" r="38" fill="none" stroke="#3a4652" stroke-width="12"/>
-                <g id="encLSweepSegs"></g>
-              </svg>
-              <div class="dial-hub">
-                <div>
-                  <div class="deg" id="encLAngle">—</div>
-                  <div class="unit">ángulo al settle</div>
+          <div class="enc-compact">
+            <div class="dial-wrap dial-compact">
+              <div class="mm-hero" id="encMmAbsL">—</div>
+              <div class="unit">settle (mm)</div>
+              <div class="dial-outer dial-sm">
+                <svg class="dial-sweep" viewBox="0 0 100 100" aria-hidden="true">
+                  <circle cx="50" cy="50" r="38" fill="none" stroke="#30363d" stroke-width="12"/>
+                  <g id="encSweepSegsL"></g>
+                </svg>
+                <div class="dial-hub">
+                  <div>
+                    <div class="deg" id="encAngleL">—</div>
+                    <div class="unit">°</div>
+                  </div>
                 </div>
               </div>
+              <div class="sub" id="encDirLabelL">—</div>
             </div>
-            <div class="sub" id="encLDirLabel">Dirección: —</div>
+            <div class="enc-mini-stats">
+              <div class="stat"><span>mm</span><b id="encMmL">—</b></div>
+              <div class="stat"><span>RPM pico</span><b id="encRpmL">—</b></div>
+              <div class="stat"><span>mm/s pico</span><b id="encMmSL">—</b></div>
+              <div class="stat"><span>Cuentas</span><b id="encCntL">—</b></div>
+            </div>
           </div>
-          <div class="stats" style="margin-top:.85rem">
-            <div class="stat"><span>mm con signo</span><b id="encLMm">—</b></div>
-            <div class="stat"><span>RPM pico</span><b id="encLRpm">—</b></div>
-            <div class="stat"><span>Velocidad pico</span><b id="encLMmS">—</b></div>
-            <div class="stat"><span>Final (settle)</span><b id="encLSettle">—</b></div>
-          </div>
-          <div class="row" style="margin-top:.85rem;align-items:end">
-            <label style="flex:1">Offset L (mm)
-              <input id="encLOffsetMm" type="number" step="0.01" min="-5" max="5" value="0">
-            </label>
-            <button class="btn2" type="button" onclick="saveEncOffset('L')">Guardar</button>
-          </div>
-          <div class="btns" style="margin-top:.75rem">
-            <button class="btn" type="button" onclick="resetEnc('L')">Set0 L</button>
+          <div class="enc-actions">
+            <label>Offset interno (mm)<input id="encOffsetMmL" type="number" step="0.01" min="-5" max="5" value="0"></label>
+            <button type="button" class="btn-save" onclick="saveEncOffset('L')">Guardar</button>
+            <button type="button" class="btn" onclick="resetEnc('L')">Set0</button>
           </div>
         </section>
 
-        <section class="enc-card" id="encCardR">
-          <div class="enc-card-head">
-            <span class="enc-side-tag">Lado R</span>
-            <span class="enc-hw" id="encHwR">HW …</span>
+        <section class="enc-side-card" id="encCardR">
+          <div class="enc-side-head">
+            <span class="enc-side-tag">Lado derecho</span>
+            <span class="badge" id="encHwR">—</span>
           </div>
-          <div class="dial-wrap">
-            <div class="mm-hero" id="encRMmAbs">—</div>
-            <div class="unit">longitud final (settle)</div>
-            <div class="dial-outer">
-              <svg class="dial-sweep" viewBox="0 0 100 100" aria-hidden="true">
-                <circle cx="50" cy="50" r="38" fill="none" stroke="#3a4652" stroke-width="12"/>
-                <g id="encRSweepSegs"></g>
-              </svg>
-              <div class="dial-hub">
-                <div>
-                  <div class="deg" id="encRAngle">—</div>
-                  <div class="unit">ángulo al settle</div>
+          <div class="enc-compact">
+            <div class="dial-wrap dial-compact">
+              <div class="mm-hero" id="encMmAbsR">—</div>
+              <div class="unit">settle (mm)</div>
+              <div class="dial-outer dial-sm">
+                <svg class="dial-sweep" viewBox="0 0 100 100" aria-hidden="true">
+                  <circle cx="50" cy="50" r="38" fill="none" stroke="#30363d" stroke-width="12"/>
+                  <g id="encSweepSegsR"></g>
+                </svg>
+                <div class="dial-hub">
+                  <div>
+                    <div class="deg" id="encAngleR">—</div>
+                    <div class="unit">°</div>
+                  </div>
                 </div>
               </div>
+              <div class="sub" id="encDirLabelR">—</div>
             </div>
-            <div class="sub" id="encRDirLabel">Dirección: —</div>
+            <div class="enc-mini-stats">
+              <div class="stat"><span>mm</span><b id="encMmR">—</b></div>
+              <div class="stat"><span>RPM pico</span><b id="encRpmR">—</b></div>
+              <div class="stat"><span>mm/s pico</span><b id="encMmSR">—</b></div>
+              <div class="stat"><span>Cuentas</span><b id="encCntR">—</b></div>
+            </div>
           </div>
-          <div class="stats" style="margin-top:.85rem">
-            <div class="stat"><span>mm con signo</span><b id="encRMm">—</b></div>
-            <div class="stat"><span>RPM pico</span><b id="encRRpm">—</b></div>
-            <div class="stat"><span>Velocidad pico</span><b id="encRMmS">—</b></div>
-            <div class="stat"><span>Final (settle)</span><b id="encRSettle">—</b></div>
-          </div>
-          <div class="row" style="margin-top:.85rem;align-items:end">
-            <label style="flex:1">Offset R (mm)
-              <input id="encROffsetMm" type="number" step="0.01" min="-5" max="5" value="0">
-            </label>
-            <button class="btn2" type="button" onclick="saveEncOffset('R')">Guardar</button>
-          </div>
-          <div class="btns" style="margin-top:.75rem">
-            <button class="btn" type="button" onclick="resetEnc('R')">Set0 R</button>
+          <div class="enc-actions">
+            <label>Offset interno (mm)<input id="encOffsetMmR" type="number" step="0.01" min="-5" max="5" value="0"></label>
+            <button type="button" class="btn-save" onclick="saveEncOffset('R')">Guardar</button>
+            <button type="button" class="btn" onclick="resetEnc('R')">Set0</button>
           </div>
         </section>
       </div>
-      <p class="enc-foot">
-        Polea ø50 mm · 2000 c/rev · 100 mm = 1273 cuentas.
-        Cada lado tiene Set0 y offset independientes.
-        La lectura visible y Set0 usan la base (redondeo 0/0.5/1);
-        el offset es corrección interna de Motion/Feed y <b>no</b> altera el cero operativo.
+
+      <p class="note enc-foot">
+        Polea ø50 mm · 2000 c/rev · 100 mm ≈ 1273 cuentas. Set0 por lado; al parar se actualiza el settle.
+        El offset es corrección Motion/Feed y no mueve el cero operativo del operador.
       </p>
+      <div class="btn-row" style="grid-template-columns:1fr 1fr;max-width:420px">
+        <button type="button" class="btnG" onclick="resetEnc()">Set0 ambos</button>
+        <button type="button" class="btnG" onclick="pollEnc()">Actualizar</button>
+      </div>
     </div>
+
+    <!-- ========== ALIMENTACIÓN CAN ========== -->
+    <div class="panel" id="panelFeed">
+      <p id="canChip"><span class="can-chip">CAN …</span></p>
+
+      <section class="full feed-test">
+        <div class="feed-test-head">
+          <div>
+            <h2>Test feed · L / R</h2>
+            <p class="hint">Perfil <strong>Velocity + Sensor</strong> (láser LR-X = tope). El ciclo HMI usa feed por TCP, no cambia el modo desde aquí salvo guardar config.</p>
+          </div>
+          <div class="feed-side-switch" role="tablist" aria-label="Vista perfil">
+            <button type="button" class="feed-side-btn active" id="feedSwL" data-side="L">L</button>
+            <button type="button" class="feed-side-btn" id="feedSwR" data-side="R">R</button>
+          </div>
+        </div>
+        <div class="feed-params-grid">
+          <div class="feed-param-col">
+            <span class="feed-col-label">L</span>
+            <label>Target mm<input type="number" id="solidL" min="0" max="200" step="0.5" value="55"></label>
+            <label>Vel mm/s<input type="number" id="velL" min="10" step="10" value="650"></label>
+            <label>Dec ramp (ms)<input type="number" id="decMsL" min="10" max="1000" step="10" value="100"></label>
+            <button type="button" class="btn" id="btnTestL">Test L</button>
+          </div>
+          <div class="feed-param-col">
+            <span class="feed-col-label">R</span>
+            <label>Target mm<input type="number" id="solidR" min="0" max="200" step="0.5" value="55"></label>
+            <label>Vel mm/s<input type="number" id="velR" min="10" step="10" value="650"></label>
+            <label>Dec ramp (ms)<input type="number" id="decMsR" min="10" max="1000" step="10" value="100"></label>
+            <button type="button" class="btn" id="btnTestR">Test R</button>
+          </div>
+        </div>
+        <p class="feed-stats" style="margin-bottom:.55rem">
+          Modo: <span class="pill on">Velocity + Sensor</span>
+          <span id="feedModeLoaded"></span>
+        </p>
+        <div class="feed-vel-row" id="feedVelParams">
+          <label>Fast Velocity % <input type="number" id="velFastPct" min="10" max="100" step="1" value="100"></label>
+          <label>Slow Velocity % <input type="number" id="velSlowPct" min="5" max="100" step="1" value="30"></label>
+          <label>Transition % <input type="number" id="velTransPct" min="10" max="95" step="1" value="70"></label>
+          <span class="feed-stats" id="velTransHint">→ 38.5 mm OM</span>
+          <label>Max Travel mm <input type="number" id="velMaxMm" min="56" max="120" step="0.5" value="65"></label>
+          <label>Timeout ms <input type="number" id="velTimeoutMs" min="1000" max="30000" step="100" value="8000"></label>
+        </div>
+        <div class="feed-shared-row">
+          <button type="button" class="btn-save" id="btnFeedSave">Guardar config</button>
+          <button type="button" class="btn2" id="btnFeedReset">Reset Feed + OM</button>
+          <button type="button" class="btnG" id="btnCanInit">Init CAN (operador)</button>
+          <button type="button" class="btn2" id="btnZeroL">Set0 L</button>
+          <button type="button" class="btn2" id="btnZeroR">Set0 R</button>
+        </div>
+        <p class="feed-viz-label" id="feedVizLabel">Perfil velocidad · L</p>
+        <canvas class="feed-canvas" id="canvasFeed" width="640" height="110"></canvas>
+        <p class="feed-stats" id="statsFeed">—</p>
+        <div class="feed-msg" id="feedMsg"></div>
+      </section>
+
+      <div class="grid">
+        <section>
+          <h2>Calibración L</h2>
+          <div class="row">
+            <label>Medido mm<input type="number" id="calMeasL" step="0.1" min="0.1"></label>
+            <label>Offset mm<input type="number" id="offL" step="0.5" value="0"></label>
+          </div>
+          <div class="btns">
+            <button type="button" class="btn" id="btnCalL">Calibrar L</button>
+            <button type="button" class="btn btnG" id="btnOffL">Guardar offset L</button>
+          </div>
+          <p class="feed-stats" id="scaleL" style="margin-top:.5rem">—</p>
+        </section>
+        <section>
+          <h2>Calibración R</h2>
+          <div class="row">
+            <label>Medido mm<input type="number" id="calMeasR" step="0.1" min="0.1"></label>
+            <label>Offset mm<input type="number" id="offR" step="0.5" value="0"></label>
+          </div>
+          <div class="btns">
+            <button type="button" class="btn" id="btnCalR">Calibrar R</button>
+            <button type="button" class="btn btnG" id="btnOffR">Guardar offset R</button>
+          </div>
+          <p class="feed-stats" id="scaleR" style="margin-top:.5rem">—</p>
+        </section>
+      </div>
+    </div>
+
   </div>
 
   <script>
@@ -645,20 +1065,25 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
     let cfg = { stepsPerMm: 770 / 45, offsetSteps: 0, egearN: 1, factoryStepsPerMm: 770 / 45, moveRpm: 1200 };
     let encTimer = null;
     let ovTimer = null;
-    let lastEncAngDraw = { L: -1, R: -1 };
-    // Clave settle+mm+offset: si solo cambia offset/Set0, hay que repintar.
-    let lastEncSettleKey = { L: null, R: null };
+    let feedTimer = null;
+    let globalTimer = null;
+    const FEED_MODE_VELOCITY = 3;
+    let feedOpBusy = false;
+    let feedViewSide = 'L';
+    let feedPlans = { planL: null, planR: null, vL: 0, vR: 0 };
+    const encLastDraw = { L: -1, R: -1 };
+    const encLastC = { L: null, R: null };
 
     function encPolar(cx, cy, r, deg) {
       const rad = deg * Math.PI / 180;
       return [cx + r * Math.cos(rad), cy + r * Math.sin(rad)];
     }
 
-    function updateEncSweep(side, ang) {
+    function updateEncSweep(ang, side) {
       const a = ((ang % 360) + 360) % 360;
-      if (Math.abs(a - lastEncAngDraw[side]) < 0.4) return;
-      lastEncAngDraw[side] = a;
-      const g = $('enc' + side + 'SweepSegs');
+      if (Math.abs(a - encLastDraw[side]) < 0.4) return;
+      encLastDraw[side] = a;
+      const g = $('encSweepSegs' + side);
       if (!g) return;
       if (a < 0.5) { g.innerHTML = ''; return; }
       const R = 38, SW = 11, STEP = 7, GAP = 2.2;
@@ -675,91 +1100,97 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
           '<path d="M' + x1.toFixed(2) + ' ' + y1.toFixed(2) +
           ' A' + R + ' ' + R + ' 0 ' + large + ' 1 ' +
           x2.toFixed(2) + ' ' + y2.toFixed(2) +
-          '" fill="none" stroke="rgba(42,157,143,' + op.toFixed(2) +
+          '" fill="none" stroke="rgba(63,185,80,' + op.toFixed(2) +
           ')" stroke-width="' + SW + '" stroke-linecap="butt"/>'
         );
       }
       g.innerHTML = parts.join('');
     }
 
-    function encClearDisplay(side) {
-      lastEncAngDraw[side] = -1;
-      lastEncSettleKey[side] = null;
-      $('enc' + side + 'MmAbs').textContent = '—';
-      $('enc' + side + 'Angle').textContent = '—';
-      updateEncSweep(side, 0);
-      const lab = $('enc' + side + 'DirLabel');
-      lab.textContent = 'Dirección: —';
-      lab.className = 'sub';
-      ['Mm', 'Rpm', 'MmS', 'Settle'].forEach(k => {
-        const el = $('enc' + side + k);
-        if (el) el.textContent = '—';
+    function encClearSide(side) {
+      encLastDraw[side] = -1;
+      encLastC[side] = null;
+      const sfx = side;
+      $('encMmAbs' + sfx).textContent = '—';
+      $('encAngle' + sfx).textContent = '—';
+      updateEncSweep(0, side);
+      const lab = $('encDirLabel' + sfx);
+      if (lab) { lab.textContent = '—'; lab.className = 'sub'; }
+      ['encMm', 'encRpm', 'encMmS', 'encCnt'].forEach(p => {
+        const el = $(p + sfx); if (el) el.textContent = '—';
       });
     }
 
-    function encSettleKey(d) {
-      return String(d.cSettle) + '|' + Number(d.mmSettle).toFixed(3) + '|' +
-        Number(d.offsetMm != null ? d.offsetMm : 0).toFixed(3);
-    }
-
-    function encApplySettle(side, d, force) {
+    function encApplySettle(d, side) {
+      if (!d || !side) return;
+      const sfx = side;
       const cpr = d.cpr || 2000;
       const cSettle = d.cSettle;
-      const key = encSettleKey(d);
-      if (!force && key === lastEncSettleKey[side]) return;
-      lastEncSettleKey[side] = key;
+      if (cSettle === encLastC[side] && d.settled) return;
+      encLastC[side] = cSettle;
 
-      $('enc' + side + 'MmAbs').textContent = Number(d.mmSettle).toFixed(2) + ' mm';
-      $('enc' + side + 'Settle').textContent = Number(d.mmSettle).toFixed(2) + ' mm';
+      $('encMmAbs' + sfx).textContent = Number(d.mmSettle).toFixed(2);
       const wrapped = ((cSettle % cpr) + cpr) % cpr;
       const ang = 360 * wrapped / cpr;
-      $('enc' + side + 'Angle').textContent = ang.toFixed(2) + '°';
-      updateEncSweep(side, ang);
+      $('encAngle' + sfx).textContent = ang.toFixed(1);
+      updateEncSweep(ang, side);
 
       const mmSigned = (d.mmSettleRound != null)
         ? Number(d.mmSettleRound) * (cSettle < 0 ? -1 : 1)
         : Number(d.mm);
-      $('enc' + side + 'Mm').textContent = mmSigned.toFixed(2);
+      $('encMm' + sfx).textContent = mmSigned.toFixed(2);
 
       const mmsPeak = d.mmsPeak != null ? Number(d.mmsPeak) : 0;
       const pulley = d.pulleyMm || 50;
       const rpmPeak = mmsPeak * 60 / (Math.PI * pulley);
-      $('enc' + side + 'MmS').textContent = mmsPeak.toFixed(1) + ' mm/s';
-      $('enc' + side + 'Rpm').textContent = rpmPeak.toFixed(1);
+      $('encMmS' + sfx).textContent = mmsPeak.toFixed(1);
+      $('encRpm' + sfx).textContent = rpmPeak.toFixed(1);
+      $('encCnt' + sfx).textContent = String(d.c != null ? d.c : '—');
 
-      const lab = $('enc' + side + 'DirLabel');
-      lab.className = 'sub';
-      if (cSettle > 0) { lab.textContent = 'Dirección: CW (horario)'; lab.classList.add('dir-cw'); }
-      else if (cSettle < 0) { lab.textContent = 'Dirección: CCW (antihorario)'; lab.classList.add('dir-ccw'); }
-      else { lab.textContent = 'Dirección: parado'; }
+      const lab = $('encDirLabel' + sfx);
+      if (lab) {
+        lab.className = 'sub';
+        if (cSettle > 0) { lab.textContent = 'CW'; lab.classList.add('dir-cw'); }
+        else if (cSettle < 0) { lab.textContent = 'CCW'; lab.classList.add('dir-ccw'); }
+        else { lab.textContent = 'Parado'; }
+      }
     }
 
-    function paintEncSide(side, d, hwOk) {
-      const hw = $('encHw' + side);
-      if (hw) {
-        hw.textContent = hwOk ? 'HW OK' : 'no instalado';
-        hw.className = 'enc-hw ' + (hwOk ? 'on' : 'off');
-      }
-      const offEl = $('enc' + side + 'OffsetMm');
-      if (d && d.offsetMm !== undefined && document.activeElement !== offEl) {
-        offEl.value = Number(d.offsetMm).toFixed(3);
-      }
-      if (!d || !d.ok) {
-        encClearDisplay(side);
-        if ($('enc' + side + 'MmAbs'))
-          $('enc' + side + 'MmAbs').textContent = hwOk ? '—' : 'N/A';
+    function paintEncSide(side, d, hwPresent) {
+      const card = $('encCard' + side);
+      const hwBadge = $('encHw' + side);
+      const offIn = $('encOffsetMm' + side);
+      if (!d || d.ok === false || !hwPresent) {
+        if (card) card.classList.add('off');
+        if (hwBadge) {
+          hwBadge.textContent = 'Sin hardware';
+          hwBadge.className = 'badge';
+        }
+        encClearSide(side);
         return;
+      }
+      if (card) card.classList.remove('off');
+      if (hwBadge) {
+        hwBadge.textContent = d.settled ? 'Settle' : 'Midiendo';
+        hwBadge.className = 'badge' + (d.settled ? ' on' : ' warn on');
+      }
+      if (d.offsetMm !== undefined && offIn && document.activeElement !== offIn) {
+        offIn.value = Number(d.offsetMm).toFixed(3);
       }
       const moving = !d.settled && Number(d.mms) >= 20;
       if (moving) {
-        $('enc' + side + 'MmAbs').textContent = 'midiendo…';
+        $('encMmAbs' + side).textContent = '…';
         return;
       }
       if (d.settled) {
-        encApplySettle(side, d, !!d._forcePaint);
+        encApplySettle(d, side);
         return;
       }
-      if (Math.abs(Number(d.c)) < 1) encClearDisplay(side);
+      if (Math.abs(Number(d.c)) < 1) encClearSide(side);
+      else {
+        $('encCnt' + side).textContent = String(d.c);
+        $('encMm' + side).textContent = Number(d.mm).toFixed(2);
+      }
     }
 
     function omSettleTxt(hit) {
@@ -792,19 +1223,97 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
       $('panelOv').classList.toggle('active', name === 'ov');
       $('panelAsda').classList.toggle('active', name === 'asda');
       $('panelEnc').classList.toggle('active', name === 'enc');
+      $('panelFeed').classList.toggle('active', name === 'feed');
       $('tabOv').classList.toggle('active', name === 'ov');
       $('tabAsda').classList.toggle('active', name === 'asda');
       $('tabEnc').classList.toggle('active', name === 'enc');
-      $('headerSub').textContent = name === 'ov'
-        ? 'Vista general · ASDA + OM'
-        : (name === 'asda'
-          ? 'ASDA-B3 · Home · move PUU · speed'
-          : 'OM RE30AJ2000F · L / R al settle');
+      $('tabFeed').classList.toggle('active', name === 'feed');
+      const subs = {
+        ov: 'Vista general · ASDA + OM',
+        asda: 'ASDA-B3 · Home · move PUU · speed',
+        enc: 'OM Encoder · L y R al settle',
+        feed: 'Alimentación CAN · Velocity + láser'
+      };
+      $('headerSub').textContent = subs[name] || 'Motion';
       stopEncPoll();
       stopOvPoll();
+      stopFeedPoll();
       if (name === 'enc') startEncPoll();
       else if (name === 'ov') startOvPoll();
+      else if (name === 'feed') startFeedPoll();
       else if (!waiting) refresh();
+    }
+
+    function confirmAction(msg, fn) {
+      if (window.confirm(msg)) fn();
+    }
+
+    function setGlobalStatus(kind, title, sub, pills) {
+      const bar = $('globalStatus');
+      const dot = $('globalDot');
+      bar.className = 'global-status' + (kind ? ' ' + kind : '');
+      dot.className = 'dot' + (kind ? ' ' + kind : '');
+      $('globalStatusTitle').textContent = title;
+      $('globalStatusSub').textContent = sub || '';
+      const pr = $('globalPills');
+      pr.innerHTML = '';
+      (pills || []).forEach(p => {
+        const el = document.createElement('span');
+        el.className = 'pill' + (p.cls ? ' ' + p.cls : '');
+        el.textContent = p.t;
+        pr.appendChild(el);
+      });
+    }
+
+    async function pollGlobal() {
+      try {
+        const j = await api('GET', '/api/status');
+        const pills = [];
+        pills.push({ t: j.busy ? 'ASDA ocupado' : 'ASDA libre', cls: j.busy ? 'warn' : 'on' });
+        if (j.laserRByte !== undefined)
+          pills.push({ t: 'Láser R ' + (j.laserR ? 'ON' : 'OFF'), cls: j.laserR ? 'on' : '' });
+        if (j.laserLByte !== undefined)
+          pills.push({ t: 'Láser L ' + (j.laserL ? 'ON' : 'OFF'), cls: j.laserL ? 'on' : '' });
+        if (j.alarm) {
+          setGlobalStatus('bad', j.ui || j.exxx || 'Alarma', j.message || '', pills);
+        } else if (!j.ok) {
+          setGlobalStatus('bad', 'Sin enlace Modbus', j.message || '', pills);
+        } else {
+          setGlobalStatus(j.busy ? 'wait' : 'ok', j.busy ? 'Movimiento en curso' : 'Enlace OK',
+            (j.positionMm != null ? j.positionMm.toFixed(2) + ' mm · ' : '') + (j.state || ''), pills);
+        }
+        if (j.ip) $('ipChip').textContent = j.ip;
+        paintMachineSensors(j);
+        if (activeTab === 'asda' && !waiting) paint(j);
+      } catch (e) {
+        setGlobalStatus('bad', 'Sin conexión HTTP', e.message, []);
+      }
+    }
+
+    function paintMachineSensors(s) {
+      if (!s) return;
+      const setRow = (ledId, bdgId, on, label) => {
+        const led = $(ledId), bdg = $(bdgId);
+        if (!led || !bdg) return;
+        led.className = 'led' + (on ? ' on' : '');
+        bdg.className = 'badge' + (on ? ' on' : '');
+        bdg.textContent = label || (on ? 'ON' : 'OFF');
+      };
+      setRow('ledLaserR', 'pillLaserR', !!s.laserR);
+      setRow('ledLaserL', 'pillLaserL', !!s.laserL);
+      const safe = !!s.safetyExhaust;
+      const ledS = $('ledSafety'), bdgS = $('pillSafety');
+      if (ledS && bdgS) {
+        ledS.className = safe ? 'led on' : 'led warn on';
+        bdgS.className = safe ? 'badge on' : 'badge warn on';
+        bdgS.textContent = safe ? 'OK planta' : 'Revisar';
+      }
+    }
+
+    function startGlobalPoll() {
+      if (globalTimer) return;
+      pollGlobal();
+      globalTimer = setInterval(pollGlobal, 2000);
     }
 
     function setBanner(mode, title, detail) {
@@ -881,74 +1390,15 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
         $('mRpm').value = c.moveRpm;
       if (c.moveRpmMin != null) $('mRpm').min = c.moveRpmMin;
       if (c.moveRpmMax != null) $('mRpm').max = c.moveRpmMax;
-      if (c.stage2ApproachPct != null && document.activeElement !== $('s2ApPct'))
-        $('s2ApPct').value = c.stage2ApproachPct;
-      if (c.stage2FastRpm != null && document.activeElement !== $('s2FastRpm'))
-        $('s2FastRpm').value = c.stage2FastRpm;
-      if (c.stage2FineRpm != null && document.activeElement !== $('s2FineRpm'))
-        $('s2FineRpm').value = c.stage2FineRpm;
-      if (c.moveRpmMin != null) {
-        $('s2FastRpm').min = c.moveRpmMin;
-        $('s2FineRpm').min = c.moveRpmMin;
-      }
-      if (c.moveRpmMax != null) {
-        $('s2FastRpm').max = c.moveRpmMax;
-        $('s2FineRpm').max = c.moveRpmMax;
-      }
-      if (c.stage2ApproachPctMin != null) $('s2ApPct').min = c.stage2ApproachPctMin;
-      if (c.stage2ApproachPctMax != null) $('s2ApPct').max = c.stage2ApproachPctMax;
       previewPuuMm();
       previewRpmMmS();
-      previewStage2();
-    }
-
-    function previewStage2() {
-      const L = Number($('s2PieceMm').value);
-      const pct = Number($('s2ApPct').value);
-      const fast = Number($('s2FastRpm').value);
-      const fine = Number($('s2FineRpm').value);
-      const target = Math.max(0, L - 55);
-      const ap = target * (pct / 100);
-      const el = $('s2Hint');
-      if (!el) return;
-      el.textContent = 'Target ' + target.toFixed(1) + ' mm · Approach ' +
-        ap.toFixed(1) + ' mm @ ' + fast + ' RPM · Fine = remaining real @ ' + fine + ' RPM';
-    }
-
-    async function saveStage2Cfg() {
-      try {
-        const j = await api('POST', '/api/config', {
-          stage2ApproachPct: Number($('s2ApPct').value),
-          stage2FastRpm: Number($('s2FastRpm').value),
-          stage2FineRpm: Number($('s2FineRpm').value)
-        });
-        log('Stage2 CFG → ' + j._http + '\n' + JSON.stringify(j, null, 2));
-        if (j.ok) applyCfg(j);
-      } catch (e) {
-        log('Error Stage2 CFG: ' + e.message);
-      }
-    }
-
-    async function startStage2() {
-      const pieceMm = Number($('s2PieceMm').value);
-      setBusyUi(true, 'Stage2 en curso…');
-      try {
-        const j = await api('POST', '/api/stage2/start', { pieceMm: pieceMm });
-        log('Stage2 START → ' + j._http + '\n' + JSON.stringify(j, null, 2));
-        if (!j.ok) setBanner('bad', 'Stage2', j.error || j.message || 'Error');
-      } catch (e) {
-        log('Error Stage2: ' + e.message);
-      }
-      setBusyUi(false);
-      refresh();
     }
 
     function paint(s) {
       if (!s) return;
       if (!waiting) {
         if (s.alarm) {
-          var alarmTxt = s.ui || (s.exxx ? (s.exxx + ': Motion, ' + (s.message || '')) : (s.message || 'Timeout de movimiento'));
-          setBanner('bad', s.exxx || 'ALARMA', alarmTxt);
+          setBanner('bad', 'ALARMA', s.message || 'Timeout de movimiento');
         } else {
           setBanner(
             s.ok ? 'ok' : 'bad',
@@ -962,6 +1412,15 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
       $('p5007').textContent = (s.p5007 != null) ? String(s.p5007) : '—';
       $('busy').textContent = s.busy ? 'SI' : 'NO';
       if (s.ip) $('ipChip').textContent = s.ip;
+      const ab = $('asdaAlarmBox');
+      if (s.alarm && (s.ui || s.exxx || s.message)) {
+        ab.className = 'alarm-box show';
+        ab.textContent = (s.exxx ? s.exxx + ': ' : '') + (s.ui || s.message || '');
+      } else {
+        ab.className = 'alarm-box';
+        ab.textContent = '';
+      }
+      paintMachineSensors(s);
     }
 
     async function refresh() {
@@ -993,17 +1452,29 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
     }
 
     async function doHome() {
+      const torque = Number($('tq').value);
+      const speedRpm = Number($('hRpm').value);
+      if (!isFinite(torque) || torque < 1 || torque > 300) {
+        log('Torque inválido (1–300)');
+        return;
+      }
+      if (!isFinite(speedRpm) || speedRpm < 0.1) {
+        log('Velocidad HOME inválida');
+        return;
+      }
       const body = {
         direction: $('dir').value,
-        torque: Number($('tq').value),
-        speedRpm: Number($('hRpm').value)
+        torque,
+        speedRpm,
+        wait: $('homeWait').checked
       };
-      setBusyUi(true, 'Homing en curso…');
+      if (body.wait) setBusyUi(true, 'Homing en curso…');
       log('POST /api/home … timeout auto');
       try {
         const j = await api('POST', '/api/home', body);
         log('HOME → ' + j._http + '\n' + JSON.stringify(j, null, 2));
-        if (j.alarm || j._http === 504) {
+        if (j.accepted) setBanner('wait', 'HOME encolado', 'Seguimiento en /api/status');
+        else if (j.alarm || j._http === 504) {
           setBanner('bad', 'ALARMA', j.message || 'Timeout home');
         }
       } catch (e) {
@@ -1024,16 +1495,27 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
     }
 
     async function doMove() {
+      const position = Number($('target').value);
+      const speedRpm = Number($('mRpm').value);
+      if (!isFinite(position)) { log('PUU inválido'); return; }
+      const minR = Number($('mRpm').min) || 400;
+      const maxR = Number($('mRpm').max) || 3000;
+      if (!isFinite(speedRpm) || speedRpm < minR || speedRpm > maxR) {
+        log('RPM fuera de rango (' + minR + '–' + maxR + ')');
+        return;
+      }
       const body = {
-        position: Number($('target').value),
-        speedRpm: Number($('mRpm').value)
+        position,
+        speedRpm,
+        wait: $('moveWait').checked
       };
-      setBusyUi(true, 'Movimiento en curso…');
+      if (body.wait) setBusyUi(true, 'Movimiento en curso…');
       log('POST /api/move PUU … timeout auto');
       try {
         const j = await api('POST', '/api/move', body);
         log('MOVE → ' + j._http + '\n' + JSON.stringify(j, null, 2));
-        if (j.alarm || j._http === 504) {
+        if (j.accepted) setBanner('wait', 'MOVE encolado', 'Seguimiento en /api/status');
+        else if (j.alarm || j._http === 504) {
           setBanner('bad', 'ALARMA', j.message || 'Timeout move');
         }
       } catch (e) {
@@ -1045,16 +1527,21 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
 
     function paintEnc(d) {
       if (!d) return;
-      const okL = !!(d.hwL || (d.l && d.l.ok));
-      const okR = !!(d.hwR || (d.r && d.r.ok));
+      const hwL = d.hwL === true || (d.l && d.l.ok);
+      const hwR = d.hwR === true || (d.r && d.r.ok);
+      const any = hwL || hwR || d.ok;
       const eb = $('encBanner');
-      eb.className = 'banner ' + ((okL || okR) ? 'ok' : 'bad');
-      $('encBannerTitle').textContent = (okL || okR) ? 'Encoder L / R' : 'Encoder no iniciado';
-      $('encBannerDetail').textContent =
-        'L=' + (okL ? 'OK' : 'off') + ' · R=' + (okR ? 'OK' : 'off') +
-        ' · indicadores al settle';
-      paintEncSide('L', d.l || null, okL);
-      paintEncSide('R', d.r || null, okR);
+      eb.className = 'banner ' + (any ? 'ok' : 'bad');
+      const parts = [];
+      if (hwL) parts.push('L OK');
+      if (hwR) parts.push('R OK');
+      $('encBannerTitle').textContent = any ? 'OM · ' + (parts.length ? parts.join(' · ') : 'enlace') : 'Sin encoder';
+      $('encBannerDetail').textContent = 'Actualización al settle · Set0 y offset por lado';
+
+      const sideL = d.l || (d.side === 'L' ? d : null);
+      const sideR = d.r || (d.side === 'R' ? d : null);
+      paintEncSide('L', sideL, hwL);
+      paintEncSide('R', sideR, hwR);
     }
 
     async function pollEnc() {
@@ -1080,33 +1567,18 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
 
     async function resetEnc(side) {
       try {
-        if (side) lastEncSettleKey[side] = null;
-        else { lastEncSettleKey.L = null; lastEncSettleKey.R = null; }
-        const q = side ? ('?side=' + encodeURIComponent(side)) : '';
-        const j = await api('POST', '/api/encoder/reset' + q);
-        if (j && j.l) j.l._forcePaint = true;
-        if (j && j.r) j.r._forcePaint = true;
-        paintEnc(j);
-        log(side ? ('Set0 ' + side + ' OK') : 'Set0 L+R OK');
-      } catch (e) {
-        log('Set0 falló: ' + e.message);
-      }
+        const body = (side === 'L' || side === 'R') ? { side } : undefined;
+        paintEnc(await api('POST', '/api/encoder/reset', body));
+      } catch (e) {}
     }
 
     async function saveEncOffset(side) {
-      const offsetMm = Number($('enc' + side + 'OffsetMm').value);
+      if (side !== 'L' && side !== 'R') return;
+      const offsetMm = Number($('encOffsetMm' + side).value);
       try {
-        lastEncSettleKey[side] = null;
-        // Query + body: ESP WebServer a veces no entrega JSON en "plain".
-        const q = '?side=' + encodeURIComponent(side) +
-          '&offsetMm=' + encodeURIComponent(String(offsetMm));
-        const j = await api('POST', '/api/encoder' + q, { side: side, offsetMm: offsetMm });
-        if (j && j.l) j.l._forcePaint = true;
-        if (j && j.r) j.r._forcePaint = true;
+        const j = await api('POST', '/api/encoder', { side, offsetMm });
         paintEnc(j);
-        const got = (side === 'R' ? (j && j.r) : (j && j.l));
-        const saved = got && got.offsetMm != null ? Number(got.offsetMm) : offsetMm;
-        log('OM offsetMm ' + side + ' → ' + saved.toFixed(3));
+        log('OM offset ' + side + ' → ' + offsetMm.toFixed(3));
       } catch (e) {
         log('Error offset OM ' + side + ': ' + e.message);
       }
@@ -1203,19 +1675,325 @@ static const char index_html[] PROGMEM = R"HTML(<!DOCTYPE html>
       if (ovTimer) { clearInterval(ovTimer); ovTimer = null; }
     }
 
+    function feedShowMsg(t, cls) {
+      const m = $('feedMsg');
+      m.textContent = t;
+      m.className = 'feed-msg show ' + (cls || '');
+    }
+
+    function feedSelectedModeId() {
+      return FEED_MODE_VELOCITY;
+    }
+
+    function feedSetModeUi() {
+      if ($('feedVelParams')) $('feedVelParams').style.display = '';
+    }
+
+    function feedShowLoadedMode(d) {
+      const el = $('feedModeLoaded');
+      if (!el || !d) return;
+      if (d.feedModeId === FEED_MODE_VELOCITY || d.feedMode === 'velocity_sensor') {
+        el.textContent = '';
+        return;
+      }
+      el.textContent = ' (en ESP: ' + (d.feedMode || d.feedModeId) + ' — pulsa Guardar config para pasar a Velocity)';
+    }
+
+    function feedUpdateVelHint() {
+      const el = $('velTransPct');
+      if (!el || !$('velTransHint')) return;
+      const pct = Number(el.value);
+      if (!isFinite(pct)) return;
+      $('velTransHint').textContent = '→ ' + (55 * pct / 100).toFixed(1) + ' mm OM';
+    }
+
+    function feedCfgQuery() {
+      return 'solidMm=' + encodeURIComponent($('solidL').value)
+        + '&solidMmR=' + encodeURIComponent($('solidR').value)
+        + '&velocityMmSL=' + encodeURIComponent($('velL').value)
+        + '&velocityMmSR=' + encodeURIComponent($('velR').value)
+        + '&decRampMsL=' + encodeURIComponent($('decMsL').value)
+        + '&decRampMsR=' + encodeURIComponent($('decMsR').value)
+        + '&feedMode=' + encodeURIComponent(FEED_MODE_VELOCITY)
+        + '&velocityFastPct=' + encodeURIComponent(($('velFastPct') && $('velFastPct').value) || '100')
+        + '&velocitySlowPct=' + encodeURIComponent(($('velSlowPct') && $('velSlowPct').value) || '30')
+        + '&velocityTransitionPct=' + encodeURIComponent(($('velTransPct') && $('velTransPct').value) || '70')
+        + '&velocityMaxTravelMm=' + encodeURIComponent(($('velMaxMm') && $('velMaxMm').value) || '65')
+        + '&velocityTimeoutMs=' + encodeURIComponent(($('velTimeoutMs') && $('velTimeoutMs').value) || '8000');
+    }
+
+    function feedApplyCfg(d) {
+      if (!d) return;
+      if (d.solidMm != null) $('solidL').value = d.solidMm;
+      if (d.solidMmR != null) $('solidR').value = d.solidMmR;
+      if (d.velocityMmSL != null) $('velL').value = d.velocityMmSL;
+      if (d.velocityMmSR != null) $('velR').value = d.velocityMmSR;
+      if (d.decRampMsL != null) $('decMsL').value = d.decRampMsL;
+      if (d.decRampMsR != null) $('decMsR').value = d.decRampMsR;
+      feedSetModeUi();
+      feedShowLoadedMode(d);
+      if (d.velocityFastPct != null && $('velFastPct')) $('velFastPct').value = d.velocityFastPct;
+      if (d.velocitySlowPct != null && $('velSlowPct')) $('velSlowPct').value = d.velocitySlowPct;
+      if (d.velocityTransitionPct != null && $('velTransPct')) $('velTransPct').value = d.velocityTransitionPct;
+      if (d.velocityMaxTravelMm != null && $('velMaxMm')) $('velMaxMm').value = d.velocityMaxTravelMm;
+      if (d.velocityTimeoutMs != null && $('velTimeoutMs')) $('velTimeoutMs').value = d.velocityTimeoutMs;
+      feedUpdateVelHint();
+      feedPlans.planL = d.planL;
+      feedPlans.planR = d.planR;
+      feedPlans.vL = parseFloat(d.velocityMmSL);
+      feedPlans.vR = parseFloat(d.velocityMmSR);
+      feedDrawActive();
+    }
+
+    function feedDrawPlan(canvasId, statsId, plan, vMm) {
+      const c = $(canvasId), ctx = c.getContext('2d'), w = c.width, h = c.height;
+      ctx.fillStyle = '#0d1117';
+      ctx.fillRect(0, 0, w, h);
+      if (!plan || !plan.valid) { $(statsId).textContent = 'Perfil inválido'; return; }
+      const acc = plan.accMmS2 || 1, dec = plan.decMmS2 || 1, v = vMm;
+      const dAcc = plan.dAccMm || 0, dDec = plan.dDecMm || 0, dCr = plan.dCruiseMm || 0;
+      let tAcc = Math.sqrt(2 * dAcc / acc), tDec = Math.sqrt(2 * dDec / dec), tCr = dCr / v;
+      let tTot = tAcc + tCr + tDec;
+      if (tTot < 0.01) tTot = 0.01;
+      ctx.strokeStyle = '#2a9d8f';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let i = 0; i <= w; i++) {
+        const t = tTot * i / w;
+        let vAt = 0;
+        if (t <= tAcc) vAt = acc * t;
+        else if (t <= tAcc + tCr) vAt = v;
+        else vAt = Math.max(0, v - dec * (t - tAcc - tCr));
+        const y = h - 8 - (vAt / v) * (h - 16);
+        if (i === 0) ctx.moveTo(i, y); else ctx.lineTo(i, y);
+      }
+      ctx.stroke();
+      $(statsId).textContent = 'V=' + vMm.toFixed(0) + ' mm/s · acc=' + acc.toFixed(0)
+        + ' · dec=' + dec.toFixed(0) + ' · dAcc=' + dAcc.toFixed(1)
+        + ' dDec=' + dDec.toFixed(1) + ' cruise=' + dCr.toFixed(1) + ' mm';
+    }
+
+    function feedDrawActive() {
+      const side = feedViewSide;
+      const plan = side === 'L' ? feedPlans.planL : feedPlans.planR;
+      const v = side === 'L' ? feedPlans.vL : feedPlans.vR;
+      feedDrawPlan('canvasFeed', 'statsFeed', plan, v);
+      $('feedVizLabel').textContent = 'Perfil velocidad · ' + side;
+    }
+
+    function feedSetViewSide(side) {
+      feedViewSide = side;
+      $('feedSwL').classList.toggle('active', side === 'L');
+      $('feedSwR').classList.toggle('active', side === 'R');
+      feedDrawActive();
+    }
+
+    // fromDisk=true: NVS/runtime. false: preview con formulario.
+    function feedRefreshProfile(fromDisk) {
+      const url = fromDisk ? '/getFeedTestConfig' : ('/getFeedTestConfig?' + feedCfgQuery());
+      fetch(url).then(r => r.json()).then(feedApplyCfg)
+        .catch(() => feedShowMsg('Error cargando perfil', 'bad'));
+    }
+
+    function feedPollCan() {
+      if (activeTab !== 'feed') return;
+      fetch('/api/feed/status').then(r => r.json()).then(s => {
+        let txt = 'CAN FAIL', cls = 'bad';
+        if (s.canInitialized && s.servoCanReady) { txt = 'CAN OK'; cls = 'ok'; }
+        else if (s.canInitialized) { txt = 'TWAI OK · servos OFF'; cls = 'bad'; }
+        if (s.canBitrateKbps) txt += ' · ' + s.canBitrateKbps + 'k';
+        let extra = '';
+        if (s.feedMode) extra += '<span class="can-chip">' + s.feedMode + '</span>';
+        const st = (s.L && s.L.velocityStage) || (s.R && s.R.velocityStage) || '';
+        if (st) extra += '<span class="can-chip">' + st + '</span>';
+        $('canChip').innerHTML = '<span class="can-chip ' + cls + '">' + txt + '</span>'
+          + (s.feedActive ? '<span class="can-chip">Feed…</span>' : '')
+          + extra;
+      }).catch(() => {});
+    }
+
+    function feedWaitDone() {
+      return new Promise(resolve => {
+        function tick() {
+          fetch('/api/feed/status').then(r => r.json()).then(s => {
+            if (!s.feedActive) { resolve(s); return; }
+            setTimeout(tick, 350);
+          }).catch(() => setTimeout(tick, 500));
+        }
+        tick();
+      });
+    }
+
+    function feedRunTest(side) {
+      if (feedOpBusy) return;
+      feedOpBusy = true;
+      $('btnTestL').disabled = true;
+      $('btnTestR').disabled = true;
+      feedShowMsg('Encolando test ' + side + '…', 'wait');
+      const q = '/feedTestSensor?side=' + side
+        + '&solidMm=' + encodeURIComponent($('solidL').value)
+        + '&solidMmR=' + encodeURIComponent($('solidR').value)
+        + '&velocityMmS=' + encodeURIComponent($('velL').value)
+        + '&velocityMmSR=' + encodeURIComponent($('velR').value)
+        + '&decRampMsL=' + encodeURIComponent($('decMsL').value)
+        + '&decRampMsR=' + encodeURIComponent($('decMsR').value)
+        + '&feedMode=' + encodeURIComponent(FEED_MODE_VELOCITY)
+        + '&velocityFastPct=' + encodeURIComponent(($('velFastPct') && $('velFastPct').value) || '100')
+        + '&velocitySlowPct=' + encodeURIComponent(($('velSlowPct') && $('velSlowPct').value) || '30')
+        + '&velocityTransitionPct=' + encodeURIComponent(($('velTransPct') && $('velTransPct').value) || '70')
+        + '&velocityMaxTravelMm=' + encodeURIComponent(($('velMaxMm') && $('velMaxMm').value) || '65')
+        + '&velocityTimeoutMs=' + encodeURIComponent(($('velTimeoutMs') && $('velTimeoutMs').value) || '8000');
+      fetch(q).then(r => r.json()).then(d => {
+        if (!d.ok) { feedShowMsg(d.error || 'Fallo', 'bad'); return; }
+        feedShowMsg('Moviendo servos ' + side + '…', 'wait');
+        return feedWaitDone();
+      }).then(st => {
+        if (!st) return;
+        if (st.feedOk) { feedShowMsg('Feed OK · OM ' + st.omOfficial + ' mm', 'ok'); }
+        else feedShowMsg(st.fault || 'Feed falló', 'bad');
+        feedPollCan();
+      }).catch(() => feedShowMsg('Error red', 'bad'))
+        .finally(() => {
+          feedOpBusy = false;
+          $('btnTestL').disabled = false;
+          $('btnTestR').disabled = false;
+        });
+    }
+
+    function feedLoadCal() {
+      fetch('/getFeedCal').then(r => r.json()).then(d => {
+        $('scaleL').textContent = 'spm L: ' + d.countsPerMmL.toFixed(2);
+        $('scaleR').textContent = 'spm R: ' + d.countsPerMmR.toFixed(2);
+      }).catch(() => {});
+    }
+
+    function feedPollTick() {
+      if (activeTab !== 'feed') return;
+      feedPollCan();
+    }
+
+    function startFeedPoll() {
+      stopFeedPoll();
+      feedRefreshProfile(true);
+      feedLoadCal();
+      feedPollTick();
+      feedTimer = setInterval(feedPollTick, 800);
+    }
+
+    function stopFeedPoll() {
+      if (feedTimer) { clearInterval(feedTimer); feedTimer = null; }
+    }
+
+    function initFeedUi() {
+      $('btnFeedSave').onclick = () => {
+        fetch('/setFeedTestConfig?' + feedCfgQuery())
+          .then(r => r.json())
+          .then(d => {
+            if (d && d.error) { feedShowMsg(d.error, 'bad'); return; }
+            feedShowMsg('Guardado', 'ok');
+            feedApplyCfg(d);
+          })
+          .catch(() => feedShowMsg('Error guardando', 'bad'));
+      };
+      const btnReset = $('btnFeedReset');
+      if (btnReset) btnReset.onclick = () => confirmAction('¿Reset Feed + OM? Detiene secuencias en curso.', () => {
+        feedShowMsg('Reset Feed + OM…', 'wait');
+        fetch('/api/feed/reset').then(r => r.json()).then(s => {
+          feedShowMsg(s.feedReset ? 'Reset OK · OM en 0' : (s.error || 'Reset falló'), s.feedReset ? 'ok' : 'bad');
+          feedPollCan();
+        }).catch(() => feedShowMsg('Error red', 'bad'));
+      });
+      const zL = $('btnZeroL');
+      if (zL) zL.onclick = () => {
+        fetch('/api/feed/encoder/zero?side=L').then(r => r.json())
+          .then(d => feedShowMsg(d.ok ? 'Set0 L OK' : 'Set0 L falló', d.ok ? 'ok' : 'bad'));
+      };
+      const zR = $('btnZeroR');
+      if (zR) zR.onclick = () => {
+        fetch('/api/feed/encoder/zero?side=R').then(r => r.json())
+          .then(d => feedShowMsg(d.ok ? 'Set0 R OK' : 'Set0 R falló', d.ok ? 'ok' : 'bad'));
+      };
+      $('btnTestL').onclick = () => feedRunTest('L');
+      $('btnTestR').onclick = () => feedRunTest('R');
+      $('btnCalL').onclick = () => {
+        fetch('/setFeedCal?side=L&measuredMm=' + encodeURIComponent($('calMeasL').value))
+          .then(r => r.json()).then(feedLoadCal);
+      };
+      $('btnCalR').onclick = () => {
+        fetch('/setFeedCal?side=R&measuredMm=' + encodeURIComponent($('calMeasR').value))
+          .then(r => r.json()).then(feedLoadCal);
+      };
+      $('btnOffL').onclick = () => {
+        fetch('/setFeedOffset?offsetMm=' + encodeURIComponent($('offL').value))
+          .then(() => feedShowMsg('Offset L OK', 'ok'));
+      };
+      $('btnOffR').onclick = () => {
+        fetch('/setFeedOffset?offsetMmB=' + encodeURIComponent($('offR').value))
+          .then(() => feedShowMsg('Offset R OK', 'ok'));
+      };
+      ['solidL', 'solidR', 'velL', 'velR', 'decMsL', 'decMsR',
+       'velFastPct', 'velSlowPct', 'velTransPct', 'velMaxMm', 'velTimeoutMs'].forEach(id => {
+        const el = $(id);
+        if (el) el.addEventListener('change', () => feedRefreshProfile(false));
+      });
+      if ($('velTransPct')) $('velTransPct').addEventListener('input', feedUpdateVelHint);
+      $('feedSwL').onclick = () => feedSetViewSide('L');
+      $('feedSwR').onclick = () => feedSetViewSide('R');
+      const btnCan = $('btnCanInit');
+      if (btnCan) btnCan.onclick = () => {
+        confirmAction('¿Reiniciar bus CAN y nodos servo? Solo si la máquina está libre.', () => {
+          feedShowMsg('Encolando Init CAN…', 'wait');
+          fetch('/api/feed/can-init', { method: 'POST' })
+            .then(r => r.json())
+            .then(d => feedShowMsg(d.ok ? 'Init encolado (ver chip CAN)' : (d.error || 'Fallo'), d.ok ? 'wait' : 'bad'))
+            .catch(() => feedShowMsg('Error red', 'bad'));
+        });
+      };
+    }
+
+    function initOvUi() {
+      $('btnOvStart').onclick = async () => {
+        const body = {
+          pieceMm: Number($('ovPieceIn').value),
+          extraMm: Number($('ovExtraIn').value)
+        };
+        try {
+          paintOv(await api('POST', '/api/overview/start', body));
+        } catch (e) {
+          $('ovBanner').className = 'banner bad';
+          $('ovBannerTitle').textContent = 'Error';
+          $('ovBannerDetail').textContent = e.message;
+        }
+      };
+      document.querySelectorAll('[data-ov-mark]').forEach(btn => {
+        btn.onclick = async () => {
+          const ev = btn.getAttribute('data-ov-mark');
+          try {
+            paintOv(await api('POST', '/api/overview/mark', { event: ev }));
+          } catch (e) {}
+        };
+      });
+    }
+
+    function initAsdaButtons() {
+      $('btnServoOn').onclick = () => call('POST', '/api/on');
+      $('btnServoOff').onclick = () => confirmAction('¿Servo OFF?', () => call('POST', '/api/off'));
+      $('btnStop').onclick = () => confirmAction('¿Enviar STOP al actuador?', () => call('POST', '/api/stop'));
+    }
+
     previewPuuMm();
     previewRpmMmS();
-    previewStage2();
     loadCfg();
+    initFeedUi();
+    initOvUi();
+    initAsdaButtons();
+    startGlobalPoll();
     startOvPoll();
     setInterval(() => { if (activeTab === 'asda' && !waiting) refresh(); }, 1500);
-    ['s2ApPct','s2FastRpm','s2FineRpm','s2PieceMm'].forEach(function(id){
-      const el = $(id);
-      if (el) el.addEventListener('input', previewStage2);
-    });
   </script>
 </body>
 </html>
+
 )HTML";
 
 

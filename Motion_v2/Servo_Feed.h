@@ -39,15 +39,18 @@ extern bool canInitialized;
 extern bool servoCanReady;
 
 void servoCanInitMutex();
-bool initCANBus(uint8_t maxRetries = CAN_INIT_MAX_RETRIES);
+bool initCANBus(uint8_t maxRetries = CAN_INIT_MAX_RETRIES, bool forceReinstall = false);
 bool setupServoFeeder();
-bool reconnectCANBus(bool fullServoSetup);
 bool verifyServoEnergized();
-// Rutina de encendido (bus + servo CAN) y su pedido asíncrono desde HTTP.
-bool feedCanColdStart();
+// Arranque en setup() (bus + nodos CAN).
+bool feedCanStartup();
+// Reinicio completo pedido por el operador (HTTP can-init).
 bool feedCanBootInit();
 bool feedCanInitRequest();
 void serviceCANRx();
+// Atiende TCP/HTTP/Modbus/CAN mientras se espera SDO (sin delay). No reentra feed/stage2.
+void motionCooperateDuringWait();
+extern uint8_t motionNestedServiceDepth;
 // true = movimiento(s) pedido(s) emitidos; false = SDO posición falló / no se movió
 bool canMoveRelativePP(int32_t stepsL, int32_t stepsR);
 void canHalt();

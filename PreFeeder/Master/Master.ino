@@ -999,13 +999,14 @@ static bool pfSideErrFlag(const SideView& s, uint8_t idx)
     case 1: return s.endstop || (s.error && pfErrorIdFromWireCode(s.errorCode) == PF_ERR_ENDSTOP);
     case 3: return s.cylinderOpen || (s.error && pfErrorIdFromWireCode(s.errorCode) == PF_ERR_CYLINDER);
     case 4: return s.hoseAbsent || (s.error && pfErrorIdFromWireCode(s.errorCode) == PF_ERR_HOSE);
+    case 5: return s.error && pfErrorIdFromWireCode(s.errorCode) == PF_ERR_HOLGURA;
     default: return false;
   }
 }
 
 static void pfTcpPushSideErrors(char side, SideView& s, bool* lastFlags, bool force = false)
 {
-  for (uint8_t i = 0; i < 5; i++)
+  for (uint8_t i = 0; i < 6; i++)
   {
     const bool now = pfSideErrFlag(s, i);
     if (!force && now == lastFlags[i]) continue;
@@ -1043,6 +1044,10 @@ static String pfTcpStatusJson()
   j += pfError.code;
   j += ",\"tag\":";
   jsonAppendStr(j, pfError.tag);
+  j += ",\"exxx\":";
+  jsonAppendStr(j, pfError.tag);
+  j += ",\"ui\":";
+  jsonAppendStr(j, pfError.ui);
   j += ",\"side\":\"";
   j += String(pfError.side);
   j += "\",\"reason\":";
@@ -1239,6 +1244,11 @@ static void pfTcpOnLine(const char* line)
       || cmdName == "refillHoldMaterial" || cmdName == "refillHoldDereeler"
       || cmdName == "refillHoldServo" || cmdName == "refillHoldFeeder") {
     pfTcpDoRefill(cmdName, jSideChar(line, '-'));
+    return;
+  }
+  if (cmdName == "setHmiTfeedEnabled" || cmdName == "setTfeedEnabled") {
+    const bool ok = pfDispatchCmd(cmdName, pfPeerOnOffVal(pfTcpCmdValue), '-');
+    pfTcpTxAck(0, ok, ok ? "" : "setHmiTfeedEnabled sin enlace L/R");
     return;
   }
 

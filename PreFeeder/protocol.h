@@ -63,13 +63,13 @@ static inline const char* pfTcpErrorName(uint8_t byteCode) {
     case PF_ERR_TENSION_R: return "TensionerR";
     case PF_ERR_CILINDRO_R: return "CilindroR";
     case PF_ERR_MANGUERA_R: return "MangueraR";
-    case PF_ERR_HOLGURA_R: return "reserved";
+    case PF_ERR_HOLGURA_R: return "HolguraR";
     case PF_ERR_BUFFER_FULL_L: return "BufferFL";
     case PF_ERR_BUFFER_MAX_L: return "BufferML";
     case PF_ERR_TENSION_L: return "TensionerL";
     case PF_ERR_CILINDRO_L: return "CilindroL";
     case PF_ERR_MANGUERA_L: return "MangueraL";
-    case PF_ERR_HOLGURA_L: return "reserved";
+    case PF_ERR_HOLGURA_L: return "HolguraL";
     case PF_ERR_NOT_INITIALIZED: return "NotInitialized";
     default: return "unknown";
   }
@@ -96,11 +96,13 @@ static inline const char* pfErrorName(uint8_t b) {
     case PF_ERR_TENSION_R: return "TensionerR";
     case PF_ERR_CILINDRO_R: return "CilindroR";
     case PF_ERR_MANGUERA_R: return "MangueraR";
+    case PF_ERR_HOLGURA_R: return "HolguraR";
     case PF_ERR_BUFFER_FULL_L: return "BufferFL";
     case PF_ERR_BUFFER_MAX_L: return "BufferML";
     case PF_ERR_TENSION_L: return "TensionerL";
     case PF_ERR_CILINDRO_L: return "CilindroL";
     case PF_ERR_MANGUERA_L: return "MangueraL";
+    case PF_ERR_HOLGURA_L: return "HolguraL";
     case PF_ERR_NOT_INITIALIZED: return "NotInitialized";
     default: return "unknown";
   }

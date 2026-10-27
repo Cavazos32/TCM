@@ -28,7 +28,8 @@ static inline PfCmdScope pfMasterCmdScope(const String& cmd)
       || cmd == "refillHoldMaterial" || cmd == "refillHoldDereeler"
       || cmd == "refillHoldServo" || cmd == "refillHoldFeeder"
       || cmd == "halt" || cmd == "motionStop" || cmd == "hardStop"
-      || cmd == "ping")
+      || cmd == "ping"
+      || cmd == "setHmiTfeedEnabled" || cmd == "setTfeedEnabled")
     return PfCmdScope::Global;
 
   if (cmd == "trigger"

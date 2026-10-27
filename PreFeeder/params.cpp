@@ -18,9 +18,10 @@ void paramsValidate(Params& p) {
   clampF(p.midBoostSec, 0.1f, 60.0f);
   clampF(p.highBoostRpm, RPM_MIN, RPM_MAX);
   clampF(p.highBoostSec, 0.1f, 60.0f);
-  clampF(p.lidarFeedMaxSec, 0.1f, 30.0f);
-  if (p.lidarActivateCm < 1) p.lidarActivateCm = 1;
-  if (p.lidarActivateCm > 1200) p.lidarActivateCm = 1200;
+  clampF(p.holguraOnFeedSec, 0.1f, 120.0f);
+  clampF(p.holguraOffFaultSec, 0.5f, 300.0f);
+  if (p.holguraSettleMs < HOLGURA_SETTLE_MS_MIN) p.holguraSettleMs = HOLGURA_SETTLE_MS_MIN;
+  if (p.holguraSettleMs > HOLGURA_SETTLE_MS_MAX) p.holguraSettleMs = HOLGURA_SETTLE_MS_MAX;
   if (p.servoActiveUs < SERVO_MIN_US) p.servoActiveUs = SERVO_MIN_US;
   if (p.servoActiveUs > SERVO_MAX_US) p.servoActiveUs = SERVO_MAX_US;
   if (p.refillPulseMs < 200) p.refillPulseMs = 200;
@@ -50,14 +51,10 @@ void paramsLoad(Params& p) {
   p.highBoostRpm = prefs.getFloat("hi_rpm", 180.0f);
   p.highBoostSec = prefs.getFloat("hi_s", 5.0f);
   p.highServoDeltaUs = (int16_t)prefs.getInt("hi_dus", (int)(PF_SERVO_SPEED_SIGN * 200));
-  {
-    uint16_t act = (uint16_t)prefs.getUInt("lidar_cm", 50);
-    uint16_t legacyMax = (uint16_t)prefs.getUInt("lidar_max_cm", 0);
-    if (legacyMax > act) act = legacyMax;
-    p.lidarActivateCm = act;
-  }
-  p.lidarFeedMaxSec = prefs.getFloat("lidar_s", 3.0f);
-  p.lidarHolguraEnabled = prefs.getBool("lidar_en", true);
+  p.holguraSettleMs = (uint16_t)prefs.getUInt("holg_set_ms", HOLGURA_SETTLE_MS_DEFAULT);
+  p.holguraOnFeedSec = prefs.getFloat("holg_on_s", 2.0f);
+  p.holguraOffFaultSec = prefs.getFloat("holg_off_s", 5.0f);
+  p.hmiTfeedEnabled = prefs.getBool("tfeed_en", false);
   prefs.end();
   paramsValidate(p);
 }
@@ -83,9 +80,10 @@ void paramsSave(const Params& p) {
   prefs.putFloat("hi_rpm", copy.highBoostRpm);
   prefs.putFloat("hi_s", copy.highBoostSec);
   prefs.putInt("hi_dus", copy.highServoDeltaUs);
-  prefs.putUInt("lidar_cm", copy.lidarActivateCm);
-  prefs.putFloat("lidar_s", copy.lidarFeedMaxSec);
-  prefs.putBool("lidar_en", copy.lidarHolguraEnabled);
+  prefs.putUInt("holg_set_ms", copy.holguraSettleMs);
+  prefs.putFloat("holg_on_s", copy.holguraOnFeedSec);
+  prefs.putFloat("holg_off_s", copy.holguraOffFaultSec);
+  prefs.putBool("tfeed_en", copy.hmiTfeedEnabled);
   prefs.end();
 }
 
@@ -171,16 +169,20 @@ bool paramsApplyFromQuery(const String& query, Params& p, bool saveIfTouched) {
     p.highServoDeltaUs = (int16_t)v.toInt();
     touched = true;
   }
-  if (hasArg(query, "lidar_cm", v)) {
-    p.lidarActivateCm = (uint16_t)v.toInt();
+  if (hasArg(query, "holgura_settle_ms", v)) {
+    p.holguraSettleMs = (uint16_t)v.toInt();
     touched = true;
   }
-  if (hasArg(query, "lidar_max_s", v)) {
-    p.lidarFeedMaxSec = v.toFloat();
+  if (hasArg(query, "holgura_on_s", v)) {
+    p.holguraOnFeedSec = v.toFloat();
     touched = true;
   }
-  if (hasArg(query, "lidar_holgura", v)) {
-    p.lidarHolguraEnabled = (v == "1" || v == "true" || v == "on");
+  if (hasArg(query, "holgura_off_fault_s", v)) {
+    p.holguraOffFaultSec = v.toFloat();
+    touched = true;
+  }
+  if (hasArg(query, "hmi_tfeed_enabled", v)) {
+    p.hmiTfeedEnabled = (v == "1" || v == "true" || v == "on");
     touched = true;
   }
   if (hasArg(query, "refill_pulse_s", v)) {

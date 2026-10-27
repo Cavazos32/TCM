@@ -11,13 +11,11 @@
 
 extern WebServer server;
 
-// Ciclo de vida CAN: arranque, recuperación idle, pedido operador (can-init HTTP).
+// Ciclo de vida CAN: arranque en setup() y pedido explícito del operador (can-init).
+// No hay reinicialización automática en operación normal.
 static volatile bool feedCanInitPending = false;
 static volatile bool feedCanInitBusy = false;
 static bool feedCanBootConfigured = false;
-static uint8_t feedCanVerifyFailStreak = 0;
-static uint32_t feedCanLastRetryMs = 0;
-static uint32_t feedCanLastTcpSeenMs = 0;
 
 static void feedCanMarkBootConfigured()
 {
@@ -28,13 +26,13 @@ static bool feedCanBootSequence()
 {
   feedCanInitBusy = true;
   bool ok = false;
-  if (initCANBus(CAN_INIT_MAX_RETRIES))
+  if (initCANBus(CAN_INIT_MAX_RETRIES, true))
   {
     for (uint8_t attempt = 1; attempt <= SERVO_SETUP_MAX_RETRIES; attempt++)
     {
       if (setupServoFeeder()) { ok = true; break; }
       delay(500);
-      if (attempt < SERVO_SETUP_MAX_RETRIES) initCANBus(2);
+      if (attempt < SERVO_SETUP_MAX_RETRIES) initCANBus(2, true);
     }
   }
   feedCanInitBusy = false;
@@ -42,48 +40,14 @@ static bool feedCanBootSequence()
   return ok && servoCanReady;
 }
 
-static void feedCanRecoveryTick(bool feedActive, bool hmiTcpLinked)
+// Solo ejecuta la secuencia completa si el operador encoló Init y la máquina está en condiciones.
+static void feedCanServiceInitRequest(bool feedActive)
 {
-  if (hmiTcpLinked) feedCanLastTcpSeenMs = millis();
+  if (!feedCanInitPending || feedCanInitBusy) return;
+  if (feedActive || motionHostIsOccupied() || stage2IsActive()) return;
 
-  const bool tcpHoldoff =
-      feedCanLastTcpSeenMs != 0 && (int32_t)(millis() - feedCanLastTcpSeenMs) < 60000;
-  const bool hostBlocked = motionHostIsOccupied() || stage2IsActive();
-
-  if (feedActive || hostBlocked) return;
-
-  const bool initRequested = feedCanInitPending;
-  if (!initRequested && tcpHoldoff) return;
-  if (!initRequested && (millis() - feedCanLastRetryMs) < FEED_CAN_RETRY_MS) return;
-
-  feedCanLastRetryMs = millis();
-
-  if (initRequested)
-  {
-    feedCanInitPending = false;
-    (void)feedCanBootSequence();
-    return;
-  }
-
-  if (!canInitialized)
-  {
-    (void)reconnectCANBus(!feedCanBootConfigured);
-    return;
-  }
-
-  if (servoCanReady)
-  {
-    feedCanVerifyFailStreak = 0;
-    return;
-  }
-
-  if (verifyServoEnergized())
-    feedCanVerifyFailStreak = 0;
-  else if (++feedCanVerifyFailStreak >= FEED_CAN_SERVO_SETUP_FAIL_MAX)
-  {
-    feedCanVerifyFailStreak = 0;
-    if (setupServoFeeder()) feedCanBootConfigured = true;
-  }
+  feedCanInitPending = false;
+  (void)feedCanBootSequence();
 }
 
 static SemaphoreHandle_t canMutex = NULL;
@@ -189,7 +153,7 @@ bool canReadStatusWord(uint8_t nodeId, uint16_t& statusOut, uint32_t timeoutMs)
     if (canMutex) xSemaphoreGive(canMutex);
     if (!got)
     {
-      delay(CAN_STATUS_RETRY_DELAY_MS);
+      motionCooperateDuringWait();
       continue;
     }
     if (rxId == expectedRx && len >= 6 && rxBuf[1] == 0x41 && rxBuf[2] == 0x60)
@@ -228,7 +192,10 @@ bool canReadSdoI32(uint8_t nodeId, uint16_t index, uint8_t subIndex, int32_t& va
       if (canMutex) xSemaphoreTake(canMutex, portMAX_DELAY);
       const bool got = canTwaiReceive(rxId, len, rxBuf, CAN_SDO_RX_TIMEOUT_MS);
       if (canMutex) xSemaphoreGive(canMutex);
-      if (!got) continue;
+      if (!got) {
+        motionCooperateDuringWait();
+        continue;
+      }
       if (rxId != expectedRx || len < 8) continue;
       if (rxBuf[0] != 0x43) continue;
       if (rxBuf[1] != (byte)(index & 0xFF) || rxBuf[2] != (byte)((index >> 8) & 0xFF) || rxBuf[3] != subIndex)
@@ -253,12 +220,12 @@ bool verifyServoEnergized()
   return ready;
 }
 
-bool initCANBus(uint8_t maxRetries)
+bool initCANBus(uint8_t maxRetries, bool forceReinstall)
 {
   if (!canMutex) canMutex = xSemaphoreCreateMutex();
   if (maxRetries == 0) maxRetries = 1;
 
-  if (canInitialized) {
+  if (!forceReinstall && canInitialized) {
     twai_status_info_t st;
     if (twai_get_status_info(&st) == ESP_OK && st.state == TWAI_STATE_RUNNING)
       return true;
@@ -396,20 +363,12 @@ bool setupServoFeeder()
   return ok;
 }
 
-bool reconnectCANBus(bool fullServoSetup)
+bool feedCanStartup()
 {
-  if (!initCANBus(CAN_INIT_MAX_RETRIES))
-  {
-    servoCanReady = false;
-    return false;
-  }
-  if (fullServoSetup) {
-    if (!setupServoFeeder())
-      return false;
-  } else if (!servoCanReady) {
-    (void)verifyServoEnergized();
-  }
-  return canInitialized;
+  const bool ok = feedCanBootSequence();
+  Serial.printf("Motion CAN boot: can=%d servo=%d\n",
+                (int)canInitialized, (int)servoCanReady);
+  return ok;
 }
 
 bool feedCanBootInit()
@@ -423,7 +382,7 @@ bool feedCanBootInit()
 bool feedCanInitRequest()
 {
   if (feedCanInitPending || feedCanInitBusy) return false;
-  if (feedPhaseIsActive()) return false;
+  if (feedPhaseIsActive() || motionHostIsOccupied() || stage2IsActive()) return false;
   feedCanInitPending = true;
   return true;
 }
@@ -819,7 +778,7 @@ volatile bool feedSkipEncoderConfirm = false;
 volatile float feedApproachPct = FEED_APPROACH_PCT_DEFAULT;
 volatile float feedMoveSpeedPct = FEED_MOVE_SPEED_PCT_DEFAULT;
 volatile uint32_t feedLaserSeekMs = FEED_LASER_SEEK_MS_DEFAULT;
-volatile FeedMode feedControlMode = FEED_MODE_STEPS_SENSOR;
+volatile FeedMode feedControlMode = FEED_MODE_VELOCITY_SENSOR;
 volatile float feedVelFastPct = FEED_VEL_FAST_PCT_DEFAULT;
 volatile float feedVelSlowPct = FEED_VEL_SLOW_PCT_DEFAULT;
 volatile float feedVelTransitionPct = FEED_VEL_TRANS_PCT_DEFAULT;
@@ -853,7 +812,7 @@ uint32_t clampFeedLaserSeekMs(uint32_t ms) {
 }
 FeedMode clampFeedControlMode(int mode) {
   if (mode == (int)FEED_MODE_VELOCITY_SENSOR) return FEED_MODE_VELOCITY_SENSOR;
-  return FEED_MODE_STEPS_SENSOR;
+  return FEED_MODE_VELOCITY_SENSOR;
 }
 float clampFeedVelFastPct(float pct) {
   return clampVal(pct, FEED_VEL_FAST_PCT_MIN, FEED_VEL_FAST_PCT_MAX);
@@ -2021,8 +1980,6 @@ void feedInit()
   feedSides[1] = FeedSideRt{};
 }
 
-bool feedCanColdStart() { return feedCanBootSequence(); }
-
 void feedLoadConfig()
 {
   feedPrefs.begin(FEED_PREFS_NS, true);
@@ -2041,7 +1998,7 @@ void feedLoadConfig()
   feedApproachPct = clampFeedApproachPct(feedPrefs.getFloat("apPct", FEED_APPROACH_PCT_DEFAULT));
   feedMoveSpeedPct = clampFeedMoveSpeedPct(feedPrefs.getFloat("mvPct", FEED_MOVE_SPEED_PCT_DEFAULT));
   feedLaserSeekMs = clampFeedLaserSeekMs(feedPrefs.getUInt("seekMs", FEED_LASER_SEEK_MS_DEFAULT));
-  feedControlMode = clampFeedControlMode(feedPrefs.getInt("feedMode", (int)FEED_MODE_STEPS_SENSOR));
+  feedControlMode = clampFeedControlMode(feedPrefs.getInt("feedMode", (int)FEED_MODE_VELOCITY_SENSOR));
   feedVelFastPct = clampFeedVelFastPct(feedPrefs.getFloat("vFastPct", FEED_VEL_FAST_PCT_DEFAULT));
   feedVelSlowPct = clampFeedVelSlowPct(feedPrefs.getFloat("vSlowPct", FEED_VEL_SLOW_PCT_DEFAULT));
   feedVelTransitionPct = clampFeedVelTransitionPct(feedPrefs.getFloat("vTransPct", FEED_VEL_TRANS_PCT_DEFAULT));
@@ -2106,7 +2063,8 @@ static void feedPollLaserHaltSide(bool sideR, uint32_t now)
 
 void feedLoop()
 {
-  feedCanRecoveryTick(feedPhaseIsActive(), motionHostTcpLinked());
+  motionNestedServiceDepth++;
+  feedCanServiceInitRequest(feedPhaseIsActive());
 
   // Legacy HTTP both-sides: encolar L y R independientes
   if (feedTestReq.pending) {
@@ -2143,6 +2101,7 @@ void feedLoop()
   feedSideService(false, now);
   feedSideService(true, now);
   feedRuntimeActive = feedPhaseIsActive();
+  motionNestedServiceDepth--;
 }
 
 static void feedSideAppendJson(String& j, bool sideR)
@@ -2273,7 +2232,13 @@ bool feedResetRuntime()
         feedVelocityRestorePp(i == 1);
     }
   }
-  delay(FEED_HALT_SETTLE_MS);
+  {
+    const uint32_t until = millis() + FEED_HALT_SETTLE_MS;
+    while (millis() < until) {
+      serviceCANRx();
+      motionCooperateDuringWait();
+    }
+  }
   feedSides[0] = FeedSideRt{};
   feedSides[1] = FeedSideRt{};
   feedRuntimeActive = false;
@@ -2301,7 +2266,7 @@ bool runFeedCycle(bool skipEncoderConfirm, int8_t onlySide)
       return feedSides[1].result == FVR_OK;
     if (onlySide < 0 && !feedPhaseIsActive())
       return feedSides[0].result == FVR_OK && feedSides[1].result == FVR_OK;
-    delay(FEED_LOOP_YIELD_MS);
+    motionCooperateDuringWait();
   }
   return false;
 }
@@ -2594,9 +2559,8 @@ static void handleFeedStatus() { sendJson(200, feedStatusJson()); }
 
 static void handleFeedCanInit()
 {
-  // Handler corto: solo encola. La rutina (con sus esperas propias del
-  // servo) la corre feedLoop(), igual que el reintento automático CAN.
-  if (feedPhaseIsActive() || motionHostIsOccupied()) {
+  // Handler corto: encola Init; feedLoop() ejecuta la secuencia cuando no hay conflicto.
+  if (feedPhaseIsActive() || motionHostIsOccupied() || stage2IsActive()) {
     sendJson(409, "{\"ok\":false,\"error\":\"Alimentador ocupado\"}");
     return;
   }

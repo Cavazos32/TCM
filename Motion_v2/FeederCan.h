@@ -189,9 +189,6 @@
 
 // ====================== Feed runtime timing ======================
 #define FEED_FAULT_REASON_MAX       96
-#define FEED_CAN_RETRY_MS           15000
-// Fallos seguidos de verifyServoEnergized antes de repetir setupServoFeeder completo.
-#define FEED_CAN_SERVO_SETUP_FAIL_MAX 3
 #define FEED_HALT_SETTLE_MS         30
 #define FEED_WAIT_EXTRA_MS          30000
 #define FEED_LOOP_YIELD_MS          2
@@ -208,8 +205,8 @@
 // ====================== Tipos feed ======================
 enum FeedMode : uint8_t {
   FEED_MODE_BYPASS = 0,
-  FEED_MODE_STEPS_SENSOR = 2,     // producción: Position + Sensor
-  FEED_MODE_VELOCITY_SENSOR = 3   // experimental: Velocity + Sensor (LR-X = tope)
+  FEED_MODE_STEPS_SENSOR = 2,     // legacy: Position + Sensor
+  FEED_MODE_VELOCITY_SENSOR = 3   // producción: Velocity + Sensor (LR-X = tope)
 };
 
 // FSM por lado (L y R independientes)

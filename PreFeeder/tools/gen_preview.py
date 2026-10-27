@@ -12,15 +12,15 @@ banner = (
 html = html.replace('<header class="hdr">', banner + '<header class="hdr">', 1)
 mock = (
     'var MOCK={side:"L",home:{raw:false,stable:false},'
-    'sensors:{mid:true,high:false,max:false,tension:true,cylinder:false,hose:false},'
-    "fault:0,idleMode:false,inProcess:true,peer:{link:true},"
+    'sensors:{mid:true,high:false,max:false,tension:true,cylinder:false,hose:false,holgura:true},'
+    "fault:0,idleMode:false,inProcess:true,benchInProcess:false,peer:{link:true},"
     "auto:{enabled:true,rpm:42,reverse_s:2.5,buffer_refill_fault_s:25,"
     "tension_reverse_rpm:30,tension_cooldown_s:1.5,tension_fault_s:8,"
     "servo_pwm_us:1500,"
     "mid_boost_rpm:55,mid_boost_s:1.2,mid_servo_delta_us:80,"
     "high_boost_rpm:70,high_boost_s:0.8,high_servo_delta_us:120},"
-    "trigger2:{trigger_feed_s:1.5,m2_rpm:28,lidar_cm:50,lidar_max_s:4,lidar_holgura:true,"
-    "trigger_active:false,lidar_valid:true,lidar_dist_cm:62,lidar_activated:true},"
+    "trigger2:{trigger_feed_s:1.5,m2_rpm:28,trigger_active:false,hmi_tfeed_enabled:true,"
+    "holgura_settle_ms:150,holgura_on_s:2,holgura_off_fault_s:5,holgura_on:true},"
     'refill:{pulse_s:1},actuators:{feeder:false,buffer:true}};\n'
     "function pull(){sync(MOCK);}"
 )

@@ -20,9 +20,10 @@ struct Params {
   float highBoostRpm = 180.0f;
   float highBoostSec = 5.0f;
   int16_t highServoDeltaUs = (int16_t)(PF_SERVO_SPEED_SIGN * 200);
-  uint16_t lidarActivateCm = 50;
-  float lidarFeedMaxSec = 3.0f;
-  bool lidarHolguraEnabled = true;
+  uint16_t holguraSettleMs = HOLGURA_SETTLE_MS_DEFAULT;
+  float holguraOnFeedSec = 2.0f;
+  float holguraOffFaultSec = 5.0f;
+  bool hmiTfeedEnabled = false;
 };
 
 void paramsLoad(Params& p);

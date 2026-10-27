@@ -249,6 +249,8 @@ _PF_EXXX_VIA_FAULT = frozenset(
         TX_BUFFER_FULL_R,
         TX_TENSION_L,
         TX_TENSION_R,
+        TX_HOLGURA_L,
+        TX_HOLGURA_R,
     }
 )
 
@@ -320,6 +322,8 @@ class HmiState:
         # aceptar solo el ACK posterior a su envío (sin seq en el protocolo).
         self._plc_ack_seq = 0
         self._plc_ack_by_byte: dict[int, tuple[int, bool]] = {}
+        self._plc_ack_lock = threading.Lock()
+        self._plc_ack_wait = threading.Condition(self._plc_ack_lock)
         self._andon_buzzer_mute = DEFAULT_ANDON_BUZZER_MUTE
         self._andon_mute_resync = False
         self._debug_password = "tcm"
@@ -877,6 +881,13 @@ class HmiState:
                 side = str(self._pf.get("master_error_side") or "?").upper()
                 return f"errorAny lado={side}"
             return ""
+
+    def pf_sync_machine_fault(self) -> bool:
+        """Enclava EXXX PF en la máquina principal si hay fallo del lote (idempotente)."""
+        with self._lock:
+            if not self._pf_cached_has_fault():
+                return False
+            return self._pf_try_latch_once()
 
     def pf_holgura_present(self, side: str) -> bool | None:
         """Compat API: Holgura eliminada del producto. Siempre True si hay dato de lado."""
@@ -1624,8 +1635,17 @@ class HmiState:
 
     def plc_ack_seq(self) -> int:
         """Marca global de ACK del PLC. El ciclo la toma antes de enviar."""
-        with self._lock:
+        with self._plc_ack_lock:
             return self._plc_ack_seq
+
+    def _plc_record_ack(self, byte_code: int, ok: bool) -> None:
+        with self._plc_ack_lock:
+            self._plc_ack_seq += 1
+            self._plc_ack_by_byte[int(byte_code)] = (
+                self._plc_ack_seq,
+                bool(ok),
+            )
+            self._plc_ack_wait.notify_all()
 
     def wait_plc_ack(
         self, byte_code: int, since_seq: int, timeout_s: float
@@ -1637,14 +1657,42 @@ class HmiState:
         pulso (o ya tenía ese estado lógico); no confirma movimiento físico.
         """
         deadline = time.monotonic() + max(0.0, float(timeout_s))
-        while True:
-            with self._lock:
+        with self._plc_ack_lock:
+            while True:
                 entry = self._plc_ack_by_byte.get(int(byte_code))
                 if entry is not None and entry[0] > since_seq:
                     return bool(entry[1])
-            if time.monotonic() >= deadline:
-                return None
-            time.sleep(0.01)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                self._plc_ack_wait.wait(timeout=remaining)
+
+    def wait_plc_acks(
+        self,
+        byte_codes: list[int],
+        since_seq: int,
+        timeout_s: float,
+    ) -> bool | None:
+        """Espera ACK de todos los bytes (mismo since_seq). None = timeout."""
+        need = [int(b) for b in byte_codes]
+        if not need:
+            return True
+        deadline = time.monotonic() + max(0.0, float(timeout_s))
+        with self._plc_ack_lock:
+            while True:
+                results: list[bool] = []
+                for code in need:
+                    entry = self._plc_ack_by_byte.get(code)
+                    if entry is None or entry[0] <= since_seq:
+                        results = []
+                        break
+                    results.append(bool(entry[1]))
+                if len(results) == len(need):
+                    return False if not all(results) else True
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                self._plc_ack_wait.wait(timeout=remaining)
 
     def cmd_plc_cutters(
         self, on: bool, *, sides: str | None = None, force: bool = False
@@ -1715,6 +1763,11 @@ class HmiState:
 
     def cmd_pf_stop(self) -> bool:
         return self._pf_client.cmd_stop()
+
+    def cmd_pf_set_hmi_tfeed_enabled(self, on: bool) -> bool:
+        return self._manual_pf(
+            lambda: self._pf_client.cmd_set_hmi_tfeed_enabled(on)
+        )
 
     def cmd_pf_in_process(self, on: bool = True) -> bool:
         """In process vía Master. ON solo a feedSides; OFF a L+R (congelar ambos)."""
@@ -2913,6 +2966,14 @@ class HmiState:
 
     def _enqueue(self, source: str, msg: dict) -> None:
         lat_mark("8", source=source, mtype=msg.get("type", ""))
+        if (
+            source == "plc"
+            and msg.get("type") == "ack"
+            and msg.get("actuator") == "plc"
+        ):
+            byte_code = int(msg.get("byte", 0) or 0)
+            self._plc_record_ack(byte_code, bool(msg.get("ok", True)))
+            msg["_ack_recorded"] = True
         with self._lock:
             self._msg_queue.append((source, msg))
         self._flush_queue()
@@ -3195,6 +3256,11 @@ class HmiState:
             e["active"] = False
         for k in self._pf["fault_active"]:
             self._pf["fault_active"][k] = False
+        for side_key in ("L", "R"):
+            runtime = (self._pf.get("sides") or {}).get(side_key)
+            if isinstance(runtime, dict):
+                runtime["latchedError"] = False
+                runtime["errorWireId"] = 0
         if self._pf.get("last_state_byte") in (None, TX_PF_ERROR):
             self._pf["last_state_byte"] = TX_PF_IDLE
 
@@ -4051,11 +4117,8 @@ class HmiState:
                 detail = msg.get("message", "")
                 byte_code = int(msg.get("byte", 0) or 0)
                 if msg.get("actuator") == "plc":
-                    self._plc_ack_seq += 1
-                    self._plc_ack_by_byte[byte_code] = (
-                        self._plc_ack_seq,
-                        bool(ok),
-                    )
+                    if not msg.get("_ack_recorded"):
+                        self._plc_record_ack(byte_code, bool(ok))
                     if ok:
                         if byte_code == CMD_RESET:
                             self._plc_apply_home_valve_cache()
@@ -4222,6 +4285,42 @@ class HmiState:
             return self._pf_ok_when_active_in_lot(byte)
         return True
 
+    def _pf_byte_from_side_latched_error(self, is_left: bool) -> int | None:
+        """Opcode EXXX desde error enclavado del lado (status Master)."""
+        side_key = "L" if is_left else "R"
+        runtime = (self._pf.get("sides") or {}).get(side_key) or {}
+        if not runtime.get("latchedError"):
+            return None
+        err_id = int(runtime.get("errorWireId") or 0)
+        if err_id in (0, 7):
+            return None
+        index_map = {1: 1, 2: 2, 3: 3, 4: 4, 5: 0, 6: 5}
+        idx = index_map.get(err_id)
+        if idx is None:
+            return None
+        byte = (0x33 if is_left else 0x2D) + idx
+        if not self._pf_error_byte_in_lot(byte):
+            return None
+        if lookup(byte) is None:
+            return None
+        return byte
+
+    def _pf_resolve_latch_code(self) -> str | int | None:
+        """EXXX u opcode para Set global: opcodes activos, Master UI o lado enclavado."""
+        primary = self._pf_primary_active_error_byte()
+        if primary is not None:
+            return primary
+        ui = str(self._pf.get("master_error_ui") or "").strip()
+        if ui:
+            code = ui.split(":", 1)[0].strip()
+            if lookup(code):
+                return code
+        for is_left in (False, True):
+            byte = self._pf_byte_from_side_latched_error(is_left)
+            if byte is not None:
+                return byte
+        return None
+
     def _apply_pf_side_fault(self, side: dict, is_left: bool) -> bool:
         """Sincroniza fault_active Buffer/Holgura/Tensión desde error enclavado del lado."""
         if not isinstance(side, dict):
@@ -4246,6 +4345,29 @@ class HmiState:
             if self._pf["fault_active"].get(key) != active:
                 self._pf["fault_active"][key] = active
                 changed = True
+        side_key = "L" if is_left else "R"
+        runtime = self._pf.setdefault("sides", {}).setdefault(
+            side_key,
+            {
+                "autoState": None,
+                "triggerActive": None,
+                "tfeedIncomplete": False,
+                "tfeedResumeSec": 0.0,
+                "idleMode": False,
+                "refillMaterial": False,
+                "refillDereeler": False,
+                "refillServo": False,
+                "refillFeeder": False,
+                "refillPulseS": 1.0,
+            },
+        )
+        if runtime.get("latchedError") != err_on:
+            runtime["latchedError"] = err_on
+            changed = True
+        wire_id = err_id if err_on else 0
+        if runtime.get("errorWireId") != wire_id:
+            runtime["errorWireId"] = wire_id
+            changed = True
         return changed
 
     def _pf_primary_active_error_byte(self) -> int | None:
@@ -4407,10 +4529,10 @@ class HmiState:
             if self._pf_latch_is_prefeeder():
                 self._pf_paint_detail_status()
             return False
-        primary = self._pf_primary_active_error_byte()
-        if primary is None:
+        code = self._pf_resolve_latch_code()
+        if code is None:
             return False
-        return self._apply_detail_error(primary, source="prefeeder")
+        return self._apply_detail_error(code, source="prefeeder")
 
     def _handle_prefeeder_message(self, msg: dict) -> bool:
         with self._lock:
@@ -4425,13 +4547,9 @@ class HmiState:
             if mtype == "status" and msg.get("actuator") == "prefeeder":
                 self._pf["status_seq"] = int(self._pf.get("status_seq") or 0) + 1
                 changed = False
-                entered_error = False
-                any_rose = False
                 byte_code = int(msg.get("byte") or 0)
-                prev_byte = self._pf["last_state_byte"]
                 if "errorAny" in msg:
                     any_fault = bool(msg.get("errorAny"))
-                    any_rose = any_fault and not bool(self._pf.get("error_any"))
                     if bool(self._pf.get("error_any")) != any_fault:
                         changed = True
                     self._pf["error_any"] = any_fault
@@ -4439,9 +4557,6 @@ class HmiState:
                 side_l = msg.get("l")
                 side_r = msg.get("r")
                 # Lados primero: el EXXX debe existir antes de pintar estado.
-                prev_faults = {
-                    k: bool(v) for k, v in self._pf["fault_active"].items()
-                }
                 if isinstance(side_l, dict):
                     changed = self._apply_pf_side_sensors(side_l, True) or changed
                     changed = self._apply_pf_side_fault(side_l, True) or changed
@@ -4472,16 +4587,8 @@ class HmiState:
                         pass
                 if self._pf_apply_state_byte(byte_code):
                     changed = True
-                    entered_error = (
-                        byte_code == TX_PF_ERROR and prev_byte != TX_PF_ERROR
-                    )
-                fault_rose = any(
-                    bool(self._pf["fault_active"].get(k)) and not prev_faults.get(k)
-                    for k in self._pf["fault_active"]
-                )
                 if self._pf_cached_has_fault():
-                    if entered_error or fault_rose or any_rose:
-                        changed = self._pf_try_latch_once() or changed
+                    changed = self._pf_try_latch_once() or changed
                     changed = self._pf_paint_detail_status() or changed
                 elif self._pf_try_clear_if_healthy(msg):
                     changed = True
