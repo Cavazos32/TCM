@@ -711,7 +711,8 @@ static String jsonEscape(const String& in)
 
 static bool plcTcpIsCmdByte(uint8_t b)
 {
-  return (b >= PLC_CMD_CUTTER_R && b <= PLC_CMD_RESET) || b == PLC_CMD_BLOWER;
+  return (b >= PLC_CMD_CUTTER_R && b <= PLC_CMD_RESET) || b == PLC_CMD_BLOWER
+      || b == PLC_CMD_HOLDER_ENCODER;
 }
 
 static bool plcTcpParseOn(const char* line, uint8_t cmdByte)
@@ -750,6 +751,25 @@ static bool plcTcpDoByte(uint8_t cmdByte, const char* line)
       valveSetPulse(stEncoder, PIN_OUT_ENCODER, wantOn);
       ok = true;
       break;
+    case PLC_CMD_HOLDER_ENCODER: {
+      const bool needH = (stHolder != wantOn);
+      const bool needE = (stEncoder != wantOn);
+      if (needH)
+        stHolder = wantOn;
+      if (needE)
+        stEncoder = wantOn;
+      if (needH || needE) {
+        uint8_t pins[2];
+        uint8_t np = 0;
+        if (needH)
+          pins[np++] = PIN_OUT_HOLDER;
+        if (needE)
+          pins[np++] = PIN_OUT_ENCODER;
+        valvePulsePins(pins, np);
+      }
+      ok = true;
+      break;
+    }
     case PLC_CMD_BLOWER:
       blowerSet(wantOn, wantOn ? blowerParseDurationMs(line) : 0);
       ok = true;

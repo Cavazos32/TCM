@@ -13,6 +13,7 @@ CMD_GRIPPER = 0x1B
 CMD_HOLDER = 0x1C
 CMD_ENCODER = 0x1D
 CMD_RESET = 0x1E
+CMD_HOLDER_ENCODER = 0x2A
 TX_CUTTER_ERR = 0x1F
 TX_GRIPPER_ERR = 0x20
 TX_HOLDER_ERR = 0x21
@@ -120,6 +121,9 @@ class PlcClient(ModuleTcpClient):
 
     def cmd_encoder(self, on: bool = True) -> bool:
         return self.cmd_valve(CMD_ENCODER, on)
+
+    def cmd_holder_encoder(self, on: bool = True) -> bool:
+        return self.cmd_valve(CMD_HOLDER_ENCODER, on)
 
     def cmd_blower(self, on: bool = True, duration_sec: float | None = None) -> bool:
         return self.cmd_valve_by_byte(CMD_BLOWER, on, duration_sec=duration_sec)

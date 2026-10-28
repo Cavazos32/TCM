@@ -93,6 +93,7 @@ from plc import (
     CMD_ENCODER,
     CMD_GRIPPER,
     CMD_HOLDER,
+    CMD_HOLDER_ENCODER,
     CMD_RESET,
     DEFAULT_HOST as PLC_HOST,
     DEFAULT_PORT as PLC_PORT,
@@ -890,12 +891,16 @@ class HmiState:
             return self._pf_try_latch_once()
 
     def pf_holgura_present(self, side: str) -> bool | None:
-        """Compat API: Holgura eliminada del producto. Siempre True si hay dato de lado."""
+        """GPIO holgura L/R: True=OK (ON), False=falta, None=sin dato de status."""
         side_u = str(side or "").strip().upper()
         if side_u not in ("L", "R"):
             return None
-        # Sin sensor: settled ya no depende de holgura.
-        return True
+        with self._lock:
+            info = (self._pf.get("sides") or {}).get(side_u) or {}
+            val = info.get("holguraOn")
+            if val is None:
+                return None
+            return bool(val)
 
     def pf_buffer_full(self, side: str) -> bool | None:
         """Buffer Full (home) L/R: True=lleno, False=no, None=sin dato."""
@@ -1629,6 +1634,20 @@ class HmiState:
         return self._cmd_plc_valve_desired(
             CMD_ENCODER, on, self._plc_client.cmd_encoder
         )
+
+    def cmd_plc_holder_encoder(self, on: bool) -> bool:
+        """Holder+Encoder en un TX (0x2A); pulso paralelo en PLC, un ACK."""
+        cur_h = self.plc_valve_is_on(CMD_HOLDER)
+        cur_e = self.plc_valve_is_on(CMD_ENCODER)
+        if cur_h is not None and cur_e is not None and cur_h == on and cur_e == on:
+            return True
+        ok = bool(self._plc_client.cmd_holder_encoder(on))
+        if ok:
+            with self._lock:
+                for key in (str(CMD_HOLDER), str(CMD_ENCODER)):
+                    if key in self._plc["valves"]:
+                        self._plc["valves"][key]["on"] = on
+        return ok
 
     def cmd_plc_gripper(self, on: bool) -> bool:
         return self._plc_client.cmd_gripper(on)
@@ -4178,6 +4197,11 @@ class HmiState:
             idle = bool(side.get("idleMode"))
             if runtime.get("idleMode") != idle:
                 runtime["idleMode"] = idle
+                changed = True
+        if "holgura" in side:
+            holg = bool(side.get("holgura"))
+            if runtime.get("holguraOn") != holg:
+                runtime["holguraOn"] = holg
                 changed = True
         if "autoState" in side:
             st = str(side.get("autoState") or "").strip().lower() or None

@@ -309,6 +309,7 @@ static bool refillMat = false, refillDr = false, refillSv = false, refillFd = fa
 static uint32_t refillPulseUntil[4] = {};
 static uint32_t midBoostUntil = 0, highBoostUntil = 0;
 static bool lastMid = false, lastHigh = false;
+static bool highReverseActive = false;
 
 static bool triggerIdDone(uint16_t id) {
   if (!id) return false;
@@ -433,6 +434,7 @@ static void serviceHolguraFeed(uint32_t nowMs) {
 static void stopAutoOutputs() {
   stopFeederDemand();
   midBoostUntil = highBoostUntil = 0;
+  highReverseActive = false;
   bufferEmptySinceMs = 0;
   tensionReverseActive = false;
   tensionHighSinceMs = 0;
@@ -482,9 +484,10 @@ static void syncOutputs() {
 
   const bool bufOn = bufferWantsFill();
   if (bufOn) {  // mueve DeReeler + servo mientras buffer no lleno estable
+    const bool reverse = tensionReverseActive || highReverseActive;
     float rpm = tensionReverseActive ? P->tensionReverseRpm : boostDereelerRpm(P->dereelerRpm);
     o.dereelerRpm = rpm;
-    o.tensionReverse = tensionReverseActive;
+    o.tensionReverse = reverse;
     o.servoRun = true;
     o.servoExtraUs = boostServoDelta();
   } else {  // buffer lleno estable → para DeReeler y servo
@@ -518,11 +521,23 @@ static void serviceFeederDemand(uint32_t nowMs) {
     serviceHolguraFeed(nowMs);
 }
 
-// Flanco mid/high buffer → impulso boost RPM servo (timers mid_boost_s / high_boost_s)
+// Flanco mid/high buffer → impulso boost; flanco high → inversión DeReeler hasta mid o falla buffer
 static void serviceBoostEdges(uint32_t nowMs) {
-  if (!bufferWantsFill() || !P) return;
+  if (!P) return;
+  if (!bufferWantsFill()) {
+    highReverseActive = false;
+    lastMid = gSnap.bufMidRaw;
+    lastHigh = gSnap.bufHighRaw;
+    return;
+  }
   if (gSnap.bufMidRaw && !lastMid) midBoostUntil = nowMs + (uint32_t)(P->midBoostSec * 1000.0f);
-  if (gSnap.bufHighRaw && !lastHigh) highBoostUntil = nowMs + (uint32_t)(P->highBoostSec * 1000.0f);
+  if (gSnap.bufHighRaw && !lastHigh) {
+    highBoostUntil = nowMs + (uint32_t)(P->highBoostSec * 1000.0f);
+    highReverseActive = true;
+  }
+  // Nivel por debajo de alta con media activa → fin inversión por alta
+  if (highReverseActive && gSnap.bufMidRaw && !gSnap.bufHighRaw)
+    highReverseActive = false;
   lastMid = gSnap.bufMidRaw;
   lastHigh = gSnap.bufHighRaw;
 }

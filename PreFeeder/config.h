@@ -3,7 +3,7 @@
 #include <Arduino.h> 
 
 // Lado: comentar la línea siguiente para L, descomentar para R (misma base de firmware).
-//#define PF_SIDE_RIGHT
+#define PF_SIDE_RIGHT
 //.102 Lado R
 //.101 Lado L
 #ifndef PF_CONFIG_SIDE

@@ -30,6 +30,8 @@ enum PlcCmd : uint8_t {
   PLC_CMD_ENCODER  = 0x1D,  // Encoder()
   PLC_CMD_RESET    = 0x1E,  // ResetPLC()
   PLC_CMD_BLOWER   = 0x23,  // BlowerE() / Blower()
+  // Holder + Encoder en un pulso paralelo (un ACK TCP; HMI ciclo)
+  PLC_CMD_HOLDER_ENCODER = 0x2A,
 };
 
 // --- Errores detalle (esclavo → HMI) ---
@@ -65,7 +67,8 @@ enum PlcState : uint8_t {
 #define PLC_TX_RETURN PLC_ST_RETURN
 
 static inline bool plcIsCmdByte(uint8_t b) {
-  return (b >= PLC_CMD_CUTTER_R && b <= PLC_CMD_RESET) || b == PLC_CMD_BLOWER;
+  return (b >= PLC_CMD_CUTTER_R && b <= PLC_CMD_RESET) || b == PLC_CMD_BLOWER
+      || b == PLC_CMD_HOLDER_ENCODER;
 }
 
 static inline bool plcIsState(uint8_t b) {

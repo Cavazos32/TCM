@@ -28,7 +28,7 @@ from machine_states import (
     TX_STOP,
 )
 from error_catalog import format_ui, lookup
-from plc import CMD_ENCODER, CMD_GRIPPER, CMD_HOLDER
+from plc import CMD_ENCODER, CMD_GRIPPER, CMD_HOLDER, CMD_HOLDER_ENCODER
 
 HMI_ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = HMI_ROOT / "config" / "cycle_config.json"
@@ -86,7 +86,8 @@ REFILL_LASER_TIMEOUT_S = 10.0
 PLC_ACK_TIMEOUT_S = 2.0
 MOTION_IDLE_NO_TARGET_S = 1.0
 PF_TFEED_DONE_TIMEOUT_S = 30.0
-PF_SETTLE_BEFORE_IDLE_S = 3.0
+# Intervalo de log mientras se espera buffer+holgura tras fin de lote (sin tope duro).
+PF_SETTLE_BEFORE_IDLE_S = 15.0
 PF_TFEED_CAPTURE_AFTER_PAUSE_S = 0.5
 
 # --- Tolerancias Motion (mm; no son tiempos) -----------------------------------
@@ -559,6 +560,7 @@ class CycleHost(Protocol):
     def plc_blower_sec(self) -> float: ...
     def cmd_plc_holder(self, on: bool) -> bool: ...
     def cmd_plc_encoder(self, on: bool) -> bool: ...
+    def cmd_plc_holder_encoder(self, on: bool) -> bool: ...
     def cmd_plc_gripper(self, on: bool) -> bool: ...
     def cmd_plc_blower(self, on: bool = True, duration_sec: float | None = None) -> bool: ...
     def cmd_plc_cutters(
@@ -652,6 +654,8 @@ class CycleRunner:
         self._pf_tfeed_resume: dict[str, float] = {}
         # Resume / Continuar ciclo: misma espera Buffer Full que Start (hilo de ciclo).
         self._resume_need_buffer_full = False
+        # Tras última pieza OK: PF sigue rellenando; CT/UI ya cerrados.
+        self._post_lot_pf_settle = False
         self._lot_rpm = 1200.0
         self._lot_length_mm: float = 0.0
         # Batches que caben en carrera por tray (None = sin tope). Lleno → vaciar.
@@ -740,7 +744,9 @@ class CycleRunner:
                 "elapsedSec": self._ct_elapsed_locked(),
                 "lastPieceSec": float(self._last_piece_sec),
                 "avgPieceSec": float(self._avg_piece_sec),
-                "completed": self._last_ok and not self._active,
+                "postLotPfSettle": self._post_lot_pf_settle,
+                "completed": self._last_ok
+                and (not self._active or self._post_lot_pf_settle),
                 "lastOk": self._last_ok,
                 "fault": self._fault,
                 "recovery": self._recovery,
@@ -795,7 +801,7 @@ class CycleRunner:
             return self._state_byte
     def is_active(self) -> bool:
         with self._lock:
-            return self._active
+            return self._active or self._post_lot_pf_settle
 
     def is_lot_alive(self) -> bool:
         """Lote con progreso vivo (corriendo, en pausa o interrumpido por error)."""
@@ -932,6 +938,7 @@ class CycleRunner:
         self._pf_held_idle = False
         self._pf_tfeed_resume = {}
         self._resume_need_buffer_full = False
+        self._post_lot_pf_settle = False
         with self._lock:
             self._refill_mode = False
             self._refill_awaiting_confirm = False
@@ -2555,6 +2562,33 @@ class CycleRunner:
         elif slug == "timeout_feed":
             self._host.cycle_log(format_ui("E009"))
 
+    def _finalize_ct_before_post_lot_settle(self) -> None:
+        """Congela CT productivo tras última pieza OK (relleno PF fuera de reloj)."""
+        with self._lock:
+            now = time.monotonic()
+            self._sync_pause_exclusion_locked(now)
+            if self._cycle_t0 is not None:
+                if self._finished_elapsed <= 0.0:
+                    self._finished_elapsed = max(
+                        0.0,
+                        now
+                        - self._cycle_t0
+                        - float(self._pause_excluded_sec),
+                    )
+                self._cycle_t0 = None
+                self._piece_t0 = None
+
+    def _mark_post_lot_productive_done(self) -> None:
+        """UI/lote cerrado; PreFeeder puede seguir hasta buffer+holgura OK."""
+        with self._lock:
+            self._post_lot_pf_settle = True
+            self._rep = self._total_reps
+            self._pieces_done = self._total_reps
+            self._progress = 100
+            self._step = 0
+            self._parallel_group = ""
+            self._last_ok = True
+
     def _freeze_piece_clock(self) -> float:
         """Congela reloj de pieza/CT (sin log). Devuelve duración pieza (s)."""
         now = time.monotonic()
@@ -2663,12 +2697,9 @@ class CycleRunner:
     def _plc_ack_bytes_for_holder_encoder(
         need_holder: bool, need_encoder: bool
     ) -> list[int]:
-        codes: list[int] = []
-        if need_holder:
-            codes.append(CMD_HOLDER)
-        if need_encoder:
-            codes.append(CMD_ENCODER)
-        return codes
+        if need_holder or need_encoder:
+            return [CMD_HOLDER_ENCODER]
+        return []
 
     def _begin_op(self, name: str) -> dict[str, Any]:
         now = time.monotonic()
@@ -3912,29 +3943,35 @@ class CycleRunner:
         return ok
 
     def _pf_side_settled_for_idle(self, side: str) -> tuple[bool, str]:
-        """True si el lado puede pasar a Idle sin cortar relleno/Tfeed.
+        """True si el lado puede pasar a Idle sin cortar relleno/holgura/Tfeed.
 
-        Tras eliminación de Holgura: Buffer Full + M2 quieto (sin Tfeed activo).
+        AND: Buffer Full + holgura OK (si hay dato) + sin relleno auto + sin M2 activo.
         """
         full = self._host.pf_buffer_full(side)
         filling = self._host.pf_auto_filling(side)
         trig = self._host.pf_trigger_active(side)
+        holg = self._host.pf_holgura_present(side)
         if full is not True:
             return False, f"{side}:buffer≠Full"
+        if holg is False:
+            return False, f"{side}:holgura≠OK"
         if filling is True:
             return False, f"{side}:rellenando"
         if trig is True:
             return False, f"{side}:Tfeed activo"
         return True, f"{side}:OK"
 
-    def _wait_pf_settled_before_idle(self, timeout_s: float = 3.0) -> None:
-        """Espera Buffer Full (+ M2 idle) antes de In process OFF.
+    def _wait_pf_settled_before_idle(self, timeout_s: float = 15.0) -> None:
+        """Espera buffer Full + holgura OK (+ M2 quieto) antes de In process OFF.
 
-        Sale al primer tick ya settled, o al timeout / Stop. No falla el lote.
+        Mantiene In process ON para que el esclavo siga rellenando. Solo sale cuando
+        todos los lados del lote están settled, o Stop/Abort. No hay tope duro: el
+        intervalo timeout_s solo repite log si tarda (no fuerza Idle).
         """
         sides = self._feed_side_list()
         self._host.pf_request_status()
-        deadline = time.monotonic() + max(0.0, float(timeout_s))
+        log_interval = max(5.0, float(timeout_s))
+        next_log_at = time.monotonic() + log_interval
         last_why = ""
         while True:
             if self._aborted or self._stop.is_set():
@@ -3949,7 +3986,7 @@ class CycleRunner:
             why_txt = " ".join(reasons)
             if all_ok:
                 self._host.cycle_log(
-                    f"PreFeeder: settled (Full+M2) → Idle ok · {why_txt}"
+                    f"PreFeeder: settled (Full+holgura+M2) → Idle ok · {why_txt}"
                 )
                 return
             if why_txt != last_why:
@@ -3957,12 +3994,11 @@ class CycleRunner:
                     f"PreFeeder: espera settled antes de Idle · {why_txt}"
                 )
                 last_why = why_txt
-            if time.monotonic() >= deadline:
+            elif time.monotonic() >= next_log_at:
                 self._host.cycle_log(
-                    f"PreFeeder: timeout {timeout_s:.1f}s settled "
-                    f"({why_txt}) — Idle de todos modos"
+                    f"PreFeeder: sigue rellenando antes de Idle · {why_txt}"
                 )
-                return
+                next_log_at = time.monotonic() + log_interval
             # Status fresco; RX async.
             self._host.pf_request_status()
             time.sleep(0.1)
@@ -4026,19 +4062,15 @@ class CycleRunner:
         return self._effective_mm(self._lot_length_mm)
 
     def _arm_holder_encoder(self) -> bool:
-        """Cierra Holder+Encoder (ON). Idempotente: no re-pulsa si ya están ON.
+        """Cierra Holder+Encoder (ON). Un TX 0x2A; pulso paralelo en PLC.
 
-        False = algún envío no salió; el caller no debe avanzar.
+        False = envío no salió; el caller no debe avanzar.
         """
-        ok_holder = self._host.cmd_plc_holder(True)
-        ok_encoder = self._host.cmd_plc_encoder(True)
-        return bool(ok_holder and ok_encoder)
+        return bool(self._host.cmd_plc_holder_encoder(True))
 
     def _open_holder_encoder(self) -> bool:
         """Abre Holder+Encoder (OFF) para el avance lineal. False = envío fallido."""
-        ok_holder = self._host.cmd_plc_holder(False)
-        ok_encoder = self._host.cmd_plc_encoder(False)
-        return bool(ok_holder and ok_encoder)
+        return bool(self._host.cmd_plc_holder_encoder(False))
 
     def _ensure_holder_encoder_closed_for_feed(self) -> bool:
         """Feed con Holder/Encoder abiertos: la rueda no toca → E028/E002/E003.
@@ -4177,6 +4209,32 @@ class CycleRunner:
         self._prefetch_rep = None
         self._prefetch_feed_op = None
         self._prefetch_feed_ok = False
+
+    def _arm_prefetch_feed_after_deposit_reached(self, rep: int, qty: int) -> bool:
+        """ASDA en depósito: arranca feed N+1; el loop sigue (dwell→pinzas→HOME)."""
+        if not self._prefetch_should_run(rep, qty):
+            return True
+        next_rep = int(rep) + 1
+        if not self._ensure_holder_encoder_closed_for_feed():
+            return False
+        op = self._start_feed_operation(
+            apply_piece_watch=False,
+            timing_tag="feed_next",
+            metro_tag="post-feed-next",
+            clear_motion_wait_flags=False,
+            defer_wait_timing=True,
+        )
+        if op is None:
+            return False
+        self._prefetch_active = True
+        self._prefetch_rep = next_rep
+        self._prefetch_feed_op = op
+        self._prefetch_feed_ok = False
+        self._host.cycle_log(
+            f"Pieza {next_rep}: feed tras depósito "
+            f"(∥ pinzas→HOME · cierre en feed_after_home ASDA=0)"
+        )
+        return True
 
     def _prefetch_motion_parallel(self) -> bool:
         """Feed Motion en curso mientras ASDA hace despeje/HOME."""
@@ -4334,6 +4392,18 @@ class CycleRunner:
         if not self._confirm_asda_at_zero_for_feed():
             self._reset_prefetch()
             return False
+
+        had_prefetch = self._prefetch_active or self._prefetch_feed_ok
+
+        if had_prefetch:
+            if not self._prefetch_feed_ok:
+                if not self._prefetch_wait_feed_done():
+                    return False
+            self._host.cycle_log(
+                f"Pieza {next_rep}: feed cerrado tras HOME (handoff pieza siguiente)"
+            )
+            self._reset_prefetch()
+            return True
 
         self._reset_prefetch()
         self._host.cycle_log(
@@ -4920,8 +4990,8 @@ class CycleRunner:
             self._reset_ct_clocks_locked()
         self._host.cycle_notify()
         self._host.cycle_log(
-            "Cycle flow: prefetch feed+offset en depósito→HOME; "
-            "barrera ASDA=0 antes de pinzas de la siguiente pieza"
+            "Cycle flow: feed N+1 tras Reached depósito; "
+            "barrera ASDA=0 en feed_after_home"
         )
         try:
             self._timing_open_session(
@@ -5437,6 +5507,8 @@ class CycleRunner:
                                 f"WIP start ref=lineal_target {wip_start_mm:.1f} mm "
                                 f"(sin depósito extra)"
                             )
+                        if not self._arm_prefetch_feed_after_deposit_reached(rep, qty):
+                            break
                         if self._after_step("deposit"):
                             break
                         if self._cycle_delay(rep, qty, "wait_deposit_dwell"):
@@ -5674,10 +5746,23 @@ class CycleRunner:
                     else "Refill finish: Holder/Encoder ON; cutters/grippers OFF"
                 )
             )
+        # Fin de lote OK + PF: CT/UI ya cerrados; relleno post-lote fuera de CT.
+        post_lot_pf = (
+            ok
+            and not soft_cancel
+            and not refill
+            and self._use_prefeeder()
+            and not (self._aborted or self._stop.is_set())
+        )
+        if post_lot_pf:
+            self._finalize_ct_before_post_lot_settle()
+            self._mark_post_lot_productive_done()
+            self._set_state(TX_FINISH)
+            self._host.cycle_notify()
         # Fin de lote / error: desarmar PreFeeder (In process OFF → Idle).
         # Una sola armada al Start basta para 1…N piezas. No usar Stop 0x2B
         # aquí: enclava PF-007; Stop de operador / error ya mandaron 0x2B.
-        # No cortar en seco: esperar Buffer Full (+ M2 idle).
+        # No cortar en seco: esperar Buffer Full + holgura (+ M2 idle).
         if self._use_prefeeder() and not (self._aborted or self._stop.is_set()):
             if ok:
                 self._wait_pf_settled_before_idle(timeout_s=PF_SETTLE_BEFORE_IDLE_S)
@@ -5758,4 +5843,5 @@ class CycleRunner:
             self._set_state(TX_IDLE)
         # Lote cerrado: no hay Resume que rearma; el próximo Start arma de nuevo.
         self._pf_held_idle = False
+        self._post_lot_pf_settle = False
         self._host.cycle_notify()
